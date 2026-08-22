@@ -20,7 +20,7 @@ the largest resulting piece wins and the rest is reported rather than silently
 dropped.
 
 Usage:
-    python -m scan2ha.rooms model.json project.yaml -o named.json --capture midlevel
+    python -m scan2ha.rooms model.json project.yaml -o named.json --capture upstairs
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def main():
     ap.add_argument("project")
     ap.add_argument("-o", "--out", default="named.json")
     ap.add_argument("--capture", required=True,
-                    help="which capture's mapping to apply, e.g. midlevel")
+                    help="which capture's mapping to apply, e.g. upstairs")
     args = ap.parse_args()
 
     model = load_model(args.model)

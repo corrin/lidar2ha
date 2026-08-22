@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Find where the flooring changes, by walking the floor and watching it.
 
-The Den/entrance boundary is a baby gate, a step, and a change from wood to
-carpet. None of those is in the plan geometry, but all three are in the mesh:
+A room boundary can be a baby gate, a step, and a change from wood to carpet.
+None of those is in the plan geometry, but all three are in the mesh:
 colour comes from the atlas, height from the vertices. So instead of guessing a
 seam, sweep a line across the floor and look for the row where the floor stops
 being one thing and starts being another.

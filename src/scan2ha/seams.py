@@ -18,7 +18,7 @@ capture above, a 19 cm step and a wood-to-carpet edge landed on the same line.
 
 Usage:
     python -m scan2ha.seams model.json -o split.json --room "Living Room" \\
-        --seam -246,-159.3 16.8,-173.1 --names stairwell den
+        --seam -240,-160 20,-170 --names stairwell den
 """
 
 from __future__ import annotations

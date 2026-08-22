@@ -2,7 +2,7 @@
 # and one light named after its Home Assistant entity_id.
 # Units are centimetres. The two "-" on the room record are its floor and
 # ceiling texture ids; see examples/twolevel.tsv for textures in use.
-home	entranceway-demo	250
+home	demo-house	250
 level	l0	Ground	0	12	250
 wall	l0	0	0	400	0	10	250
 wall	l0	400	0	400	300	10	250

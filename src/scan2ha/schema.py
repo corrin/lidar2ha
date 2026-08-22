@@ -148,8 +148,8 @@ class Capture(_Base):
     # `inspect`, and used to decide which capture wins a contested room.
     median_error_m: float | None = None
     coverage: float | None = None
-    # Mesh wall area over the CSV's figure. Near 1.0 is a good scan; the
-    # entranceway managed 0.87 with a mirror wrecking it, the mid level 1.04.
+    # Mesh wall area over the CSV's figure. Near 1.0 is a good scan; one
+    # capture managed 0.87 with a mirror wrecking it, another 1.04.
     wall_area_ratio: float | None = None
     windows_found: int | None = None
     note: str | None = None

@@ -95,9 +95,25 @@ Then: open interior doors, turn the lights on, and accept that glass is invisibl
 — windows will simply be missing.
 
 **Scan in Polycam, LiDAR mode, as one continuous capture** covering every level you want
-modelled. Walk the stairs; don't stop and restart. This is a hard requirement, not a
-preference: the mesh is the world coordinate frame, a second capture has a different and
-unrelated frame, and nothing here can merge them.
+modelled. Walk the stairs; don't stop and restart. The mesh is the world coordinate frame,
+a second capture has a different and unrelated frame, and **geometry cannot be merged
+across captures** — fitting one capture's plan onto another's gives 17 cm median and 80 cm
+p90 disagreement, against 1–5 cm for a plan fitted to its own mesh.
+
+That is a limit on *merging*, not on rescanning. Rescanning is how this gets repaired:
+cover the mirror you missed, point the phone up at the double-height space, walk the room
+the first pass skipped. Captures accumulate and nothing is ever "the" scan. What combines,
+and how, differs by kind of data:
+
+- **Geometry is selected, not averaged.** The best-registered capture wins a room outright;
+  blending two plans of one room blurs corners and squares nothing.
+- **Textures composite.** Per-wall coverage runs 6–60% and the gaps fall in different
+  places each pass, so pixels union. This is the biggest reason to rescan.
+- **Detected features union.** A window found in any capture is a real window; one capture
+  here found none where another found four in the same house.
+
+So: one capture per region, many captures per project. Compositing needs the captures to
+overlap heavily, which repeat scans of one space do and scans of adjacent spaces never do.
 
 **Two separate exports** (the picker is single-select):
 
@@ -150,7 +166,7 @@ python -m scan2ha.registration home.json mesh.obj -o registered.json
 python -m scan2ha.textures_project registered.json mesh.obj -o walltex
 
 # 5. give rooms their HA area names, merging open-plan splits
-python -m scan2ha.rooms registered.json project.yaml -o named.json --capture midlevel
+python -m scan2ha.rooms registered.json project.yaml -o named.json --capture upstairs
 
 # 6. scene file -> .sh3d: compiles and runs the Java for you, then reopens the
 #    result through Sweet Home 3D's own reader
@@ -210,7 +226,8 @@ which is what the seam/seed idea was for.
   metre of real surface, measured. No export setting produces more; it's what the camera
   saw.
 - **Windows are missing.** LiDAR passes through glass. Add them by hand in Sweet Home 3D.
-- **One capture per project.** See above.
+- **One capture per *region*.** Geometry does not merge across captures — see above.
+  Repeat captures of the same space do accumulate, for textures and for features.
 - **Voids** — stairwell shafts, double-height spaces — have to be declared by hand, because
   a scanner maps rooms, not the empty space between them.
 - **Tuned to one house, one app.** Anything here that looks like a constant is a guess that
