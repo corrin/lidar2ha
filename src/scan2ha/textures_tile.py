@@ -32,8 +32,8 @@ If no candidate clears a minimum score, the class falls back to a flat patch of
 its median colour, and says so. That happens for the ceiling here: this capture
 barely has one.
 
-Run from PowerShell (see CLAUDE.md). Usage:
-    python extract_textures.py mesh.obj -o textures/ --size 256
+Usage:
+    python -m scan2ha.textures_tile mesh.obj -o textures/ --size 256
 """
 
 import argparse

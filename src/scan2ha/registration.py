@@ -34,8 +34,8 @@ of the mesh wall points that the floor actually matched.
 
 Requires the mesh exported with 'Mesh up axis: Z axis up'.
 
-Run from PowerShell (see CLAUDE.md). Usage:
-    python register_to_mesh.py home.json mesh.obj -o registered.json
+Usage:
+    python -m scan2ha.registration home.json mesh.obj -o registered.json
 """
 
 import argparse

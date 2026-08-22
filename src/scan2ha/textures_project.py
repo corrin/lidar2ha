@@ -30,8 +30,8 @@ Needs the DXF-to-mesh registration from register_to_mesh.py, which supplies a
 Each side of a wall is projected separately, since the two faces of a wall are
 different surfaces.
 
-Run from PowerShell (see CLAUDE.md). Usage:
-    python project_wall_textures.py registered.json mesh.obj -o walltex/
+Usage:
+    python -m scan2ha.textures_project registered.json mesh.obj -o walltex/
 """
 
 import argparse

@@ -19,8 +19,8 @@ sliver or a hole -- which happens when two scanner polygons abut imperfectly --
 the largest resulting piece wins and the rest is reported rather than silently
 dropped.
 
-Run from PowerShell (see CLAUDE.md). Usage:
-    python rooms.py model.json project.yaml -o named.json --capture midlevel
+Usage:
+    python -m scan2ha.rooms model.json project.yaml -o named.json --capture midlevel
 """
 
 from __future__ import annotations

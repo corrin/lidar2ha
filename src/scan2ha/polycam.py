@@ -30,7 +30,6 @@ What Polycam gives us, and how it is read here
   particular capture.
 * Ceiling heights come from the CSV, which the DXF has no room for.
 
-Run from PowerShell (see CLAUDE.md).
 """
 
 import argparse

@@ -12,8 +12,8 @@ and noise cannot outvote a real floor.
 
 Requires the mesh to have been exported with 'Mesh up axis: Z axis up'.
 
-Run from PowerShell (see CLAUDE.md). Usage:
-    python floor_elevations.py <path to .obj> [--bin 0.05] [--min-area 1.0]
+Usage:
+    python -m scan2ha.mesh <path to .obj> [--bin 0.05] [--min-area 1.0]
 """
 
 import argparse
