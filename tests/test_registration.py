@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from scipy.spatial import cKDTree
 
-from scan2ha.registration import register, transform
+from scan2ha.registration import register, score, transform
 
 
 def plan_points(step: float = 0.05) -> np.ndarray:
@@ -89,3 +89,43 @@ def test_a_plan_that_matches_nothing_reports_infinite_error():
     target = np.array([[500.0, 500.0], [500.5, 500.5], [501.0, 500.0]])
     fit = register(plan, target, cKDTree(target))
     assert not np.isfinite(fit["median_error_m"])
+
+
+def test_a_partial_match_cannot_win_on_median_alone():
+    """The flaw that made a wrong fit look right.
+
+    The median is taken over matched points only, so a transform that lands
+    half the plan on a wall and abandons the rest reports the median of its
+    good half. On one capture that let a 51 degree rotation reading 4.7 cm at
+    52% coverage beat the correct fit at 1.9 cm and 100%. The capped mean
+    charges every unmatched point the full cap, so abandoning the plan costs
+    what it should.
+    """
+    plan = plan_points()
+
+    # A tight but partial match: only the first half of the chain has anything
+    # near it, and what is there is very close indeed.
+    half = plan[: len(plan) // 2]
+    partial_tree = cKDTree(half + 0.001)
+    # A looser match, but the whole plan lands on something.
+    whole_tree = cKDTree(plan + 0.03)
+
+    partial_med, partial_cov, partial_cost = score(plan, partial_tree)
+    whole_med, whole_cov, whole_cost = score(plan, whole_tree)
+
+    # The trap: on the reported median the partial fit looks far better.
+    assert partial_med < whole_med
+    assert partial_cov < whole_cov
+    # On the number actually minimised, it does not.
+    assert whole_cost < partial_cost
+
+
+def test_coverage_is_reported_alongside_the_error():
+    """Coverage was the only signal that the bad fit was bad, so it has to
+    survive into the result a human reads."""
+    plan = plan_points()
+    target = target_for(plan, 0.65, 12.0, -3.0, mirror=False)
+    fit = register(plan, target, cKDTree(target))
+
+    assert set(fit) >= {"median_error_m", "coverage", "fit_cost_m", "mirror"}
+    assert 0.0 <= fit["coverage"] <= 1.0

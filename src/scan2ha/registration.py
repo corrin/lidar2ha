@@ -49,9 +49,26 @@ from .schema import Registration, load_model, save_model
 
 CM_TO_M = 0.01
 
+# Below this, a fit is not trustworthy however good its median error looks.
+LOW_COVERAGE = 0.90
 
-def load_wall_points(mesh_path, vertical_tol=0.2):
-    """Centroids of near-vertical mesh faces: the wall surfaces."""
+
+def load_wall_points(mesh_path, vertical_tol=0.10):
+    """Centroids of near-vertical mesh faces: the wall surfaces.
+
+    vertical_tol is |n_z|, so 0.10 admits faces within about 6 degrees of
+    vertical and 0.20 within about 11. Loosening it sounds harmless -- more
+    points to fit against -- and is not. Sloped ceilings, stair soffits and the
+    ragged tops of tall walls are *structured* noise: surfaces with consistent
+    orientation, which generate coherent spurious matches rather than scatter.
+    On a double-height capture, 0.20 admitted 49,000 such faces and the fitter
+    settled on a confident 51 degree rotation at 52% coverage; at 0.10 the same
+    capture fits at 0.9 degrees and 100%.
+
+    Measured across three single-level captures of one house, 0.10 was equal or
+    better on every one. That is one house and one scanner, so treat it as a
+    default rather than a constant of nature.
+    """
     scene = trimesh.load(mesh_path, process=False)
     meshes = list(scene.geometry.values()) if hasattr(scene, "geometry") else [scene]
 
@@ -89,12 +106,27 @@ def transform(pts, theta, tx, ty, mirror):
 
 
 def score(pts, tree, cap=1.0):
-    """Median nearest-neighbour distance, robust to unscanned plan regions."""
+    """Return (median matched distance, coverage, capped mean).
+
+    The median is taken over matched points only, which makes it a bad thing to
+    choose a fit BY: a transform that lands half the plan on some wall and
+    abandons the rest reports the median of its good half, and can beat a
+    transform that lands all of it. That is not hypothetical -- one capture
+    picked a 51 degree rotation reading 4.7 cm at 52% coverage over the correct
+    one at 1.9 cm and 100%, because 4.7 cm was the median of the half that fit.
+
+    The capped mean is the number to minimise instead: every unmatched point is
+    charged the full cap, so abandoning the plan costs exactly as much as
+    placing it badly. The median and coverage are still returned, because they
+    are what a human reads to judge whether a fit is trustworthy.
+    """
     d, _ = tree.query(pts, k=1, distance_upper_bound=cap)
-    d = d[np.isfinite(d)]
-    if len(d) < len(pts) * 0.2:
-        return float("inf"), 0.0
-    return float(np.median(d)), len(d) / len(pts)
+    matched = d[np.isfinite(d)]
+    if len(matched) < len(pts) * 0.2:
+        return float("inf"), 0.0, float("inf")
+    unmatched = len(pts) - len(matched)
+    capped_mean = float((matched.sum() + unmatched * cap) / len(pts))
+    return float(np.median(matched)), len(matched) / len(pts), capped_mean
 
 
 def _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg):
@@ -110,28 +142,30 @@ def _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg):
         c, s = math.cos(theta), math.sin(theta)
         r = np.array([[c, -s], [s, c]])
         tx, ty = target_c - r @ base_c
-        med, cover = score(base @ r.T + np.array([tx, ty]), tree)
-        if best is None or med < best[0]:
-            best = (med, cover, theta, tx, ty)
+        med, cover, cost = score(base @ r.T + np.array([tx, ty]), tree)
+        if best is None or cost < best["fit_cost_m"]:
+            best = {"median_error_m": med, "coverage": cover, "fit_cost_m": cost,
+                    "theta_rad": theta, "tx": tx, "ty": ty}
     return best
 
 
 def _refine(plan_pts, tree, start, mirror):
     """Local descent from a coarse candidate."""
-    med, cover, theta, tx, ty = start
+    med, cover, cost = start["median_error_m"], start["coverage"], start["fit_cost_m"]
+    theta, tx, ty = start["theta_rad"], start["tx"], start["ty"]
     for _ in range(3):
         improved = False
         for dth in (-0.02, -0.005, 0, 0.005, 0.02):
             for dx in (-0.10, -0.02, 0, 0.02, 0.10):
                 for dy in (-0.10, -0.02, 0, 0.02, 0.10):
                     cand = transform(plan_pts, theta + dth, tx + dx, ty + dy, mirror)
-                    m, c2 = score(cand, tree)
-                    if m < med:
-                        med, cover, improved = m, c2, True
+                    m, c2, k = score(cand, tree)
+                    if k < cost:
+                        med, cover, cost, improved = m, c2, k, True
                         theta, tx, ty = theta + dth, tx + dx, ty + dy
         if not improved:
             break
-    return {"median_error_m": med, "coverage": cover,
+    return {"median_error_m": med, "coverage": cover, "fit_cost_m": cost,
             "theta_rad": theta, "tx": tx, "ty": ty, "mirror": mirror}
 
 
@@ -158,7 +192,7 @@ def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None):
         coarse = _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg)
         fits.append(_refine(plan_pts, tree, coarse, mirror))
 
-    return min(fits, key=lambda f: f["median_error_m"])
+    return min(fits, key=lambda f: f["fit_cost_m"])
 
 
 
@@ -167,10 +201,14 @@ def main():
     ap.add_argument("json_path")
     ap.add_argument("mesh")
     ap.add_argument("-o", "--out", default="registered.json")
+    ap.add_argument("--vertical-tol", type=float, default=0.10,
+                    help="|n_z| below which a mesh face counts as a wall. Loosening "
+                         "this admits sloped ceilings and stair soffits, which are "
+                         "structured noise and can capture the fit")
     args = ap.parse_args()
 
     model = load_model(args.json_path)
-    wall_pts_3d = load_wall_points(args.mesh)
+    wall_pts_3d = load_wall_points(args.mesh, vertical_tol=args.vertical_tol)
     target_xy = wall_pts_3d[:, :2]
     tree = cKDTree(target_xy)
 
@@ -223,6 +261,15 @@ def main():
         print(f"  translation   : ({r.tx_m:.3f}, {r.ty_m:.3f}) m")
         print(f"  median error  : {r.median_error_m * 100:.1f} cm   "
               f"coverage={r.coverage * 100:.0f}%")
+        if r.coverage < LOW_COVERAGE:
+            # Read this before the error. The error is a median over matched
+            # points only, so a fit that abandoned half the plan reports the
+            # median of the half it kept and can look better than a good one.
+            print(f"  ** LOW COVERAGE: {r.coverage * 100:.0f}% of the plan found "
+                  f"no wall within a metre. Treat the {r.median_error_m * 100:.1f} cm "
+                  f"above as unreliable -- it describes only the part that fitted.")
+            print("     A double-height or heavily sloped space may need a tighter "
+                  "--vertical-tol; see load_wall_points.")
         print(f"  floor z       : {r.floor_z_m} m")
         print()
 
