@@ -39,6 +39,8 @@ import re
 from pathlib import Path
 
 import ezdxf
+import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 from .schema import Door, Level, Model, Room, Wall, save_model
 
@@ -125,6 +127,41 @@ def _parse_height(value):
     if not nums:
         return None
     return min(nums), max(nums)
+
+
+def assign_room_labels(rooms, room_labels):
+    """Match room polygons to sheet labels one-to-one.
+
+    Taking each room's nearest label independently is the obvious approach and
+    it is wrong: nothing stops two polygons claiming the same label, and nothing
+    ensures every label gets used. On a capture with small rooms off a hallway
+    that produced two rooms both named "Bathroom 1" and no Hallway at all --
+    and a duplicate name is not merely cosmetic, because `rooms` keys by name
+    and so keeps only the last of them.
+
+    linear_sum_assignment gives the exact minimum-total-distance matching, so a
+    room that "wants" a label another room wants more has to take its second
+    choice instead of both winning. Matching across all floors at once also
+    keeps a label from being spent on a room a floor away.
+
+    Returns (unnamed_rooms, unused_labels) for the caller to report.
+    """
+    for r in rooms:
+        r["name"] = None
+    if not rooms or not room_labels:
+        return list(rooms), [lbl["name"] for lbl in room_labels]
+
+    cost = np.array([
+        [(lbl["x"] - r["cx"]) ** 2 + (lbl["y"] - r["cy"]) ** 2 for lbl in room_labels]
+        for r in rooms
+    ])
+    rows, cols = linear_sum_assignment(cost)
+    for i, j in zip(rows, cols, strict=True):
+        rooms[i]["name"] = room_labels[j]["name"]
+
+    unnamed = [r for k, r in enumerate(rooms) if k not in set(rows)]
+    unused = [lbl["name"] for j, lbl in enumerate(room_labels) if j not in set(cols)]
+    return unnamed, unused
 
 
 def read_room_ceilings(csv_path):
@@ -234,6 +271,15 @@ def main():
     room_groups = split_into_floors(rooms, n_floors)
     door_groups = split_into_floors(doors, n_floors)
 
+    unnamed, unused = assign_room_labels(
+        [r for group in room_groups for r in group], room_labels)
+    if unnamed or unused:
+        # Silence here is what produced two "Bathroom 1" and no Hallway.
+        print(f"WARNING: {len(unnamed)} room(s) got no label and {len(unused)} "
+              f"label(s) went unused: {sorted(unused)}")
+        print("  Unlabelled rooms fall back to their floor's name; check the "
+              "room list below before continuing.")
+
     levels = []
     for i in range(n_floors):
         label = floor_labels[i]["name"] if i < len(floor_labels) else f"Floor {i + 1}"
@@ -241,16 +287,11 @@ def main():
         rg = room_groups[i] if i < len(room_groups) else []
         dg = door_groups[i] if i < len(door_groups) else []
 
-        # Name each room from the nearest room label on the sheet, then attach
-        # its own ceiling height. Naming has to happen before heights, because
-        # the CSV keys ceilings by room name.
+        # Names were assigned one-to-one across every floor before this loop.
+        # Attaching ceilings has to come after, because the CSV keys them by
+        # room name.
         for r in rg:
-            best, bestd = None, float("inf")
-            for rl in room_labels:
-                d = (rl["x"] - r["cx"]) ** 2 + (rl["y"] - r["cy"]) ** 2
-                if d < bestd:
-                    best, bestd = rl["name"], d
-            r["name"] = best or label
+            r["name"] = r["name"] or label
             low, high = ceilings.get(r["name"], (args.default_height,) * 2)
             r["ceiling_low"] = low
             r["ceiling_high"] = high
