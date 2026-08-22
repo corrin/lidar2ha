@@ -1,4 +1,4 @@
-﻿import com.eteks.sweethome3d.io.DefaultUserPreferences;
+import com.eteks.sweethome3d.io.DefaultUserPreferences;
 import com.eteks.sweethome3d.io.HomeFileRecorder;
 import com.eteks.sweethome3d.j3d.ModelManager;
 import com.eteks.sweethome3d.j3d.OBJWriter;
