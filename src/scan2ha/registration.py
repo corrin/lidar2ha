@@ -53,21 +53,25 @@ CM_TO_M = 0.01
 LOW_COVERAGE = 0.90
 
 
-def load_wall_points(mesh_path, vertical_tol=0.10):
+def load_wall_points(mesh_path, vertical_tol=0.20):
     """Centroids of near-vertical mesh faces: the wall surfaces.
 
-    vertical_tol is |n_z|, so 0.10 admits faces within about 6 degrees of
-    vertical and 0.20 within about 11. Loosening it sounds harmless -- more
-    points to fit against -- and is not. Sloped ceilings, stair soffits and the
-    ragged tops of tall walls are *structured* noise: surfaces with consistent
-    orientation, which generate coherent spurious matches rather than scatter.
-    On a double-height capture, 0.20 admitted 49,000 such faces and the fitter
-    settled on a confident 51 degree rotation at 52% coverage; at 0.10 the same
-    capture fits at 0.9 degrees and 100%.
+    vertical_tol is |n_z|, so 0.20 admits faces within about 11 degrees of
+    vertical and 0.10 within about 6.
 
-    Measured across three single-level captures of one house, 0.10 was equal or
-    better on every one. That is one house and one scanner, so treat it as a
-    default rather than a constant of nature.
+    A double-height capture once fitted at a confident 51 degrees and 52%
+    coverage here, and tightening to 0.10 fixed it -- which made the extra
+    faces look like the cause. They were not. Sloped ceilings and stair soffits
+    are structured noise rather than scatter, so they do generate coherent
+    spurious candidates, but the reason one of them WON was that fits were
+    compared on a median taken over matched points only. With that fixed (see
+    score) the same capture fits correctly at 0.20, and slightly better than at
+    0.10 -- 2.3 cm against 2.7.
+
+    So the looser default stands: a tighter one rescues nothing now and
+    discards a third of the wall points, which on a sparser capture would cost
+    coverage rather than buy accuracy. --vertical-tol stays exposed because a
+    capture dominated by sloped surfaces may still want it.
     """
     scene = trimesh.load(mesh_path, process=False)
     meshes = list(scene.geometry.values()) if hasattr(scene, "geometry") else [scene]
@@ -201,7 +205,7 @@ def main():
     ap.add_argument("json_path")
     ap.add_argument("mesh")
     ap.add_argument("-o", "--out", default="registered.json")
-    ap.add_argument("--vertical-tol", type=float, default=0.10,
+    ap.add_argument("--vertical-tol", type=float, default=0.20,
                     help="|n_z| below which a mesh face counts as a wall. Loosening "
                          "this admits sloped ceilings and stair soffits, which are "
                          "structured noise and can capture the fit")
