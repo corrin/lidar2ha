@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scan2ha"
+version = "0.1.0"
+description = "Turn a phone LiDAR scan into an interactive 3D floorplan dashboard in Home Assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["home-assistant", "lidar", "polycam", "sweet-home-3d", "floorplan"]
+
+dependencies = [
+  "ezdxf>=1.4",        # Polycam floor-plan DXF
+  "trimesh>=4.0",      # the textured mesh
+  "numpy>=1.26",
+  "scipy>=1.11",       # cKDTree for registration
+  "shapely>=2.0",      # room polygons, voids, pole of inaccessibility
+  "pillow>=10.0",      # texture rectification
+  "svgelements>=1.9",  # reading back Inkscape-edited room polygons
+  "click>=8.1",
+  "pydantic>=2.6",     # model.json IS the pydantic schema
+  "pyyaml>=6.0",
+  "rich>=13.0",        # the review tables the human validates against
+]
+
+[project.optional-dependencies]
+deploy = ["paramiko>=3.4"]           # scp renders to HA's /config/www
+ha = ["websockets>=12.0"]            # HA registry over the WebSocket API
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+scan2ha = "scan2ha.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scan2ha"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

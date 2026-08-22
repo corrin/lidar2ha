@@ -1,0 +1,8 @@
+﻿home	entranceway-demo	250
+level	l0	Ground	0	12	250
+wall	l0	0	0	400	0	10	250
+wall	l0	400	0	400	300	10	250
+wall	l0	400	300	0	300	10	250
+wall	l0	0	300	0	0	10	250
+room	l0	Entrance	0,0	400,0	400,300	0,300
+light	l0	light.hallway_ceiling	200	150	230	0.5

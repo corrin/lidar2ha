@@ -1,0 +1,36 @@
+# Captures and anything derived from a real house. NOTHING house-specific belongs
+# in this repo -- the tool is generic and takes a project directory as an argument.
+captures/
+private*/
+exports/
+render_out/
+render_ent/
+model3d/
+*.sh3d
+!tests/golden/*.sh3d
+*.usdz
+*.ifc
+*.obj
+!tests/fixtures/*.obj
+
+# Secrets: HA long-lived tokens, SSH details.
+secrets.yaml
+.env
+
+# Java build output. Classes are compiled on first use into a per-user cache,
+# never checked in -- see javabridge.py.
+out/
+out*/
+*.class
+*.jar
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
