@@ -64,6 +64,11 @@ class Toolchain:
     javac: Path
     java: Path
     render_java: Path | None
+    # Every jar Sweet Home 3D ships. Java3D (j3dcore, j3dutils, vecmath) lives
+    # here, and ObjExport and CatalogProbe import javax.media.j3d directly, so
+    # a classpath of just SweetHome3D.jar cannot compile them. Globbing the
+    # directory rather than naming jars keeps this working across versions.
+    lib_jars: tuple[Path, ...] = ()
 
     @property
     def classpath_sep(self) -> str:
@@ -77,9 +82,12 @@ class Toolchain:
         return self.classpath_sep.join(parts)
 
     def render_classpath(self, classes: Path) -> str:
-        parts = [str(self.sweethome_jar)]
-        if self.furniture_jar:
-            parts.append(str(self.furniture_jar))
+        """Everything: Sweet Home 3D, Java3D, the plugin, and our classes.
+
+        This is also the compile classpath, because our Java spans both the
+        model-only tools and the ones that touch Java3D.
+        """
+        parts = [str(jar) for jar in self.lib_jars] or [str(self.sweethome_jar)]
         if self.plugin_jar:
             parts.append(str(self.plugin_jar))
         parts.append(str(classes))
@@ -104,19 +112,33 @@ def _find_sh3d_lib(override: str | Path | None = None) -> Path:
 
 
 def _find_jdk() -> tuple[Path, Path]:
-    """javac and java from a real JDK. Sweet Home 3D's bundled runtime has no javac."""
-    java_home = os.environ.get("JAVA_HOME")
+    """javac and java from a real JDK. Sweet Home 3D's bundled runtime has no javac.
+
+    They must come from the SAME JDK. Resolving each with which() independently
+    is how you end up compiling with a modern javac and running on whatever
+    stale JRE is earlier on PATH -- on Windows, typically Oracle's java8path
+    shim -- which fails at the point of use with UnsupportedClassVersionError
+    and no hint that two different toolchains were involved.
+    """
     exe = ".exe" if platform.system() == "Windows" else ""
+    java_home = os.environ.get("JAVA_HOME")
     if java_home:
         javac = Path(java_home) / "bin" / f"javac{exe}"
         java = Path(java_home) / "bin" / f"java{exe}"
         if javac.exists() and java.exists():
             return javac, java
 
-    javac = shutil.which("javac")
-    java = shutil.which("java")
-    if javac and java:
-        return Path(javac), Path(java)
+    found = shutil.which("javac")
+    if found:
+        javac = Path(found)
+        # Prefer this JDK's own java; only fall back to PATH if it has none.
+        java = javac.with_name(f"java{exe}")
+        if not java.exists():
+            on_path = shutil.which("java")
+            if not on_path:
+                raise ToolchainError(f"Found {javac} but no java alongside it or on PATH.")
+            java = Path(on_path)
+        return javac, java
 
     raise ToolchainError(
         "No JDK found (need javac, not just a JRE). Install Temurin 17+ from "
@@ -163,6 +185,7 @@ def detect(sh3d_jar: str | Path | None = None) -> Toolchain:
         javac=javac,
         java=java,
         render_java=_find_render_jvm(lib),
+        lib_jars=tuple(sorted(lib.glob("*.jar"))),
     )
 
 
@@ -187,7 +210,7 @@ def compile_java(tc: Toolchain, sources: list[str] | None = None) -> Path:
     for s in srcs:
         h.update(s.name.encode())
         h.update(s.read_bytes())
-    for jar in (tc.sweethome_jar, tc.furniture_jar, tc.plugin_jar):
+    for jar in (*tc.lib_jars, tc.plugin_jar):
         if jar and jar.exists():
             h.update(str(jar).encode())
             h.update(str(jar.stat().st_mtime_ns).encode())
