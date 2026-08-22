@@ -97,38 +97,28 @@ def score(pts, tree, cap=1.0):
     return float(np.median(d)), len(d) / len(pts)
 
 
-def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None):
-    """Fit a 2D rigid transform placing the plan points onto the mesh walls.
+def _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg):
+    """Best rotation for one handedness, at coarse resolution."""
+    base = plan_pts.copy()
+    if mirror:
+        base[:, 1] = -base[:, 1]
+    base_c = base.mean(axis=0)
 
-    force_mirror pins the handedness. Mirroring is a property of the DXF export
-    as a whole, so once the best-constrained floor has chosen, every other floor
-    must agree -- otherwise a floor with only a couple of walls can 'fit' a
-    mirrored corner anywhere in the mesh and win on score while being nonsense.
-    """
-    target_c = target_xy.mean(axis=0)
     best = None
+    for deg in np.arange(0, 360, coarse_step_deg):
+        theta = math.radians(deg)
+        c, s = math.cos(theta), math.sin(theta)
+        r = np.array([[c, -s], [s, c]])
+        tx, ty = target_c - r @ base_c
+        med, cover = score(base @ r.T + np.array([tx, ty]), tree)
+        if best is None or med < best[0]:
+            best = (med, cover, theta, tx, ty)
+    return best
 
-    mirrors = (False, True) if force_mirror is None else (force_mirror,)
-    for mirror in mirrors:
-        base = plan_pts.copy()
-        if mirror:
-            base = base.copy()
-            base[:, 1] = -base[:, 1]
-        base_c = base.mean(axis=0)
 
-        for deg in np.arange(0, 360, coarse_step_deg):
-            theta = math.radians(deg)
-            c, s = math.cos(theta), math.sin(theta)
-            r = np.array([[c, -s], [s, c]])
-            rotated_c = r @ base_c
-            tx, ty = target_c - rotated_c
-            moved = base @ r.T + np.array([tx, ty])
-            med, cover = score(moved, tree)
-            if best is None or med < best[0]:
-                best = (med, cover, theta, tx, ty, mirror)
-
-    # Local refinement around the coarse winner.
-    med, cover, theta, tx, ty, mirror = best
+def _refine(plan_pts, tree, start, mirror):
+    """Local descent from a coarse candidate."""
+    med, cover, theta, tx, ty = start
     for _ in range(3):
         improved = False
         for dth in (-0.02, -0.005, 0, 0.005, 0.02):
@@ -141,9 +131,35 @@ def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None):
                         theta, tx, ty = theta + dth, tx + dx, ty + dy
         if not improved:
             break
-
     return {"median_error_m": med, "coverage": cover,
             "theta_rad": theta, "tx": tx, "ty": ty, "mirror": mirror}
+
+
+def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None):
+    """Fit a 2D rigid transform placing the plan points onto the mesh walls.
+
+    Each handedness is refined and only then compared. Choosing between them on
+    the coarse score alone -- 2 degree steps, translation by centroid
+    alignment -- decides the single most consequential thing this function does
+    at its least reliable resolution, and lets a coarse winner that refines
+    badly beat a coarse loser that would refine well. On one capture that
+    returned mirror=True at 6.9 cm where mirror=False refines to 4.8 cm.
+
+    force_mirror pins the handedness. Mirroring is a property of the DXF export
+    as a whole, so once the best-constrained floor has chosen, every other floor
+    must agree -- otherwise a floor with only a couple of walls can 'fit' a
+    mirrored corner anywhere in the mesh and win on score while being nonsense.
+    """
+    target_c = target_xy.mean(axis=0)
+    mirrors = (False, True) if force_mirror is None else (force_mirror,)
+
+    fits = []
+    for mirror in mirrors:
+        coarse = _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg)
+        fits.append(_refine(plan_pts, tree, coarse, mirror))
+
+    return min(fits, key=lambda f: f["median_error_m"])
+
 
 
 def main():
@@ -177,8 +193,8 @@ def main():
         fit = register(plan_pts, target_xy, tree, force_mirror=forced_mirror)
         if forced_mirror is None:
             forced_mirror = fit["mirror"]
-            print(f"handedness fixed by {lv['name']} "
-                  f"({len(lv['walls'])} walls): mirror={forced_mirror}\n")
+            print(f"handedness fixed by {lv.name} "
+                  f"({len(lv.walls)} walls): mirror={forced_mirror}\n")
 
         # Elevation: Z of the mesh wall points this floor actually matched,
         # taken near the bottom of the matched band (the floor line).
