@@ -56,7 +56,7 @@ def douglas_peucker(points: list[tuple[float, float]], tolerance: float):
 def dominant_angle(points: list[tuple[float, float]]) -> float:
     """Length-weighted modal bearing, mod 90 degrees -- the building's grid."""
     buckets: dict[int, float] = {}
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+    for (x0, y0), (x1, y1) in zip(points, points[1:], strict=False):
         length = math.hypot(x1 - x0, y1 - y0)
         if length < 1e-6:
             continue
@@ -123,6 +123,6 @@ def polygon_area(points) -> float:
     if len(points) < 3:
         return 0.0
     s = 0.0
-    for (x0, y0), (x1, y1) in zip(points, points[1:] + [points[0]]):
+    for (x0, y0), (x1, y1) in zip(points, points[1:] + [points[0]], strict=False):
         s += x0 * y1 - x1 * y0
     return abs(s) / 2.0

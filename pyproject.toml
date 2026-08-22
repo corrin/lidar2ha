@@ -28,7 +28,7 @@ dependencies = [
 [project.optional-dependencies]
 deploy = ["paramiko>=3.4"]           # scp renders to HA's /config/www
 ha = ["websockets>=12.0"]            # HA registry over the WebSocket API
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "types-PyYAML", "build>=1.2"]
 
 [project.scripts]
 scan2ha = "scan2ha.cli:main"
@@ -42,6 +42,24 @@ artifacts = ["src/scan2ha/java/*.java"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# The defaults (E, F) plus the rules that catch the mistakes this codebase has
+# actually made: unused imports and stale names (F401/F841 come with F), import
+# order, and bare excepts.
+select = ["E", "F", "I", "B", "UP", "C4"]
+
+[tool.mypy]
+# Deliberately not pinned to requires-python's 3.11 floor: numpy's bundled stubs
+# use 3.12 syntax, and checking against the interpreter actually running is what
+# matches what the tests run on. ruff still enforces 3.11-compatible syntax.
+files = ["src/scan2ha"]
+# The numeric stack ships no stubs worth the noise; everything of ours is
+# checked, and the boundary to trimesh/ezdxf/scipy is explicitly untyped.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
