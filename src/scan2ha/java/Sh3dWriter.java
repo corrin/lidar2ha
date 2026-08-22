@@ -1,18 +1,21 @@
 import com.eteks.sweethome3d.io.DefaultFurnitureCatalog;
 import com.eteks.sweethome3d.io.HomeFileRecorder;
 import com.eteks.sweethome3d.model.Camera;
+import com.eteks.sweethome3d.model.CatalogTexture;
 import com.eteks.sweethome3d.model.FurnitureCatalog;
 import com.eteks.sweethome3d.model.FurnitureCategory;
 import com.eteks.sweethome3d.model.Home;
 import com.eteks.sweethome3d.model.HomeLight;
-import com.eteks.sweethome3d.model.HomePieceOfFurniture;
+import com.eteks.sweethome3d.model.HomeTexture;
 import com.eteks.sweethome3d.model.CatalogPieceOfFurniture;
 import com.eteks.sweethome3d.model.Level;
 import com.eteks.sweethome3d.model.Light;
 import com.eteks.sweethome3d.model.Room;
 import com.eteks.sweethome3d.model.Wall;
+import com.eteks.sweethome3d.tools.URLContent;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -45,11 +48,19 @@ import java.util.Map;
  * are ignored. A deliberately dumb format so the Java side needs no JSON
  * dependency; the Python side does the real parsing.
  *
- *   home   <name>  <wallHeight>
- *   level  <id>    <name>  <elevation>  <floorThickness>  <height>
- *   wall   <level> <xStart> <yStart> <xEnd> <yEnd> <thickness> <height>
- *   room   <level> <name>  <x,y> <x,y> <x,y> ...
- *   light  <level> <name>  <x> <y> <elevation> <power>
+ *   home     <name>   <wallHeight>
+ *   texture  <id>     <absolutePath>  <widthCm>  <heightCm>
+ *   level    <id>     <name>  <elevation>  <floorThickness>  <height>
+ *   wall     <level>  <xStart> <yStart> <xEnd> <yEnd> <thickness> <height> [leftTex] [rightTex]
+ *   room     <level>  <name>   <floorTex> <ceilTex> <x,y> <x,y> <x,y> ...
+ *   light    <level>  <name>   <x> <y> <elevation> <power>
+ *
+ * Texture fields hold a `texture` record's id, or "-"/empty for none. A texture
+ * must be declared before the record that references it.
+ *
+ * There is no guessing on this side: a wall the scan missed gets whatever id the
+ * writer chose to give it -- typically the generic tiled patch -- because the
+ * Python side is where that decision has the context to be made.
  *
  * `name` on a light (or piece) must be the Home Assistant entity_id exactly --
  * that is what the home-assistant-floor-plan plugin matches on.
@@ -76,6 +87,8 @@ public class Sh3dWriter {
   }
 
   private final Map<String, Level> levels = new HashMap<>();
+  private final List<Level> levelOrder = new ArrayList<>();
+  private final Map<String, HomeTexture> textures = new HashMap<>();
   private float wallHeight = DEFAULT_WALL_HEIGHT;
   private Light catalogLight;
 
@@ -94,6 +107,7 @@ public class Sh3dWriter {
         try {
           switch (f[0]) {
             case "home":     applyHome(home, f);   break;
+            case "texture":  addTexture(f);        break;
             case "level":    addLevel(home, f);    break;
             case "wall":     addWall(home, f);     break;
             case "room":     addRoom(home, f);     break;
@@ -111,6 +125,17 @@ public class Sh3dWriter {
     if (home.getLevels().isEmpty()) {
       throw new IllegalStateException("scene declared no levels");
     }
+
+    // Select the lowest level ONCE, after every add has completed.
+    //
+    // This must not happen during parsing. Home.addWall(), addRoom() and
+    // addPieceOfFurniture() all stamp the object with the home's SELECTED
+    // level, so a selected level that moved as levels were declared would
+    // contaminate everything added after it -- which is exactly the bug the
+    // add-then-setLevel ordering below exists to avoid. Doing it here also
+    // means Sweet Home 3D opens the file on the ground floor.
+    home.setSelectedLevel(levelOrder.get(0));
+
     frameCamera(home);
     return home;
   }
@@ -152,12 +177,18 @@ public class Sh3dWriter {
     home.setCamera(camera);
   }
 
-  /** Strip blanks and comments; split on tabs. */
+  /** Strip blanks, comments and a leading BOM; split on tabs. */
   private static List<String[]> readRecords(String path) throws Exception {
     List<String[]> records = new ArrayList<>();
     try (BufferedReader in = new BufferedReader(new FileReader(path))) {
       String line;
       while ((line = in.readLine()) != null) {
+        // A UTF-8 BOM would otherwise make the first field "\uFEFFhome" and the
+        // whole file unreadable -- Windows editors add one without asking, and
+        // the failure surfaces as the useless "unknown record type".
+        if (!line.isEmpty() && line.charAt(0) == '\uFEFF') {
+          line = line.substring(1);
+        }
         line = line.trim();
         if (!line.isEmpty() && !line.startsWith("#")) {
           records.add(line.split("\t"));
@@ -181,39 +212,94 @@ public class Sh3dWriter {
     // wallHeight was consumed by the constructor -- see defaultWallHeight.
   }
 
+  /**
+   * Register an image under an id, at a stated physical size.
+   *
+   * HomeFileRecorder copies the referenced image into the .sh3d, so the finished
+   * file does not depend on these paths surviving.
+   *
+   * The size is what decides tiling: give a texture the exact dimensions of the
+   * surface it covers and it appears once, which is how a per-wall rectified
+   * photo stays a photo instead of becoming wallpaper. Give it a tile size and
+   * it repeats. Both cases are this one record -- the Python side knows each
+   * wall's length and height, so it does the arithmetic.
+   */
+  private void addTexture(String[] f) throws Exception {
+    // id, absolutePath, widthCm, heightCm
+    File image = new File(f[2]);
+    if (!image.isFile()) {
+      throw new IllegalArgumentException("texture image not found: " + image);
+    }
+    URLContent content = new URLContent(image.toURI().toURL());
+    CatalogTexture catalog = new CatalogTexture(f[1], content, num(f[3]), num(f[4]));
+    textures.put(f[1], new HomeTexture(catalog));
+  }
+
   private void addLevel(Home home, String[] f) {
     // id, name, elevation, floorThickness, height
     Level level = new Level(f[2], num(f[3]), num(f[4]), num(f[5]));
     home.addLevel(level);
-    // The last level added wins as selected; harmless for our purposes and
-    // means single-level scenes behave sensibly.
-    home.setSelectedLevel(level);
     levels.put(f[1], level);
+    levelOrder.add(level);
+    // NOTE: deliberately no setSelectedLevel() here -- see build().
   }
 
   private void addWall(Home home, String[] f) {
-    // level, xStart, yStart, xEnd, yEnd, thickness, height
+    // level, xStart, yStart, xEnd, yEnd, thickness, height, [leftTex], [rightTex]
     float height = f.length > 7 && !f[7].isEmpty() ? num(f[7]) : DEFAULT_WALL_HEIGHT;
     Wall wall = new Wall(num(f[2]), num(f[3]), num(f[4]), num(f[5]), num(f[6]), height);
-    wall.setLevel(level(f[1]));
+
+    // Order matters: Home.addWall() stamps the wall with the home's SELECTED
+    // level, discarding anything set beforehand. Assign after.
     home.addWall(wall);
+    wall.setLevel(level(f[1]));
+
+    HomeTexture left = texture(f, 8);
+    HomeTexture right = texture(f, 9);
+    if (left != null) {
+      wall.setLeftSideTexture(left);
+    }
+    if (right != null) {
+      wall.setRightSideTexture(right);
+    }
   }
 
   private void addRoom(Home home, String[] f) {
-    // level, name, then one "x,y" per remaining field
+    // level, name, floorTex, ceilTex, then one "x,y" per remaining field
     List<float[]> pts = new ArrayList<>();
-    for (int i = 3; i < f.length; i++) {
+    for (int i = 5; i < f.length; i++) {
       String[] xy = f[i].split(",");
       pts.add(new float[] {num(xy[0]), num(xy[1])});
     }
     if (pts.size() < 3) {
       throw new IllegalArgumentException("room needs at least 3 points");
     }
+    // The Room object is not decoration: the plugin groups light entities by
+    // room, so Room Overlay mode depends on it. Room polygons need no enclosing
+    // walls, which is what makes open-plan work.
     Room room = new Room(pts.toArray(new float[0][]));
     room.setName(f[2]);
-    room.setLevel(level(f[1]));
     room.setAreaVisible(false);
+
+    // Same trap as walls: addRoom() stamps the selected level, so the level has
+    // to be assigned afterwards.
     home.addRoom(room);
+    room.setLevel(level(f[1]));
+
+    HomeTexture floor = texture(f, 3);
+    if (floor != null) {
+      room.setFloorTexture(floor);
+      room.setFloorVisible(true);
+    }
+    HomeTexture ceiling = texture(f, 4);
+    if (ceiling != null) {
+      room.setCeilingTexture(ceiling);
+      room.setCeilingVisible(true);
+    } else {
+      // Off unless a ceiling was actually supplied: a ceiling on the level being
+      // looked down at occludes the plan the plugin is trying to render.
+      room.setCeilingVisible(false);
+    }
   }
 
   private void addLight(Home home, String[] f) throws Exception {
@@ -227,8 +313,13 @@ public class Sh3dWriter {
     if (f.length > 6 && !f[6].isEmpty()) {
       light.setPower(num(f[6]));
     }
-    light.setLevel(level(f[1]));
+    // The plugin ignores a light source that is not visible or has no power.
+    light.setVisible(true);
+
+    // Same trap once more. This is the one that bites hardest: a light on the
+    // wrong floor still renders, it just lights the wrong room.
     home.addPieceOfFurniture(light);
+    light.setLevel(level(f[1]));
   }
 
   /**
@@ -282,6 +373,22 @@ public class Sh3dWriter {
       throw new IllegalArgumentException("unknown level id: " + id);
     }
     return level;
+  }
+
+  /** Optional texture reference at field `i`; "-" and empty both mean none. */
+  private HomeTexture texture(String[] f, int i) {
+    if (f.length <= i) {
+      return null;
+    }
+    String id = f[i].trim();
+    if (id.isEmpty() || "-".equals(id)) {
+      return null;
+    }
+    HomeTexture texture = textures.get(id);
+    if (texture == null) {
+      throw new IllegalArgumentException("unknown texture id: " + id);
+    }
+    return texture;
   }
 
   private static float num(String s) {

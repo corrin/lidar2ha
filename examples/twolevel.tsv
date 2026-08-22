@@ -1,0 +1,21 @@
+# Two levels, to exercise the thing that is easy to get wrong.
+#
+# Home.addWall(), addRoom() and addPieceOfFurniture() overwrite an object's
+# level with the home's SELECTED level, so a writer that assigns the level
+# before adding silently collapses every floor onto one. A single-level scene
+# cannot show that. This one can: Sh3dVerify must report Ground holding its
+# own wall, room and light, not Upper holding all six objects.
+#
+# Texture records take absolute paths, so they are not committable in an
+# example -- see tests/test_levels_java.py for textures under test.
+home	twolevel-demo	250
+level	l0	Ground	0	12	250
+level	l1	Upper	262	12	250
+wall	l0	0	0	400	0	10	250
+wall	l0	400	0	400	300	10	250
+wall	l1	0	0	400	0	10	250
+wall	l1	400	0	400	300	10	250
+room	l0	Hall	-	-	0,0	400,0	400,300	0,300
+room	l1	Landing	-	-	0,0	400,0	400,300	0,300
+light	l0	light.hall_ceiling	200	150	230	0.5
+light	l1	light.landing_ceiling	200	150	230	0.5
