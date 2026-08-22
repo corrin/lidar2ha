@@ -35,6 +35,9 @@ scan2ha = "scan2ha.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/scan2ha"]
+# The .java sources are compiled on first use against the user's own Sweet
+# Home 3D install, so they must ship in the wheel like any other data file.
+artifacts = ["src/scan2ha/java/*.java"]
 
 [tool.ruff]
 line-length = 100

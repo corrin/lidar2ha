@@ -29,7 +29,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-JAVA_SRC = Path(__file__).resolve().parent.parent.parent / "java"
+# Inside the package, so an installed wheel actually carries the sources it
+# compiles. Pointing outside src/scan2ha ships a package that cannot build.
+JAVA_SRC = Path(__file__).resolve().parent / "java"
 
 # Where Sweet Home 3D installs itself, per platform. First hit wins.
 SH3D_LIB_CANDIDATES = [
