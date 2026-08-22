@@ -1,0 +1,154 @@
+"""The regression test for the bug that has now shipped twice.
+
+Home.addWall(), addRoom() and addPieceOfFurniture() overwrite an object's level
+with the home's SELECTED level. A writer that calls setLevel() before adding
+therefore loses every level assignment -- but only once a second level exists,
+because with one level the overwrite is a no-op.
+
+That is why this went unnoticed: the prototype was single-level, the fix was
+found and documented when a second floor appeared, and the consolidated rewrite
+reverted to the original ordering. Nothing failed. The plan simply opened with
+every wall, room and light stacked on the top floor.
+
+These tests only mean anything against Sweet Home 3D's real classes, so they
+run the writer and then reopen the archive through the same reader the desktop
+application uses.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+
+import pytest
+
+from scan2ha import javabridge
+from scan2ha.scene import write_scene
+from scan2ha.schema import Level, Light, Model, Room, Wall, WallTexture
+
+pytestmark = pytest.mark.java
+
+
+def two_level_model() -> Model:
+    """One wall, one room and one light on each of two levels."""
+    def floor(name: str, height: float, elevation: float) -> Level:
+        return Level(
+            name=name,
+            ceiling_height_cm=height,
+            elevation_cm=elevation,
+            walls=[Wall(x_start=0, y_start=0, x_end=400, y_end=0,
+                        thickness=10, height=height)],
+            rooms=[Room(name=f"{name}Room",
+                        points=[(0, 0), (400, 0), (400, 300), (0, 300)])],
+        )
+    return Model(source="test.dxf",
+                 levels=[floor("Ground", 250, 0), floor("Upper", 240, 262)])
+
+
+def run(tc, classes, main, *args) -> str:
+    proc: subprocess.CompletedProcess = javabridge.run_writer(tc, classes, main, *args)
+    assert proc.returncode == 0, f"{main} failed:\n{proc.stdout}\n{proc.stderr}"
+    return proc.stdout
+
+
+def parse_tally(report: str) -> dict[str, dict[str, int]]:
+    """Read Sh3dVerify's per-level counts back out of its report."""
+    tally: dict[str, dict[str, int]] = {}
+    for line in report.splitlines():
+        m = re.match(r"\s+(\S+)\s+walls=(\d+)\s+rooms=(\d+)\s+lights=(\d+)", line)
+        if m:
+            tally[m.group(1)] = {"walls": int(m.group(2)),
+                                 "rooms": int(m.group(3)),
+                                 "lights": int(m.group(4))}
+    return tally
+
+
+def test_each_object_lands_on_its_declared_level(tmp_path, toolchain, java_classes):
+    model = two_level_model()
+    lights = [
+        Light(entity_id="light.ground_ceiling", level=0, x=200, y=150, elevation=230),
+        Light(entity_id="light.upper_ceiling", level=1, x=200, y=150, elevation=220),
+    ]
+    scene = tmp_path / "scene.tsv"
+    write_scene(model, scene, lights=lights)
+
+    out = tmp_path / "two.sh3d"
+    run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
+    report = run(toolchain, java_classes, "Sh3dVerify", str(out))
+
+    tally = parse_tally(report)
+    assert set(tally) == {"Ground", "Upper"}, report
+    # The failure this guards against puts 2/2/2 on Upper and 0/0/0 on Ground.
+    for name in ("Ground", "Upper"):
+        assert tally[name] == {"walls": 1, "rooms": 1, "lights": 1}, report
+
+
+def test_lights_carry_their_entity_id_and_level(tmp_path, toolchain, java_classes):
+    """The plugin matches objects by name == entity_id; a light on the wrong
+    level still renders, it just lights the wrong room."""
+    model = two_level_model()
+    lights = [
+        Light(entity_id="light.ground_ceiling", level=0, x=200, y=150, elevation=230),
+        Light(entity_id="light.upper_ceiling", level=1, x=200, y=150, elevation=220),
+    ]
+    scene = tmp_path / "scene.tsv"
+    write_scene(model, scene, lights=lights)
+    out = tmp_path / "two.sh3d"
+    run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
+    report = run(toolchain, java_classes, "Sh3dVerify", str(out))
+
+    placed = dict(re.findall(r"LIGHT\s+\[(\S+)\s*\]\s+name=(\S+)", report))
+    assert placed == {"Ground": "light.ground_ceiling", "Upper": "light.upper_ceiling"}, report
+    # A light the plugin would ignore has no sources or no power.
+    assert "sources=0" not in report
+    assert "power=0.00" not in report
+
+
+def test_single_level_still_works(tmp_path, toolchain, java_classes):
+    """The case that always passed, and must keep passing."""
+    model = Model(source="one.dxf", levels=[
+        Level(name="Ground", ceiling_height_cm=250, elevation_cm=0,
+              walls=[Wall(x_start=0, y_start=0, x_end=400, y_end=0,
+                          thickness=10, height=250)],
+              rooms=[Room(name="Hall",
+                          points=[(0, 0), (400, 0), (400, 300), (0, 300)])])])
+    scene = tmp_path / "one.tsv"
+    write_scene(model, scene)
+    out = tmp_path / "one.sh3d"
+    run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
+    report = run(toolchain, java_classes, "Sh3dVerify", str(out))
+    assert parse_tally(report) == {"Ground": {"walls": 1, "rooms": 1, "lights": 0}}, report
+
+
+def test_textures_reach_the_archive(tmp_path, toolchain, java_classes):
+    """A texture that is referenced but not embedded leaves a .sh3d that only
+    renders on the machine that wrote it."""
+    import zipfile
+
+    from PIL import Image
+
+    tex = tmp_path / "tex"
+    tex.mkdir()
+    for name, colour in (("floor", (150, 110, 70)), ("wall", (200, 195, 185)),
+                         ("w0_0_left", (80, 140, 190))):
+        Image.new("RGB", (64, 64), colour).save(tex / f"{name}.png")
+
+    model = two_level_model()
+    scene = tmp_path / "tex.tsv"
+    write_scene(
+        model, scene,
+        tiled_textures={"floor": tex / "floor.png", "wall": tex / "wall.png"},
+        wall_textures=[WallTexture(level=0, wall=0, left=tex / "w0_0_left.png")],
+    )
+    out = tmp_path / "tex.sh3d"
+    run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
+    report = run(toolchain, java_classes, "Sh3dVerify", str(out))
+
+    # The rectified image on the covered side, the tiled patch on the other.
+    assert "tex=w0_0_left/wall" in report, report
+    assert "tex=floor/-" in report, report
+
+    # Beyond `Home` there must be real content entries, or nothing was embedded.
+    names = zipfile.ZipFile(out).namelist()
+    assert "Home" in names
+    assert len(names) > 1, names

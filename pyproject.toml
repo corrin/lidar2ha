@@ -45,3 +45,9 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  # Needs a real Sweet Home 3D and JDK. Skipped elsewhere, but these are the
+  # only tests that exercise code Sweet Home 3D's own classes have to run.
+  "java: requires a local Sweet Home 3D install and a JDK",
+]
