@@ -39,13 +39,13 @@ Run from PowerShell (see CLAUDE.md). Usage:
 """
 
 import argparse
-import json
 import math
-from pathlib import Path
 
 import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
+
+from .schema import Registration, load_model, save_model
 
 CM_TO_M = 0.01
 
@@ -70,8 +70,8 @@ def sample_along_walls(walls, step_m=0.05):
     """Dense points along DXF wall centrelines, in metres."""
     out = []
     for w in walls:
-        a = np.array([w["xStart"], w["yStart"]]) * CM_TO_M
-        b = np.array([w["xEnd"], w["yEnd"]]) * CM_TO_M
+        a = np.array([w.x_start, w.y_start]) * CM_TO_M
+        b = np.array([w.x_end, w.y_end]) * CM_TO_M
         length = np.linalg.norm(b - a)
         n = max(2, int(length / step_m))
         for t in np.linspace(0, 1, n):
@@ -153,7 +153,7 @@ def main():
     ap.add_argument("-o", "--out", default="registered.json")
     args = ap.parse_args()
 
-    model = json.loads(Path(args.json_path).read_text(encoding="utf-8"))
+    model = load_model(args.json_path)
     wall_pts_3d = load_wall_points(args.mesh)
     target_xy = wall_pts_3d[:, :2]
     tree = cKDTree(target_xy)
@@ -165,15 +165,15 @@ def main():
     # Register the best-constrained floor first -- the one with the most walls --
     # and let it decide handedness for the rest.
     order = sorted(
-        (i for i, lv in enumerate(model["levels"]) if lv["walls"]),
-        key=lambda i: len(model["levels"][i]["walls"]),
+        (i for i, lv in enumerate(model.levels) if lv.walls),
+        key=lambda i: len(model.levels[i].walls),
         reverse=True,
     )
     forced_mirror = None
 
     for i in order:
-        lv = model["levels"][i]
-        plan_pts = sample_along_walls(lv["walls"])
+        lv = model.levels[i]
+        plan_pts = sample_along_walls(lv.walls)
         fit = register(plan_pts, target_xy, tree, force_mirror=forced_mirror)
         if forced_mirror is None:
             forced_mirror = fit["mirror"]
@@ -191,38 +191,38 @@ def main():
         else:
             floor_z = float("nan")
 
-        lv["registration"] = {
-            "theta_deg": round(math.degrees(fit["theta_rad"]) % 360, 2),
-            "tx_m": round(fit["tx"], 4),
-            "ty_m": round(fit["ty"], 4),
-            "mirror": fit["mirror"],
-            "median_error_m": round(fit["median_error_m"], 4),
-            "coverage": round(fit["coverage"], 3),
-            "floor_z_m": None if math.isnan(floor_z) else round(floor_z, 3),
-        }
+        lv.registration = Registration(
+            theta_deg=round(math.degrees(fit["theta_rad"]) % 360, 2),
+            tx_m=round(fit["tx"], 4),
+            ty_m=round(fit["ty"], 4),
+            mirror=fit["mirror"],
+            median_error_m=round(fit["median_error_m"], 4),
+            coverage=round(fit["coverage"], 3),
+            floor_z_m=None if math.isnan(floor_z) else round(floor_z, 3),
+        )
 
-        r = lv["registration"]
-        print(f"{lv['name']}")
-        print(f"  rotation      : {r['theta_deg']:.2f} deg   mirror={r['mirror']}")
-        print(f"  translation   : ({r['tx_m']:.3f}, {r['ty_m']:.3f}) m")
-        print(f"  median error  : {r['median_error_m'] * 100:.1f} cm   "
-              f"coverage={r['coverage'] * 100:.0f}%")
-        print(f"  floor z       : {r['floor_z_m']} m")
+        r = lv.registration
+        print(f"{lv.name}")
+        print(f"  rotation      : {r.theta_deg:.2f} deg   mirror={r.mirror}")
+        print(f"  translation   : ({r.tx_m:.3f}, {r.ty_m:.3f}) m")
+        print(f"  median error  : {r.median_error_m * 100:.1f} cm   "
+              f"coverage={r.coverage * 100:.0f}%")
+        print(f"  floor z       : {r.floor_z_m} m")
         print()
 
-    zs = [lv["registration"]["floor_z_m"] for lv in model["levels"]
-          if lv.get("registration") and lv["registration"]["floor_z_m"] is not None]
+    zs = [lv.registration.floor_z_m for lv in model.levels
+          if lv.registration and lv.registration.floor_z_m is not None]
     if len(zs) >= 2:
         base = min(zs)
         print("ELEVATIONS (lowest floor as datum)")
-        for lv in model["levels"]:
-            r = lv.get("registration")
-            if r and r["floor_z_m"] is not None:
-                elev_cm = (r["floor_z_m"] - base) * 100
-                lv["elevation_cm"] = round(elev_cm, 1)
-                print(f"  {lv['name']:<10} {elev_cm:7.1f} cm")
+        for lv in model.levels:
+            r = lv.registration
+            if r and r.floor_z_m is not None:
+                elev_cm = (r.floor_z_m - base) * 100
+                lv.elevation_cm = round(elev_cm, 1)
+                print(f"  {lv.name:<10} {elev_cm:7.1f} cm")
 
-    Path(args.out).write_text(json.dumps(model, indent=2), encoding="utf-8")
+    save_model(model, args.out)
     print(f"\nwrote {args.out}")
 
 

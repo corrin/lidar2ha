@@ -35,12 +35,13 @@ Run from PowerShell (see CLAUDE.md).
 
 import argparse
 import csv
-import json
 import math
 import re
 from pathlib import Path
 
 import ezdxf
+
+from .schema import Door, Level, Model, Room, Wall, save_model
 
 M_TO_CM = 100.0
 
@@ -108,18 +109,47 @@ def split_into_floors(items, n_floors):
     return clusters
 
 
-def read_ceiling_heights(csv_path):
-    """Map floor label -> ceiling height in metres, from the Polycam CSV."""
+def _parse_height(value):
+    """Metres from a Polycam ceiling-height cell.
+
+    Sloped and double-height spaces are reported as a RANGE, e.g. '3.2 - 4.7'.
+    Returns (low, high); equal for a flat ceiling. Returning the high value is
+    what matters downstream -- walls must reach the highest point or the room
+    renders with a hole where its ceiling should be.
+    """
+    text = (value or "").strip().replace("m", "").strip()
+    parts = [p.strip() for p in text.split("-") if p.strip()]
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if not nums:
+        return None
+    return min(nums), max(nums)
+
+
+def read_room_ceilings(csv_path):
+    """Map room name -> (low, high) ceiling height in metres.
+
+    Ceiling height is a property of the ROOM, not the level: one Polycam CSV
+    here reports a 2.2 m laundry beside a 3.2-4.7 m double-height dining space.
+    Collapsing those to one number per level destroys exactly the geometry that
+    makes cross-floor light spill worth rendering.
+
+    Two CSV shapes exist in the wild. Multi-floor captures carry a leading
+    'Floor' column; single-floor ones do not. Keying on 'Room' works for both.
+    """
     heights = {}
     if not csv_path or not Path(csv_path).exists():
         return heights
     with open(csv_path, newline="", encoding="utf-8-sig") as fh:
         for row in csv.DictReader(fh):
-            if "Ceiling height" in (row.get("Description") or ""):
-                try:
-                    heights[row["Floor"].strip()] = float(row["Value"].strip())
-                except (ValueError, KeyError, AttributeError):
-                    pass
+            if "Ceiling height" not in (row.get("Description") or ""):
+                continue
+            room = (row.get("Room") or "").strip()
+            parsed = _parse_height(row.get("Value"))
+            if room and parsed:
+                heights[room] = parsed
     return heights
 
 
@@ -194,7 +224,12 @@ def main():
             "depth": max(ys) - min(ys),
         })
 
-    heights = read_ceiling_heights(args.csv)
+    ceilings = read_room_ceilings(args.csv)
+    if args.csv and not ceilings:
+        # Silence here would be worse than failure: every wall would quietly get
+        # the default height and the model would look plausible but be wrong.
+        print(f"WARNING: no ceiling heights parsed from {args.csv}. "
+              f"Falling back to {args.default_height} m for every room.")
 
     wall_groups = split_into_floors(walls, n_floors)
     room_groups = split_into_floors(rooms, n_floors)
@@ -203,12 +238,13 @@ def main():
     levels = []
     for i in range(n_floors):
         label = floor_labels[i]["name"] if i < len(floor_labels) else f"Floor {i + 1}"
-        h = heights.get(label, args.default_height)
         wg = wall_groups[i] if i < len(wall_groups) else []
         rg = room_groups[i] if i < len(room_groups) else []
         dg = door_groups[i] if i < len(door_groups) else []
 
-        # Name each room from the nearest room label on the sheet.
+        # Name each room from the nearest room label on the sheet, then attach
+        # its own ceiling height. Naming has to happen before heights, because
+        # the CSV keys ceilings by room name.
         for r in rg:
             best, bestd = None, float("inf")
             for rl in room_labels:
@@ -216,51 +252,86 @@ def main():
                 if d < bestd:
                     best, bestd = rl["name"], d
             r["name"] = best or label
+            low, high = ceilings.get(r["name"], (args.default_height,) * 2)
+            r["ceiling_low"] = low
+            r["ceiling_high"] = high
 
-        levels.append({
-            "name": label,
-            "ceiling_height_cm": h * M_TO_CM,
+        # A level's height is its tallest room -- anything less and a
+        # double-height space is capped short.
+        h = max((r["ceiling_high"] for r in rg), default=args.default_height)
+
+        def wall_height(w, rooms_here=rg, fallback=h):
+            """Height of the room a wall bounds, not a single level-wide value.
+
+            A 2.2 m laundry and a 4.7 m void can share a level, so taking the
+            nearest room's ceiling keeps each wall the right height. Ties and
+            open edges fall back to the tallest room, which errs upward -- too
+            tall merely hides behind the ceiling, too short leaves a gap light
+            leaks through.
+            """
+            best, bestd = None, float("inf")
+            for r in rooms_here:
+                d = (r["cx"] - w["cx"]) ** 2 + (r["cy"] - w["cy"]) ** 2
+                if d < bestd:
+                    best, bestd = r, d
+            return best["ceiling_high"] if best else fallback
+
+        levels.append(Level(
+            name=label,
+            ceiling_height_cm=h * M_TO_CM,
             # The DXF is 2D, so it carries no floor elevation. Filled in
-            # separately from the mesh -- see floor_elevations.py.
-            "elevation_cm": None,
-            "walls": [
-                {
-                    "xStart": w["start"][0] * M_TO_CM,
-                    "yStart": w["start"][1] * M_TO_CM,
-                    "xEnd": w["end"][0] * M_TO_CM,
-                    "yEnd": w["end"][1] * M_TO_CM,
-                    "thickness": w["thickness"] * M_TO_CM,
-                    "height": h * M_TO_CM,
-                }
+            # separately from the mesh -- see mesh.py.
+            elevation_cm=None,
+            walls=[
+                Wall(
+                    x_start=w["start"][0] * M_TO_CM,
+                    y_start=w["start"][1] * M_TO_CM,
+                    x_end=w["end"][0] * M_TO_CM,
+                    y_end=w["end"][1] * M_TO_CM,
+                    thickness=w["thickness"] * M_TO_CM,
+                    height=wall_height(w) * M_TO_CM,
+                )
                 for w in wg
             ],
-            "rooms": [
-                {
-                    "name": r.get("name"),
-                    "points": [[p[0] * M_TO_CM, p[1] * M_TO_CM] for p in r["points"]],
-                }
+            rooms=[
+                Room(
+                    name=r.get("name"),
+                    points=[(p[0] * M_TO_CM, p[1] * M_TO_CM) for p in r["points"]],
+                    ceiling_low_cm=r["ceiling_low"] * M_TO_CM,
+                    ceiling_high_cm=r["ceiling_high"] * M_TO_CM,
+                    # A room whose ceiling is a range is sloped or double-height.
+                    # These are the candidates for a void through the slab above.
+                    sloped=r["ceiling_high"] - r["ceiling_low"] > 0.15,
+                )
                 for r in rg
             ],
-            "doors": [
-                {
-                    "x": d["cx"] * M_TO_CM,
-                    "y": d["cy"] * M_TO_CM,
-                    "width": max(d["width"], d["depth"]) * M_TO_CM,
-                }
+            doors=[
+                Door(
+                    x=d["cx"] * M_TO_CM,
+                    y=d["cy"] * M_TO_CM,
+                    width=max(d["width"], d["depth"]) * M_TO_CM,
+                )
                 for d in dg
             ],
-        })
+        ))
 
-    model = {"source": Path(args.dxf).name, "units": "cm", "levels": levels}
-    Path(args.out).write_text(json.dumps(model, indent=2), encoding="utf-8")
+    model = Model(source=Path(args.dxf).name, units="cm", levels=levels)
+    save_model(model, args.out)
 
     print(f"wrote {args.out}")
-    for lv in levels:
-        print(f"  {lv['name']:<10} walls={len(lv['walls']):>3} "
-              f"rooms={len(lv['rooms'])} doors={len(lv['doors'])} "
-              f"ceiling={lv['ceiling_height_cm']:.0f}cm")
-        for r in lv["rooms"]:
-            print(f"      room: {r['name']!r} ({len(r['points'])} pts)")
+    for lv in model.levels:
+        print(f"  {lv.name:<10} walls={len(lv.walls):>3} "
+              f"rooms={len(lv.rooms)} doors={len(lv.doors)} "
+              f"ceiling={lv.ceiling_height_cm:.0f}cm")
+        for r in lv.rooms:
+            lo, hi = r.ceiling_low_cm, r.ceiling_high_cm
+            if hi is None:
+                span = "unknown"
+            elif r.sloped and lo is not None:
+                span = f"{lo:.0f}-{hi:.0f}cm  SLOPED/DOUBLE-HEIGHT"
+            else:
+                span = f"{hi:.0f}cm"
+            print(f"      {str(r.name):<14} {len(r.points):>2} pts   ceiling {span}")
 
 
 if __name__ == "__main__":

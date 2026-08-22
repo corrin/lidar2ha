@@ -43,6 +43,8 @@ import numpy as np
 import trimesh
 from PIL import Image
 
+from .schema import WallTexture, load_model
+
 CM_TO_M = 0.01
 PX_PER_M = 384.0          # measured native density of the Polycam atlas
 MAX_PLANE_DIST = 0.25     # m, how far off the plane a face may sit
@@ -74,11 +76,11 @@ def load_geoms(mesh_path):
 def plan_to_mesh(pt_m, reg):
     """Apply a level's registration to a plan point given in metres."""
     x, y = pt_m
-    if reg["mirror"]:
+    if reg.mirror:
         y = -y
-    th = math.radians(reg["theta_deg"])
+    th = math.radians(reg.theta_deg)
     c, s = math.cos(th), math.sin(th)
-    return np.array([c * x - s * y + reg["tx_m"], s * x + c * y + reg["ty_m"]])
+    return np.array([c * x - s * y + reg.tx_m, s * x + c * y + reg.ty_m])
 
 
 def rasterise(tri_uvpix, tri_atlas_uv, tri_depth, img, zbuf, atlas):
@@ -192,26 +194,31 @@ def main():
     ap.add_argument("-o", "--out", default="walltex")
     args = ap.parse_args()
 
-    model = json.loads(Path(args.registered_json).read_text(encoding="utf-8"))
+    model = load_model(args.registered_json)
     geoms = load_geoms(args.mesh)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    manifest = []
-    for li, lv in enumerate(model["levels"]):
-        reg = lv.get("registration")
-        if not reg:
-            print(f"{lv['name']}: no registration, skipped")
+    manifest: list[WallTexture] = []
+    for li, lv in enumerate(model.levels):
+        reg = lv.registration
+        if not reg or reg.floor_z_m is None:
+            print(f"{lv.name}: no registration, skipped")
             continue
-        base_z = reg["floor_z_m"]
-        height_m = lv["ceiling_height_cm"] * CM_TO_M
+        base_z = reg.floor_z_m
+        level_height_m = lv.ceiling_height_cm * CM_TO_M
 
-        print(f"\n{lv['name']}  (base z={base_z:.2f} m, height={height_m:.2f} m)")
-        for wi, w in enumerate(lv["walls"]):
-            a = plan_to_mesh((w["xStart"] * CM_TO_M, w["yStart"] * CM_TO_M), reg)
-            b = plan_to_mesh((w["xEnd"] * CM_TO_M, w["yEnd"] * CM_TO_M), reg)
+        print(f"\n{lv.name}  (base z={base_z:.2f} m, tallest room {level_height_m:.2f} m)")
+        for wi, w in enumerate(lv.walls):
+            # Sample each wall over ITS OWN height, not the level's tallest.
+            # The writer applies the image at the wall's real size, so a 4.7 m
+            # image on a 2.2 m wall gets squashed -- putting the wrong part of
+            # the room on every short wall in the house.
+            height_m = w.height * CM_TO_M
+            a = plan_to_mesh((w.x_start * CM_TO_M, w.y_start * CM_TO_M), reg)
+            b = plan_to_mesh((w.x_end * CM_TO_M, w.y_end * CM_TO_M), reg)
 
-            entry = {"level": li, "wall": wi}
+            entry = WallTexture(level=li, wall=wi)
             for side, tag in ((+1, "left"), (-1, "right")):
                 img, cov = project_wall(geoms, a, b, base_z, height_m, side)
                 if img is None:
@@ -219,15 +226,18 @@ def main():
                     continue
                 path = out / f"L{li}_W{wi}_{tag}.png"
                 Image.fromarray(img).save(path)
-                entry[tag] = str(path.resolve())
-                entry[f"{tag}_coverage"] = round(cov, 3)
+                setattr(entry, tag, path.resolve())
+                setattr(entry, f"{tag}_coverage", round(cov, 3))
                 print(f"  wall {wi:>2} {tag:<5}: {img.shape[1]}x{img.shape[0]} px  "
                       f"coverage {cov * 100:4.1f}%  -> {path.name}")
-            if "left" in entry or "right" in entry:
+            if entry.left or entry.right:
                 manifest.append(entry)
 
     man_path = out / "manifest.json"
-    man_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    man_path.write_text(
+        json.dumps([e.model_dump(mode="json", exclude_none=True) for e in manifest], indent=2),
+        encoding="utf-8",
+    )
     print(f"\nwrote {man_path}  ({len(manifest)} walls textured)")
 
 
