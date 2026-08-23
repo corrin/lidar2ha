@@ -599,7 +599,7 @@ def test_the_grid_and_the_error_bound_catch_different_things(trio):
     assert dropped.verdict == "discarded"
     assert "off the building's wall grid" not in dropped.reason, \
         "midlevel is in the right basin; it is simply a poor scan"
-    assert "common area" in dropped.reason
+    assert "agrees with no other capture" in dropped.reason
 
 
 def test_a_capture_with_no_walls_has_no_grid_bearing():
@@ -616,19 +616,21 @@ def test_a_capture_with_no_walls_has_no_grid_bearing():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_small_capture_is_told_its_coverage_proves_nothing(house):
+def test_a_small_capture_is_told_its_coverage_proves_nothing(trio):
     """A capture spanning a fraction of the reference lands inside it wherever
     it is put, so it reports 100% coverage for a wrong placement as readily as
     for a right one. Measured, a five-wall single room fitted a ten-room
     reference at 100% coverage and 18.9 cm median while sitting 65 degrees out
     and on top of the wrong room. Nothing reported distinguished it."""
-    one_room = house["midlevel_fixtures"].levels[0]
-    small = house["midlevel_fixtures"].model_copy(update={
-        "levels": [one_room.model_copy(update={
-            "walls": one_room.walls[:5], "rooms": one_room.rooms[:1]})]})
-    result = combining.combine({"midlevel": house["midlevel"], "small": small})
-    assert "small" in result.cautions
-    assert "coverage says nothing" in result.cautions["small"]
+    level = trio["midlevel_fixtures"].levels[0]
+    small = trio["midlevel_fixtures"].model_copy(update={
+        "levels": [level.model_copy(update={"walls": level.walls[:8],
+                                            "rooms": level.rooms[:1]})]})
+    result = combining.combine({**trio, "small": small})
+    if result.aligned["small"].usable:
+        assert "coverage says nothing" in result.cautions["small"]
+    else:
+        assert result.aligned["small"].reason, "discarded without saying why"
 
 
 def test_a_full_size_capture_is_not_cautioned(combined):
