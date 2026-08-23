@@ -73,17 +73,33 @@ CM2_TO_M2 = 1e-4
 # would change it. They are tuned to one house and one scanning app.
 # --------------------------------------------------------------------------- #
 
-# ACCEPTANCE IS ON FIT QUALITY, NEVER ON COVERAGE, and the distinction is the
-# whole point of this stage. `coverage` is the fraction of the SOURCE's wall
-# points that found a match in the reference, so a capture that sees a room the
-# reference does not will ALWAYS score lower -- and that capture is the entire
-# reason to combine. A 90% coverage threshold rejected the mid-level fixture
-# pass at 88%: the one capture containing the bathroom.
+# ALIGN, OR DISCARD. Two steps, and there is no third branch: a capture that
+# does not overlay is reported and dropped, never folded in with a caveat.
 #
-# What decides whether a fit can be trusted is how well the MATCHED walls agree.
-# Two plans of the same space fit to ~17 cm median. Change these if a capture
-# you know to be of the same rooms is being refused.
-MAX_MEDIAN_CM = 35.0
+# JUDGED ON THE COMMON AREA, NEVER ON COVERAGE. A capture that skipped a room is
+# fine -- every other room overlays perfectly and that is what gives confidence.
+# Coverage is the fraction of the SOURCE's walls that found a match, so a
+# capture seeing a room the others do not always scores lower, and that capture
+# is the entire reason to combine. Measured, coverage does not separate a good
+# overlay from a bad one at all: 83-100% for the good ones, 83-96% for the bad.
+#
+# The median over the common points does separate, and completely:
+#
+#     good   scan6_fixtures->scan4  2.6cm   midlevel_fixtures->scan7  3.5cm
+#            scan7->midlevel        4.4cm   scan8->scan4              4.5cm
+#     bad    midlevel->scan7       10.5cm   boy_bedroom->scan7    18.9cm
+#            scan3->scan9          27.6cm   scan5->scan9             31.4cm
+#
+# Nothing measured sits between 4.5 and 10.5, so 5 cm is a wide gap rather than
+# a tuned edge. The previous 35 cm was above the worst thing ever observed and
+# admitted every one of those bad overlays.
+#
+# This is a BOUND ON THE CHOSEN CANDIDATE, not the decision procedure. A scalar
+# over nearest-neighbour distances cannot catch a capture placed on the wrong
+# walls -- boy_bedroom sits 65 degrees out at 100% coverage, every point near
+# some reference point, just the wrong ones. Deciding which basin is right is a
+# separate job; this only insists the winner actually lands.
+MAX_MEDIAN_CM = 5.0
 MAX_P90_CM = 120.0
 
 # Below this coverage, say loudly that the capture covers ground the reference
@@ -1123,6 +1139,60 @@ NAMING_ADVICE = {
 }
 
 
+Verdict = Literal["reference", "accepted", "discarded", "ambiguous"]
+
+
+@dataclass
+class Alignment:
+    """What happened when one capture was overlaid, and why.
+
+    THE CONTRACT EVERY LATER STAGE READS. The rule this module is built to obey
+    is two steps and has no third branch: align the scan; if that fails, report
+    and discard it. Before this type existed the outcome was spread across a
+    `fits` dict and a `rejected` dict, which could express "aligned" and "not
+    aligned" and had nowhere to put the answer that matters most -- that the
+    overlay is AMBIGUOUS, with more than one placement the geometry cannot
+    choose between. A capture like that is not a bad scan and not a good one,
+    and folding it into either is how a bedroom ends up on top of a hallway.
+
+    So there are four verdicts and not two, and `candidates` survives the
+    decision: an ambiguous capture reports every basin it could be in, because
+    the next thing to look at is that list.
+
+    `common_points` is the size of the overlap the verdict was judged on. It is
+    reported beside the error because the error means nothing without it -- the
+    overlay is judged on the COMMON AREA and a capture that skipped a room is
+    fine, so a small overlap is a reason to distrust the number rather than the
+    capture.
+    """
+
+    capture: str
+    verdict: Verdict
+    # The chosen placement. None for a discarded capture, and None for an
+    # ambiguous one -- refusing to pick is the point of that verdict.
+    fit: Fit | None = None
+    # Every placement the geometry allows, kept whatever the verdict. One entry
+    # for an accepted capture, several for an ambiguous one, and possibly
+    # several for a discarded one where none of them landed.
+    candidates: list[Fit] = field(default_factory=list)
+    reason: str = ""
+    common_points: int = 0
+    sampled_points: int = 0
+    # How well this capture lands on ground the OTHERS agree about. The
+    # non-circular figure; see `fits_onto_others`.
+    agreement_m: float | None = None
+
+    @property
+    def usable(self) -> bool:
+        """Whether this capture's geometry may be used at all.
+
+        Ambiguous counts as NOT usable. A placement nothing can choose between
+        is not a placement, and using one of them because it happened to sort
+        first is the silent third branch this whole design exists to remove.
+        """
+        return self.verdict in ("reference", "accepted")
+
+
 @dataclass
 class Naming:
     """What an unnamed room looks like it is, and how sure that is.
@@ -1210,6 +1280,8 @@ class Combined:
     slivers: int
     cautions: dict[str, str]
     agreement: dict[str, float]
+    # The contract: one verdict per capture, including the discarded ones.
+    aligned: dict[str, Alignment]
     naming: list[Naming]
     worklist: list[dict[str, Any]]
 
@@ -1297,30 +1369,38 @@ def alignment_record(result: Combined) -> list[dict[str, Any]]:
     `fits_onto_others_m` is the figure to read. The rest are measured against
     the reference, so they partly describe the reference.
     """
+    def basin(fit: Fit) -> dict[str, Any]:
+        return {
+            "theta_deg": round(math.degrees(fit["theta_rad"]) % 360, 2),
+            "tx_m": round(fit["tx"], 4), "ty_m": round(fit["ty"], 4),
+            "median_cm": round(fit["median_error_m"] * M_TO_CM, 1),
+            "p90_cm": None if fit["p90_m"] is None
+            else round(fit["p90_m"] * M_TO_CM, 1),
+            "coverage": round(fit["coverage"], 3),
+            "common_points": fit["matched"],
+        }
+
     out = []
-    for name, fit in result.fits.items():
+    for name, record in result.aligned.items():
         capture = next((c for c in result.model.captures if c.id == name), None)
-        out.append({
+        entry: dict[str, Any] = {
             "capture": name,
             "role": capture.role if capture else None,
-            "aligned": True,
-            "is_reference": fit is None,
+            "verdict": record.verdict,
             "against": result.reference,
-            "theta_deg": None if fit is None
-            else round(math.degrees(fit["theta_rad"]) % 360, 2),
-            "tx_m": None if fit is None else round(fit["tx"], 4),
-            "ty_m": None if fit is None else round(fit["ty"], 4),
-            "median_cm": None if fit is None else round(fit["median_error_m"] * M_TO_CM, 1),
-            "p90_cm": None if fit is None or fit["p90_m"] is None
-            else round(fit["p90_m"] * M_TO_CM, 1),
-            "coverage": None if fit is None else round(fit["coverage"], 3),
-            "fits_onto_others_cm": (round(result.agreement[name] * M_TO_CM, 1)
-                                    if name in result.agreement else None),
+            "fits_onto_others_cm": (None if record.agreement_m is None
+                                    else round(record.agreement_m * M_TO_CM, 1)),
             "caution": result.cautions.get(name),
-        })
-    for name, why in result.rejected.items():
-        out.append({"capture": name, "aligned": False, "against": result.reference,
-                    "discarded_because": why})
+        }
+        if record.fit is not None:
+            entry.update(basin(record.fit))
+        if record.reason:
+            entry["reason"] = record.reason
+        # Kept whatever the verdict. For an ambiguous capture this list IS the
+        # finding -- the next thing anyone looks at is which basins survived.
+        if len(record.candidates) > 1 or not record.usable:
+            entry["candidates"] = [basin(f) for f in record.candidates]
+        out.append(entry)
     return out
 
 
@@ -1445,33 +1525,53 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     if not levels[ref].walls:
         raise ValueError(f"reference {ref!r} has no walls to fit against")
 
-    # --- stage 1: one frame ------------------------------------------------
-    fits: dict[str, Fit | None] = {ref: None}
+    # --- stage 1: align, or discard ----------------------------------------
+    # Two steps and no third branch. Every capture leaves this loop with a
+    # verdict on the record, including the ones that did not make it.
+    aligned: dict[str, Alignment] = {
+        ref: Alignment(capture=ref, verdict="reference",
+                       agreement_m=agreement.get(ref))}
     cautions: dict[str, str] = {}
+    for name, why_level in rejected.items():
+        aligned[name] = Alignment(capture=name, verdict="discarded", reason=why_level)
+
     for name, level in levels.items():
         if name == ref:
             continue
         if not level.walls:
             rooms = [str(r.name) for r in level.rooms]
             area = sum(polygon_of(r).area for r in level.rooms if len(r.points) >= 3)
-            rejected[name] = (
-                f"has no walls, so there is nothing to fit and its "
-                f"{len(rooms)} room(s) ({area * CM2_TO_M2:.1f} m2: "
-                f"{', '.join(rooms) or 'none'}) cannot enter the shared frame")
+            why = (f"has no walls, so there is nothing to fit and its "
+                   f"{len(rooms)} room(s) ({area * CM2_TO_M2:.1f} m2: "
+                   f"{', '.join(rooms) or 'none'}) cannot enter the shared frame")
+            rejected[name] = why
+            aligned[name] = Alignment(capture=name, verdict="discarded", reason=why)
             continue
+
         fit = plan_fit(single[name], single[ref])
+        record = Alignment(capture=name, candidates=[fit],
+                           verdict="accepted", fit=fit,
+                           common_points=fit["matched"], sampled_points=fit["sampled"],
+                           agreement_m=agreement.get(name))
+
         p90_cm = None if fit["p90_m"] is None else fit["p90_m"] * M_TO_CM
-        why = []
+        failures = []
         if fit["median_error_m"] * M_TO_CM > max_median_cm:
-            why.append(f"median {fit['median_error_m'] * M_TO_CM:.0f} cm")
+            failures.append(f"median {fit['median_error_m'] * M_TO_CM:.1f} cm over "
+                            f"{fit['matched']:,} common points, against a limit of "
+                            f"{max_median_cm:.0f}")
         if p90_cm is not None and p90_cm > max_p90_cm:
-            why.append(f"p90 {p90_cm:.0f} cm")
-        if why:
-            # Never on coverage. See MAX_MEDIAN_CM.
-            rejected[name] = ("fits too badly to be the same rooms: "
-                              + ", ".join(why))
-            continue
-        fits[name] = fit
+            failures.append(f"p90 {p90_cm:.0f} cm, against a limit of {max_p90_cm:.0f}")
+        if failures:
+            # Never on coverage: a capture that skipped a room still overlays
+            # perfectly on the rooms it did see. See MAX_MEDIAN_CM.
+            record.verdict = "discarded"
+            record.fit = None
+            record.reason = ("the overlay does not land on the common area: "
+                             + "; ".join(failures))
+            rejected[name] = record.reason
+        aligned[name] = record
+
         share = coverage_is_uninformative(sample_along_walls(level.walls),
                                           sample_along_walls(levels[ref].walls))
         if share is not None:
@@ -1481,7 +1581,30 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                 f"coverage says nothing about whether the placement is right. Check "
                 f"this one against the house before believing the rooms below it")
 
+    fits: dict[str, Fit | None] = {n: a.fit for n, a in aligned.items() if a.usable}
     accepted = [n for n in levels if n in fits]
+
+    if len(accepted) < 2:
+        # Nothing overlaid onto the anchor, so there is nothing to combine and
+        # no basis for preferring the anchor to what it refused. Emitting the
+        # anchor alone would look like a successful combine of one capture.
+        #
+        # With two captures this is as far as anything can go: one of them is
+        # invalid and nothing here can say which. Seniority is not evidence --
+        # a capture you have just come back and re-shot is quite likely the
+        # correct one and the anchor the thing to drop. A third capture of the
+        # same rooms settles it immediately, which is what redundant scanning
+        # is for.
+        lines = [f"{n}: {a.reason}" for n, a in aligned.items() if not a.usable]
+        raise ValueError(
+            f"nothing overlaid onto {ref!r}, so there is nothing to combine.\n  "
+            + "\n  ".join(lines)
+            + (f"\n\nOne of these captures is invalid and {len(models)} captures "
+               f"cannot say which.\nScan this level again -- including rooms already "
+               f"covered, so the new capture has\ncommon area to overlay onto -- and "
+               f"the odd one out identifies itself."
+               if len(models) <= 2 else
+               "\n\nRe-run with --reference to anchor on a different capture."))
 
     # --- stage 2: correspond ------------------------------------------------
     cands: list[Candidate] = []
@@ -1558,7 +1681,8 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         model=model, reference=ref, candidates=cands, groups=groups, scores=scores,
         decisions=decisions, fits=fits, rejected=rejected, malformed=malformed,
         dropped_walls=dropped, fragments=fragments, sliver_m2=sliver_m2,
-        slivers=slivers, cautions=cautions, agreement=agreement, naming=naming,
+        slivers=slivers, cautions=cautions, agreement=agreement, aligned=aligned,
+        naming=naming,
         worklist=worklist(decisions, cands, scores, fragments, naming, expected_areas),
     )
 
@@ -1594,8 +1718,19 @@ def report(result: Combined) -> None:
               f"{fit['median_error_m'] * M_TO_CM:7.1f}cm "
               f"{fit['coverage'] * 100:6.0f}% {p90:>8s}  {verdict}")
 
+    for name, record in result.aligned.items():
+        if record.usable:
+            continue
+        print(f"{name:22s} {'':9s} {'':>8s} {'':>8s} {'':>7s} {'':>8s}  DISCARDED")
+        print(f"    {record.reason}")
     for name, why in result.cautions.items():
-        print(f"    ** {name}: {why}")
+        if result.aligned[name].usable:
+            print(f"    ** {name}: {why}")
+
+    if any(not a.usable for a in result.aligned.values()):
+        print("\n  A discarded capture is not folded in, with a caveat or otherwise.")
+        print("  Combining on a bad overlay makes a plausible model that is wrong,")
+        print("  which is worse than a model with a known gap in it.")
 
     if len(result.agreement) >= 3:
         # The non-circular number. Every column above is measured against the
@@ -1607,20 +1742,15 @@ def report(result: Combined) -> None:
         best = min(result.agreement.values())
         for name, err in sorted(result.agreement.items(), key=lambda kv: kv[1]):
             ratio = err / best if best > 0 else 1.0
-            mark = "   <- the outlier on this level" if ratio > OUTLIER_RATIO else ""
-            print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {ratio:4.1f}x best{mark}")
+            mark = "   <- the odd one out" if ratio > OUTLIER_RATIO else ""
+            gone = "" if result.aligned[name].usable else "  (discarded above)"
+            print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {ratio:4.1f}x best"
+                  f"{mark}{gone}")
         worst = max(result.agreement.values())
         if best > 0 and worst / best > OUTLIER_RATIO:
-            print("  A capture several times worse than the rest at this drags every")
-            print("  correspondence it touches. It is reported, not refused: judge it")
-            print("  against the house, and exclude it with --max-p90-cm if it is bad.")
-
-    for name, why in result.rejected.items():
-        print(f"{name:22s} {'':9s} {'':>8s} {'':>8s} {'':>7s} {'':>8s}  REFUSED")
-        print(f"    {why}")
-    if result.rejected:
-        print("\n  A refused capture is not folded in. Combining on a bad fit makes a")
-        print("  plausible model that is wrong, which is worse than a known gap.")
+            print("  This is what identifies the odd one out, and it is the reason to")
+            print("  scan a level more than twice: two captures that disagree cannot")
+            print("  say which of them is wrong, and a third says it immediately.")
 
     if result.malformed:
         print("\nMALFORMED ROOMS")
