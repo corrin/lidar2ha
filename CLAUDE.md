@@ -8,13 +8,14 @@ This project is driven by **uv**. `uv.lock` and `.python-version` are part of th
 repo — do not delete them as build artefacts.
 
 ```bash
-uv run pytest -q                    # 263 tests, ~15 s
+uv run pytest -q                    # 313 tests, ~15 s
 uv run pytest tests/test_ha.py -q
-uv run pytest -q -k pole            # one test by name
+uv run pytest -q -k zha_group       # one test by name
 uv run pytest -q -m java            # needs Sweet Home 3D + a JDK
 uv run ruff check . --fix
 uv run mypy                         # src/lidar2ha only, and it stays clean
 uv run lidar2ha doctor              # the real build check -- see below
+uv run lidar2ha export-glb h.sh3d -o h.glb   # needs `npm install -g obj2gltf`
 ```
 
 **mypy clean is not optional.** It passes on `src/lidar2ha` today; leave it that way
@@ -48,8 +49,9 @@ install.
   happy path unindented at the bottom.
 - **DRY, especially for maths.** Two hand-written copies of one transform is how a
   sign error survives: both look right, and a reflected plan is still a plan.
-  `placefixtures.mesh_to_plan_cm` inverts `registration.transform` and is tested
-  against that forward transform rather than against its own algebra. Do the same.
+  `placefixtures.plan_cm_to_mesh_m` calls `registration.transform` rather than
+  re-deriving the rotation, and is tested as the exact inverse of its own
+  counterpart. Do the same.
 - **Comment the reasoning, not the code.** Every non-obvious block here explains the
   failure it prevents, usually with the real symptom that was observed. Match that
   register. `# increment the counter` is noise; `# The plugin sums sources sharing a
@@ -88,9 +90,10 @@ When adding a filter, a threshold or a skip, the question is not "is this right"
 "if this is wrong, what does the user see?" If the answer is "nothing", the code is
 wrong however good the heuristic.
 
-Corollary: prefer three answers to two. Where the evidence can be absent rather than
-positive or negative, "not known" is its own answer and must not be folded into
-either of the others.
+Corollary: prefer three answers to two. `daylight.verdict_at` returns
+`fitting`/`window`/`unseen` because "the ordinary capture never photographed that
+spot" is not evidence either way, and folding it into either verdict would invent
+windows or place them.
 
 ## Architecture
 
@@ -122,11 +125,11 @@ coverage before believing anything downstream of it.
 
 - Writing a `.sh3d` needs only the model classes: an ordinary 64-bit **JDK** (not a
   JRE — Sweet Home 3D bundles a runtime with no compiler). `run_writer`.
-- **Anything touching Java3D** needs Sweet Home 3D's bundled 32-bit runtime, because
-  Java3D and YafaRay are 32-bit natives. It ships only `javaw.exe`, so those programs
-  log to a file rather than stdout. `run_render`.
+- **Anything touching Java3D** -- the raytracer *and* the geometry-only OBJ export --
+  needs Sweet Home 3D's bundled 32-bit runtime. It ships only `javaw.exe`, so those
+  programs log to a file rather than stdout. `run_render(..., main_class=...)`.
 
-Do not inline a `java` invocation at a call site.
+Do not inline a `java` invocation at a call site. Add a `main_class` instead.
 
 Java sources compile on first use into a per-user cache keyed by a hash over the
 sources *and* the jars, so a Sweet Home 3D upgrade rebuilds automatically. Everything
@@ -151,19 +154,20 @@ subcommands live in `cli.py` (click). Some things exist in both — `lights` is 
 module *and* a subcommand — and both entry points must keep working.
 
 ```text
-polycam        DXF/CSV      -> model.json
+polycam        DXF/CSV      -> model.json          (--role fixtures marks a fixture pass)
 mesh           mesh.obj     -> floor elevations
 registration   model+mesh   -> per-level Registration
 textures_*     model+mesh   -> per-wall or tiled textures
 rooms          model+yaml   -> scanner names replaced by HA area ids, open plan merged
 seams                       -> split a room the scanner never split
 fixtures       fixture mesh -> bright compact clusters, with crops
-placefixtures  + geometry   -> those clusters in named rooms
+placefixtures  + geometry   -> those clusters in named rooms, optionally differenced
 contactsheet   + crops      -> the sheet a human approves
 ha / lights    + registry   -> every light.* entity placed in its room
 build (cli)    model.json   -> scene.tsv -> Sh3dWriter -> .sh3d -> Sh3dVerify
 render (cli)   .sh3d        -> raytraced overlays + floorplan.yaml
 deploy (cli)                -> sftp to /config/www/floorplan/
+export-glb     .sh3d        -> named .obj -> obj2gltf -> .glb
 ```
 
 `add-capture` is a deliberate stub that exits saying so (`_unbuilt` in `cli.py`).
@@ -201,6 +205,6 @@ nothing"`.
 ## Constants are guesses
 
 Everything here that looks like a threshold is tuned to one house, one scanning app,
-one capture. `CLUSTER_M`, `LOW_COVERAGE`, `DROP_CM`, `SPREAD_FRACTION` — expose them
+one capture. `MERGE_M`, `WINDOW_LUMA`, `CLUSTER_M`, `NEAR_MISS_CM` — expose them
 as flags, say in the docstring what evidence would change them, and do not present
 them as settled.
