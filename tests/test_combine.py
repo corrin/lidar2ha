@@ -488,6 +488,41 @@ def test_a_malformed_polygon_is_named_rather_than_skipped(trio):
 
 
 # --------------------------------------------------------------------------- #
+# redundancy, which is the whole method
+# --------------------------------------------------------------------------- #
+
+
+def test_a_room_only_one_capture_saw_is_reported_as_a_gap(combined):
+    """Scanning a level three or four times is the method, not a luxury: the bad
+    capture identifies itself by being the odd one out, and nothing can do that
+    for a room only one capture reached. Such a room is a hole in the
+    redundancy, and it must say so -- if that one capture is the wrong one,
+    nothing will ever contradict it."""
+    thin = [w for w in combined.worklist if w["kind"] == "single_source_room"]
+    assert thin, "if this fails the level has no single-source room to report"
+    for entry in thin:
+        assert entry["seen_by"] == 1
+        assert entry["elsewhere_on_this_level"] > 1
+        assert "scan the level" in entry["reasons"][0]
+
+
+def test_a_level_scanned_only_twice_is_not_told_off_for_it(trio):
+    """The gap is judged against the rest of THIS level, not an absolute. Every
+    room resting on one capture is normal for a level nobody has scanned twice,
+    and reporting it there would fire on everything and mean nothing."""
+    pair = {"scan7": trio["scan7"], "midlevel_fixtures": trio["midlevel_fixtures"]}
+    result = combining.combine(pair)
+    single = [g for g in result.groups if len(g.per_capture) == 1]
+    assert single, "if this fails the test proves nothing"
+
+    only_one = {n: m for n, m in pair.items() if n == "scan7"}
+    only_one["copy"] = trio["scan7"].model_copy()
+    flat = combining.combine(only_one)
+    assert not [w for w in flat.worklist if w["kind"] == "single_source_room"], \
+        "a level with no redundancy anywhere was told its rooms lack redundancy"
+
+
+# --------------------------------------------------------------------------- #
 # the wall grid, which catches what no error figure can
 # --------------------------------------------------------------------------- #
 
