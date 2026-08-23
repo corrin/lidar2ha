@@ -28,6 +28,12 @@ dependencies = [
 [project.optional-dependencies]
 deploy = ["paramiko>=3.4"]           # scp renders to HA's /config/www
 ha = ["websockets>=12.0"]            # HA registry over the WebSocket API
+
+# Contributor tooling, not an extra. As an extra these shipped in the published
+# wheel's metadata, so `pip install lidar2ha[dev]` offered a user our test runner;
+# a dependency group is local-only and never reaches the distribution. uv installs
+# it by default, which is why `uv sync` alone is enough to run the checks.
+[dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "types-PyYAML", "build>=1.2"]
 
 [project.scripts]
