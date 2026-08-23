@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from lidar2ha import ha, lights, preview, registration, rooms, seams
+from lidar2ha import combine, ha, lights, preview, registration, rooms, seams
 from lidar2ha.schema import Level, Model, Registration, Room, Wall, load_model, save_model
 
 # An L, in metres. Asymmetric on purpose: a rectangle reads the same mirrored,
@@ -113,14 +113,35 @@ def test_preview_main_runs(monkeypatch, tmp_path, model_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_combine_main_runs(monkeypatch, tmp_path, model_path):
+    """Two captures of the same L, one shifted. Nothing here checks the
+    selection -- test_combine.py does that on real captures. This checks the
+    stage starts, writes both its outputs, and that what it writes still loads."""
+    shifted = load_model(model_path)
+    for lv in shifted.levels:
+        for wall in lv.walls:
+            wall.x_start += 40
+            wall.x_end += 40
+        for room in lv.rooms:
+            room.points = [(x + 40, y) for x, y in room.points]
+    second = tmp_path / "second.json"
+    save_model(shifted, second)
+
+    out = tmp_path / "combined.json"
+    run(monkeypatch, combine, model_path, second, "-o", out)
+
+    assert load_model(out).levels[0].rooms
+    assert (tmp_path / "combined_worklist.json").exists()
+
+
 def test_every_stage_exposes_a_main():
     """A stage without main() cannot be run, and nothing else would say so."""
     import importlib
 
-    stages = ["ceilings", "compare", "contactsheet", "deploy", "fixtures", "floormap", "ha",
-              "inspect_dxf", "inspect_mesh", "lights", "mesh", "placefixtures", "render",
-              "polycam", "preview", "registration", "rooms", "seams",
-              "textures_project", "textures_tile", "thresholds"]
+    stages = ["ceilings", "combine", "compare", "contactsheet", "deploy", "fixtures",
+              "floormap", "ha", "inspect_dxf", "inspect_mesh", "lights", "mesh",
+              "placefixtures", "render", "polycam", "preview", "registration", "rooms",
+              "seams", "textures_project", "textures_tile", "thresholds"]
     missing = [s for s in stages
                if not callable(getattr(importlib.import_module(f"lidar2ha.{s}"), "main", None))]
     assert missing == []

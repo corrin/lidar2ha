@@ -41,11 +41,11 @@ import math
 from pathlib import Path
 
 import numpy as np
-from scipy.spatial import cKDTree
 from shapely.geometry import Point, Polygon
 
+from .compare import Fit, plan_fit
 from .daylight import RADIUS_M, WINDOW_LUMA, Reference, load_reference, summarise, verdict_at
-from .registration import register, sample_along_walls, transform
+from .registration import transform
 from .schema import Level, Model, Registration, Room, load_model
 
 M_TO_CM = 100.0
@@ -102,11 +102,14 @@ def rooms_of(model: Model) -> list[tuple[Level, Room, Polygon]]:
             for lv in model.levels for r in lv.rooms]
 
 
-def fit_plans(fix_model: Model, geo_model: Model) -> dict:
-    """Rigid fit of the fixture capture's plan onto one geometry capture's."""
-    src = sample_along_walls([w for lv in fix_model.levels for w in lv.walls])
-    tgt = sample_along_walls([w for lv in geo_model.levels for w in lv.walls])
-    return register(src, tgt, cKDTree(tgt), force_mirror=False)
+def fit_plans(fix_model: Model, geo_model: Model) -> Fit:
+    """Rigid fit of the fixture capture's plan onto one geometry capture's.
+
+    `compare.plan_fit` is the one implementation of this. It used to be written
+    out here as well, which is exactly how a sign error survives -- both copies
+    look right, and a reflected plan is still a perfectly plausible plan.
+    """
+    return plan_fit(fix_model, geo_model)
 
 
 def assign(positions_cm: list[np.ndarray], room_sets: list[list[tuple]]
