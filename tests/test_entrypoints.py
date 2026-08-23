@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from scan2ha import preview, registration, rooms, seams
+from scan2ha import ha, lights, preview, registration, rooms, seams
 from scan2ha.schema import Level, Model, Room, Wall, load_model, save_model
 
 # An L, in metres. Asymmetric on purpose: a rectangle reads the same mirrored,
@@ -117,9 +117,9 @@ def test_every_stage_exposes_a_main():
     """A stage without main() cannot be run, and nothing else would say so."""
     import importlib
 
-    stages = ["ceilings", "compare", "floormap", "inspect_dxf", "inspect_mesh",
-              "mesh", "polycam", "preview", "registration", "rooms", "seams",
-              "textures_project", "textures_tile", "thresholds"]
+    stages = ["ceilings", "compare", "floormap", "ha", "inspect_dxf", "inspect_mesh",
+              "lights", "mesh", "polycam", "preview", "registration", "rooms",
+              "seams", "textures_project", "textures_tile", "thresholds"]
     missing = [s for s in stages
                if not callable(getattr(importlib.import_module(f"scan2ha.{s}"), "main", None))]
     assert missing == []
@@ -149,3 +149,65 @@ def test_registration_reports_a_credible_fit(monkeypatch, tmp_path, model_path, 
     assert np.isfinite(reg.median_error_m)
     assert reg.median_error_m < 0.30
     assert reg.coverage > 0.5
+
+
+def test_lights_main_runs(monkeypatch, tmp_path, model_path, capsys):
+    """The whole stage, from a cached registry to placements on disk."""
+    import json
+
+    named = tmp_path / "named.json"
+    model = load_model(model_path)
+    model.levels[0].rooms[0].ha_area = "lounge"
+    model.levels[0].rooms[0].name = "lounge"
+    save_model(model, named)
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({
+        "areas": [], "devices": [{"id": "d1", "area_id": "lounge"}],
+        "entities": [
+            {"entity_id": "light.ceiling", "name": "Ceiling", "area_id": None,
+             "device_id": "d1", "disabled_by": None, "hidden_by": None},
+            {"entity_id": "light.lamp", "name": "Lamp", "area_id": "lounge",
+             "device_id": None, "disabled_by": None, "hidden_by": None},
+        ],
+        "states": [],
+    }), encoding="utf-8")
+
+    out = tmp_path / "lights.json"
+    run(monkeypatch, lights, named, registry, "-o", out, "--report")
+
+    placed = json.loads(out.read_text(encoding="utf-8"))
+    assert {p["entity_id"] for p in placed} == {"light.ceiling", "light.lamp"}
+    assert all(p["level"] == 0 and p["power"] > 0 for p in placed)
+    assert "placed 2 light(s)" in capsys.readouterr().out
+
+
+def test_lights_refuses_a_model_that_has_not_been_through_rooms(monkeypatch, tmp_path,
+                                                               model_path):
+    """Placement is by Home Assistant area, so a model still carrying scanner
+    guesses has nothing to join on — and should say so, not place nothing."""
+    import json
+
+    import pytest
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"areas": [], "devices": [], "entities": [],
+                                    "states": []}), encoding="utf-8")
+    out = tmp_path / "lights.json"
+    with pytest.raises(SystemExit, match="scan2ha.rooms"):
+        run(monkeypatch, lights, model_path, registry, "-o", out)
+
+
+def test_ha_main_reads_a_cached_registry(monkeypatch, tmp_path, capsys):
+    import json
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({
+        "areas": [], "devices": [],
+        "entities": [{"entity_id": "light.a", "name": "A", "area_id": "hall",
+                      "device_id": None, "disabled_by": None, "hidden_by": None}],
+        "states": [],
+    }), encoding="utf-8")
+
+    run(monkeypatch, ha, "-o", registry)
+    assert "light.a" in capsys.readouterr().out

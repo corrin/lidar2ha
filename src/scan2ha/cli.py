@@ -256,6 +256,83 @@ def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None
 
 
 # --------------------------------------------------------------------------- #
+# lights
+# --------------------------------------------------------------------------- #
+
+
+def _project_settings(project: Path | None) -> dict:
+    if not project:
+        return {}
+    import yaml
+    return yaml.safe_load(project.read_text(encoding="utf-8")) or {}
+
+
+@cli.command()
+@click.argument("model_json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--out", type=click.Path(path_type=Path), default=Path("lights.json"),
+              show_default=True, help="the light placements to write")
+@click.option("--registry", type=click.Path(path_type=Path), default=Path("registry.json"),
+              show_default=True, help="where the Home Assistant registry is cached")
+@click.option("--refresh", is_flag=True,
+              help="fetch the registry from Home Assistant rather than using the cache")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="project.yaml, for lights.exclude / include / extra / power")
+@click.option("--fittings", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="real fitting positions, when you have them")
+@click.option("--env", type=click.Path(path_type=Path), default=Path(".env"),
+              show_default=True, help="file to read HA_URL and HA_TOKEN from")
+@click.option("--report/--no-report", default=True, show_default=True,
+              help="print the review table")
+def lights(model_json: Path, out: Path, registry: Path, refresh: bool, project: Path | None,
+           fittings: Path | None, env: Path, report: bool) -> None:
+    """Place every Home Assistant light entity in its room.
+
+    Entities resolve to rooms by Home Assistant area, so `rooms` has to have run
+    first. Nothing is dropped in silence: an entity with no area, an area with no
+    room, and a room nobody lights are each named in the report, because a dark
+    room in the finished dashboard is otherwise a mystery with no thread to pull.
+    """
+    from . import ha
+    from .lights import (
+        LightsConfig,
+        build_lights,
+        load_fittings,
+        print_report,
+        room_index,
+        save_lights,
+    )
+    from .schema import load_model
+
+    settings = _project_settings(project)
+
+    if refresh:
+        ha.load_dotenv(env)
+        url, token = ha.credentials(settings)
+        click.echo(f"fetching the registry from {url} ...")
+        ha.save_registry(ha.fetch_registry(url, token), registry)
+        click.echo(f"cached {registry}")
+
+    model = load_model(model_json)
+    if not room_index(model):
+        raise SystemExit(
+            "No room in this model carries a Home Assistant area. Run "
+            "`python -m scan2ha.rooms` first -- lights are placed by area, not "
+            "by the name the scanner guessed.")
+
+    entities = ha.light_entities(ha.load_registry(registry))
+    placements, result = build_lights(
+        model, entities, LightsConfig.from_project(settings),
+        load_fittings(fittings) if fittings else None)
+    result.duplicate_names = ha.duplicate_names(entities)
+    save_lights(placements, out)
+
+    click.echo(f"wrote {out}  ({len(placements)} placement(s) from {len(entities)} entities)")
+    if report:
+        print_report(result, placements)
+    click.echo(f"Next:  scan2ha build {model_json} --lights {out}")
+
+
+# --------------------------------------------------------------------------- #
 # not built yet
 # --------------------------------------------------------------------------- #
 
@@ -271,8 +348,6 @@ def _unbuilt(name: str, what: str, instead: str) -> None:
 
 _unbuilt("add-capture", "unpack a Polycam floorplan zip and mesh into the project",
          "For now, unzip them yourself and run `python -m scan2ha.polycam` on the DXF.")
-_unbuilt("lights", "read your Home Assistant registry and place every light.* entity",
-         "For now, write the light placements as JSON and pass them to `build --lights`.")
 _unbuilt("render", "raytrace the model once per light state and emit floorplan.yaml",
          "For now, drive HeadlessRender directly -- see javabridge.run_render.")
 _unbuilt("deploy", "copy the renders and floorplan.yaml to Home Assistant over SSH",
