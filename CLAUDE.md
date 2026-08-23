@@ -174,15 +174,35 @@ export-glb     .sh3d        -> named .obj -> obj2gltf -> .glb
 `add-capture` is a deliberate stub that exits saying so (`_unbuilt` in `cli.py`).
 An honest `--help` matching the documented workflow beats a short one hiding gaps.
 
-### Combining captures: selection, and the two ways to get it wrong
+### Combining captures: align or discard
 
-`combine` is the only stage that reads more than one capture. Two traps, both
-paid for once already:
+`combine` is the only stage that reads more than one capture, and its rule has
+two steps with **no third branch**: align the scan; if that fails, report and
+discard it. There is no "align poorly and carry on" — that branch existed, and
+it built this house's mid-level model out of the worst of its three captures.
+
+**Redundancy is the method.** Fifteen scans exist because nobody knows which are
+good, and the bad one identifies itself by being the odd man out. Two captures
+that disagree cannot say which of them is wrong, so `combine` refuses and says
+so rather than trusting the anchor: a capture you have just come back and
+re-shot is quite likely the correct one.
+
+**The overlay is judged on the common area.** A capture that skipped a room is
+fine — the rooms it did see overlay perfectly, and that is the confidence.
+Measured, the median over common points separates completely (good 2.6–4.5 cm,
+bad 10.5–31 cm) while coverage does not separate at all.
+
+Three traps, all paid for once already:
 
 - **Never reject on coverage.** It is the fraction of the SOURCE's walls the
   reference explains, so a capture seeing a new room always scores lower. A 90%
   threshold rejected the one capture containing the mid-level bathroom, at 88%.
-  Accept on fit quality; report low coverage as new ground.
+  Discard on the error over the common area; report low coverage as new ground.
+- **An error figure cannot catch a wrong basin.** A capture placed on the wrong
+  walls entirely reads 100% coverage and a plausible median, because every point
+  does find a nearby point — just the wrong one. A five-wall bedroom landed 65°
+  out on top of a hallway that way. No quantile fixes that; the bound only
+  insists the chosen placement lands.
 - **New ground is not a property of a room.** A room 80% overlapping the
   reference reads as known and the fifth of it nobody else saw disappears. Area
   comes from the geometric difference over the whole level; identity comes from
