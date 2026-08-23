@@ -12,11 +12,17 @@ import math
 
 import numpy as np
 import pytest
+from shapely.geometry import Polygon
 
-from lidar2ha.contactsheet import shorten
-from lidar2ha.placefixtures import M_TO_CM, mesh_to_plan_cm
+from lidar2ha.contactsheet import order_for_review, pair_crops, shorten
+from lidar2ha.placefixtures import (
+    M_TO_CM,
+    assign,
+    mesh_to_plan_cm,
+    plan_cm_to_mesh_m,
+)
 from lidar2ha.registration import transform
-from lidar2ha.schema import Registration
+from lidar2ha.schema import Level, Registration, Room
 
 
 def registration(theta_deg=0.0, tx_m=0.0, ty_m=0.0, mirror=False) -> Registration:
@@ -73,6 +79,76 @@ def test_the_input_array_is_not_modified_in_place():
     assert np.array_equal(mesh, before)
 
 
+@pytest.mark.parametrize("mirror", [False, True])
+@pytest.mark.parametrize("theta_deg", [0.0, 37.0, 216.5])
+def test_plan_to_mesh_is_the_exact_inverse_of_mesh_to_plan(mirror, theta_deg):
+    """Differencing against an ordinary capture needs the hop back INTO its
+    mesh, and a sign error there samples the atlas somewhere else entirely —
+    which reports a fitting as a window, or the reverse, with a number next to
+    it that looks like a measurement."""
+    reg = registration(theta_deg, 12.5, -3.25, mirror)
+    assert np.allclose(
+        mesh_to_plan_cm(plan_cm_to_mesh_m(PLAN_CM, reg), reg), PLAN_CM, atol=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# one fixture pass across several geometry captures
+# --------------------------------------------------------------------------- #
+
+SQUARE = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)]
+
+
+def capture(area: str, offset: float = 0.0) -> list[tuple]:
+    """One capture's room set, in its own plan frame."""
+    room = Room(name=area, ha_area=area,
+                points=[(x + offset, y) for x, y in SQUARE])
+    level = Level(name="Ground", ceiling_height_cm=250.0, rooms=[room])
+    return [(level, room, Polygon(room.points))]
+
+
+def test_a_fitting_goes_to_the_capture_that_actually_contains_it():
+    """A fixture pass is walked in one go and does not stop at the boundary
+    between two geometry captures. Requiring one model per pass means splitting
+    the fittings by hand along a line that exists only in the scanning history.
+    """
+    kitchen, hall = capture("kitchen"), capture("hall")
+    # In the kitchen capture's frame the fitting is far outside; in the hall's
+    # it is in the middle of the room. Each capture has its own frame, so the
+    # two coordinates are different numbers for the same physical point.
+    which, room, pair = assign([np.array([9000.0, 9000.0]), np.array([200.0, 200.0])],
+                               [kitchen, hall])
+    assert (which, room) == (1, "hall")
+    assert pair[1].ha_area == "hall"
+
+
+def test_containment_beats_a_near_miss_in_an_earlier_capture():
+    """Checking each capture in turn would let a fitting that merely sits near
+    a wall in the first one claim it, and never consult the capture the fitting
+    is genuinely inside — so the answer would depend on the order the models
+    were listed on the command line."""
+    kitchen, hall = capture("kitchen"), capture("hall")
+    just_outside = np.array([-30.0, 200.0])      # 30 cm past the kitchen wall
+    inside_hall = np.array([200.0, 200.0])
+
+    which, room, _pair = assign([just_outside, inside_hall], [kitchen, hall])
+    assert (which, room) == (1, "hall")
+
+
+def test_a_near_miss_is_flagged_rather_than_discarded():
+    """Two registrations compose their errors, so just over a wall line is
+    common and the fitting is still useful."""
+    which, room, _pair = assign([np.array([-30.0, 200.0])], [capture("kitchen")])
+    assert which == 0
+    assert room.startswith("~kitchen")
+
+
+def test_a_fitting_in_no_capture_at_all_belongs_to_none_of_them():
+    """OUTSIDE has to stay distinguishable from a room: `lights` drops it, and
+    a near-miss label would place it in a room it is nowhere near."""
+    which, room, pair = assign([np.array([9000.0, 9000.0])], [capture("kitchen")])
+    assert (which, room, pair) == (None, "OUTSIDE", None)
+
+
 # --------------------------------------------------------------------------- #
 # the review sheet's labels
 # --------------------------------------------------------------------------- #
@@ -89,3 +165,78 @@ def test_a_long_area_id_keeps_both_ends():
     b = shorten("upstairs_north_bedroom", width=16)
     assert a != b
     assert len(a) <= 16 and len(b) <= 16
+
+
+# --------------------------------------------------------------------------- #
+# the review sheet's ordering, and the pairing that ordering would have broken
+# --------------------------------------------------------------------------- #
+
+
+def record(crop: str, room: str, verdict: str | None = None) -> dict:
+    out = {"crop": crop, "room": room}
+    if verdict is not None:
+        out["verdict"] = verdict
+    return out
+
+
+def crops_dir(tmp_path, names):
+    from PIL import Image
+    for name in names:
+        Image.new("RGB", (8, 8)).save(tmp_path / name)
+    return tmp_path
+
+
+def test_windows_are_demoted_to_the_end_and_fittings_keep_their_order():
+    """Review runs top-down and can stop when the cells stop looking like
+    lamps. Within a group, detection order — brightest and biggest first — is
+    itself a confidence ordering and has to survive."""
+    placed = [record("00.png", "a", "window"), record("01.png", "b", "fitting"),
+              record("02.png", "c", "unseen"), record("03.png", "d", "fitting")]
+    assert [r["crop"] for r in order_for_review(placed)] == [
+        "01.png", "03.png", "02.png", "00.png"]
+
+
+def test_a_sheet_with_no_verdicts_keeps_exactly_the_order_it_had():
+    """A run without --daylight-mesh must behave as it always did."""
+    placed = [record(f"{i:02d}.png", "a") for i in range(4)]
+    assert order_for_review(placed) == placed
+
+
+def test_crops_follow_their_record_through_a_reorder(tmp_path):
+    """The regression the sort would otherwise have introduced. Pairing crops
+    with records by position puts the right pictures under the wrong rooms and
+    looks entirely normal — every cell is a real crop and every label is a real
+    room, just not each other's."""
+    crops = crops_dir(tmp_path, ["00.png", "01.png"])
+    placed = [record("00.png", "kitchen", "window"), record("01.png", "den", "fitting")]
+
+    pairs, problems = pair_crops(crops, order_for_review(placed))
+    assert [(r["room"], p.name) for r, p in pairs] == [("den", "01.png"),
+                                                       ("kitchen", "00.png")]
+    assert problems == []
+
+
+def test_a_record_whose_crop_is_missing_is_reported_not_skipped(tmp_path):
+    """One cell fewer looks completely normal, and the missing one is exactly
+    the candidate nobody then reviews."""
+    crops = crops_dir(tmp_path, ["00.png"])
+    pairs, problems = pair_crops(crops, [record("00.png", "den"),
+                                         record("07.png", "kitchen")])
+    assert len(pairs) == 1
+    assert any("07.png" in p for p in problems)
+
+
+def test_a_crop_with_no_record_is_reported_too(tmp_path):
+    crops = crops_dir(tmp_path, ["00.png", "01.png"])
+    _pairs, problems = pair_crops(crops, [record("00.png", "den")])
+    assert any("01.png" in p for p in problems)
+
+
+def test_an_old_fixtures_file_still_pairs_by_position_and_says_so(tmp_path):
+    """Records written before crops were named have to keep working; the point
+    is that the fragile behaviour announces itself instead of being the
+    default."""
+    crops = crops_dir(tmp_path, ["00.png", "01.png"])
+    pairs, problems = pair_crops(crops, [{"room": "den"}, {"room": "kitchen"}])
+    assert len(pairs) == 2
+    assert any("by position" in p for p in problems)
