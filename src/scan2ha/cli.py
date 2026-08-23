@@ -131,6 +131,18 @@ tile_cm: 100
 # Levels whose elevation the mesh could not recover, in centimetres above the
 # lowest floor. `scan2ha build` reports which levels defaulted to 0.
 elevations: {{}}
+
+# Where to look from. The tool solves HOW FAR back to stand so the whole house
+# fits; these are the choices it cannot make for you.
+camera:
+  yaw: 180        # degrees. Which side you view the plan from.
+  pitch: 50       # degrees below horizontal. 90 is a flat plan view; at 50 you
+                  # see wall faces, but near walls can hide rooms behind them.
+
+# The render size, which also fixes the aspect ratio the camera is framed for.
+render:
+  width: 1920
+  height: 1080
 """
 
 
@@ -175,11 +187,14 @@ def init(directory: Path) -> None:
 @click.option("--ceilings", is_flag=True,
               help="emit ceiling textures. Off by default: a visible ceiling occludes "
                    "the level being rendered from above")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="project.yaml, for camera.yaw / pitch and render size")
 @click.option("--verify/--no-verify", default=True, show_default=True,
               help="reopen the .sh3d through Sweet Home 3D's own reader afterwards")
 def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None,
           walltex: Path | None, lights: Path | None, tile_cm: float,
-          elevations: tuple[str, ...], ceilings: bool, verify: bool) -> None:
+          elevations: tuple[str, ...], ceilings: bool, project: Path | None,
+          verify: bool) -> None:
     """Write a .sh3d from a model JSON.
 
     Runs the scene writer, then Sweet Home 3D's own classes, then reopens the
@@ -189,10 +204,18 @@ def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None
     """
     import json
 
+    from .camera import CameraConfig
     from .scene import write_scene
     from .schema import Light, load_model, load_wall_textures
 
     model = load_model(model_json)
+    settings = _project_settings(project)
+    # The render size decides the aspect ratio, and the aspect ratio decides how
+    # far back the camera has to be -- so the framing has to agree with whatever
+    # `render` will eventually be asked for. One source of truth, in the project.
+    render = (settings.get("render") or {})
+    width = float(render.get("width", 1920))
+    height = float(render.get("height", 1080))
 
     overrides: dict[str, float] = {}
     for item in elevations:
@@ -222,12 +245,14 @@ def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None
         model, scene_path,
         wall_textures=wall_textures, tiled_textures=tiled, lights=placements,
         tile_cm=tile_cm, elevation_overrides=overrides, include_ceilings=ceilings,
+        camera=CameraConfig.from_project(settings), aspect=width / height,
     )
     click.echo(
         f"scene  {scene_path}  levels={stats['levels']} walls={stats['walls']} "
         f"rooms={stats['rooms']} lights={stats['lights']} "
         f"textured_walls={stats['textured_walls']}"
     )
+    click.echo(f"       framed for {width:.0f}x{height:.0f}")
     for name in stats["unknown_elevations"]:
         click.echo(f"  warning: level {name!r} has no elevation, defaulted to 0 "
                    f"-- set it with --elevation {name!r}=CM")

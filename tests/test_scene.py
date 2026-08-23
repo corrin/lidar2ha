@@ -8,6 +8,8 @@ numbers.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from scan2ha.scene import write_scene
@@ -170,3 +172,78 @@ def test_output_has_no_bom_and_uses_tabs(model, tmp_path):
     raw = scene.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert b"\t" in raw
+
+
+# --------------------------------------------------------------------------- #
+# the camera, and where the lights end up
+# --------------------------------------------------------------------------- #
+
+
+def test_a_camera_record_is_emitted(model, tmp_path):
+    scene = tmp_path / "s.tsv"
+    write_scene(model, scene)
+    cameras = by_type(scene, "camera")
+    assert len(cameras) == 1
+    name, x, y, z, yaw, pitch, fov = cameras[0]
+    assert name == "house"
+    assert float(pitch) == 50.0
+    assert float(yaw) == 180.0
+    assert float(fov) > 0
+
+
+def test_the_camera_is_solved_in_the_scene_frame_not_the_models(model, tmp_path):
+    """The Y flip reverses handedness, so a camera solved in the model's frame
+    and transformed afterwards would face the wrong way — which is exactly the
+    failure that produced blank white renders."""
+    scene = tmp_path / "s.tsv"
+    write_scene(model, scene)
+    _n, x, y, _z, yaw, _p, _f = by_type(scene, "camera")[0]
+
+    # Geometry spans x 0..400 and y 0..300 once transformed.
+    look = (math.sin(math.radians(float(yaw))), math.cos(math.radians(float(yaw))))
+    to_centre = (200.0 - float(x), 150.0 - float(y))
+    assert look[0] * to_centre[0] + look[1] * to_centre[1] > 0
+
+
+def test_a_wider_render_moves_the_camera_back(model, tmp_path):
+    def distance(aspect):
+        scene = tmp_path / f"{aspect}.tsv"
+        write_scene(model, scene, aspect=aspect)
+        _n, x, y, z, *_ = by_type(scene, "camera")[0]
+        return math.dist((float(x), float(y), float(z)), (200.0, 150.0, 0.0))
+
+    assert distance(21 / 9) > distance(4 / 3)
+
+
+def test_every_light_is_emitted_against_the_base_level(model, tmp_path):
+    """The plugin only detects lights on the selected level, so a light left on
+    an upper storey is invisible to it and that floor renders dark."""
+    scene = tmp_path / "s.tsv"
+    write_scene(model, scene, lights=[
+        Light(entity_id="light.ground", level=0, x=1000, y=1000, elevation=230),
+        Light(entity_id="light.upper", level=1, x=1000, y=1000, elevation=220),
+    ])
+    assert [f[0] for f in by_type(scene, "light")] == ["l0", "l0"]
+
+
+def test_a_relocated_light_keeps_its_true_height(model, tmp_path):
+    """Elevation is measured from a light's own level's floor, so moving it down
+    a level without adding that level's elevation would drop it through the
+    ceiling of the room it is meant to light."""
+    scene = tmp_path / "s.tsv"
+    write_scene(model, scene, lights=[
+        Light(entity_id="light.ground", level=0, x=1000, y=1000, elevation=230),
+        Light(entity_id="light.upper", level=1, x=1000, y=1000, elevation=220),
+    ])
+    heights = {f[1]: float(f[4]) for f in by_type(scene, "light")}
+    assert heights["light.ground"] == 230
+    # The Upper level stands at 262.
+    assert heights["light.upper"] == 262 + 220
+
+
+def test_an_elevation_override_moves_the_lights_with_the_level(model, tmp_path):
+    scene = tmp_path / "s.tsv"
+    write_scene(model, scene,
+                lights=[Light(entity_id="light.upper", level=1, x=1000, y=1000, elevation=220)],
+                elevation_overrides={"Upper": 500})
+    assert float(by_type(scene, "light")[0][4]) == 500 + 220

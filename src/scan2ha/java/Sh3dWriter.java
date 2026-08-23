@@ -54,6 +54,7 @@ import java.util.Map;
  *   wall     <level>  <xStart> <yStart> <xEnd> <yEnd> <thickness> <height> [leftTex] [rightTex]
  *   room     <level>  <name>   <floorTex> <ceilTex> <x,y> <x,y> <x,y> ...
  *   light    <level>  <name>   <x> <y> <elevation> <power>
+ *   camera   <name>   <x> <y> <z> <yawDeg> <pitchDeg> <fovDeg>
  *
  * Texture fields hold a `texture` record's id, or "-"/empty for none. A texture
  * must be declared before the record that references it.
@@ -91,6 +92,7 @@ public class Sh3dWriter {
   private final Map<String, HomeTexture> textures = new HashMap<>();
   private float wallHeight = DEFAULT_WALL_HEIGHT;
   private Light catalogLight;
+  private boolean cameraSet;
 
   Home build(String scenePath) throws Exception {
     List<String[]> records = readRecords(scenePath);
@@ -112,6 +114,7 @@ public class Sh3dWriter {
             case "wall":     addWall(home, f);     break;
             case "room":     addRoom(home, f);     break;
             case "light":    addLight(home, f);    break;
+            case "camera":   setCamera(home, f);   break;
             default:
               throw new IllegalArgumentException("unknown record type: " + f[0]);
           }
@@ -136,17 +139,53 @@ public class Sh3dWriter {
     // means Sweet Home 3D opens the file on the ground floor.
     home.setSelectedLevel(levelOrder.get(0));
 
-    frameCamera(home);
+    // Only frame here if the scene did not say where to stand. The Python side
+    // solves this properly -- eight bounding-box corners against the frustum,
+    // with the render's aspect ratio, which this side cannot know -- so a
+    // `camera` record always wins. The fallback exists for a hand-written scene
+    // file; examples/minimal.tsv is exactly that.
+    if (!cameraSet) {
+      frameCamera(home);
+    }
     return home;
   }
 
   /**
-   * Point the top camera at the model.
+   * Place the camera exactly where the scene file says.
    *
-   * Sweet Home 3D frames the camera interactively; headless there is nothing to
-   * do it, so a generated home renders from wherever the default camera happens
-   * to sit -- usually with the building half out of frame. Compute the plan
-   * bounds and pull the camera back far enough to contain them.
+   * The scene's coordinates are already Sweet Home 3D's -- y flipped and
+   * re-origined -- so nothing is transformed here. Angles arrive in degrees
+   * because a scene file is meant to be readable.
+   */
+  private void setCamera(Home home, String[] f) {
+    // name, x, y, z, yawDeg, pitchDeg, fovDeg
+    Camera camera = home.getTopCamera();
+    camera.setX(num(f[2]));
+    camera.setY(num(f[3]));
+    camera.setZ(num(f[4]));
+    camera.setYaw((float) Math.toRadians(num(f[5])));
+    camera.setPitch((float) Math.toRadians(num(f[6])));
+    camera.setFieldOfView((float) Math.toRadians(num(f[7])));
+    camera.setName(f[1]);
+    home.setCamera(camera);
+    // Also stored, so the view is reachable from Sweet Home 3D's own camera
+    // menu and a human can check the framing without rendering anything.
+    home.setStoredCameras(java.util.Collections.singletonList(camera.clone()));
+    cameraSet = true;
+  }
+
+  /**
+   * A crude fallback for a scene file that carries no `camera` record.
+   *
+   * This is NOT the framing calculation -- that is in scan2ha.camera, where it
+   * solves the eight bounding-box corners against the frustum and can be tested
+   * without a JVM. It cannot live here, because the tight axis depends on the
+   * render's aspect ratio and a .sh3d is written long before anyone picks a
+   * resolution.
+   *
+   * So this deliberately errs far back rather than pretending to be exact: a
+   * hand-written scene should open showing the whole house, and a small picture
+   * of the building beats a large picture of one wall.
    */
   private void frameCamera(Home home) {
     float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE;
@@ -185,10 +224,9 @@ public class Sh3dWriter {
 
     Camera camera = home.getTopCamera();
     float fov = camera.getFieldOfView();
-    // Far enough back that a sphere around the whole building fits the cone,
-    // with margin because the field of view is horizontal and a render is
-    // usually wider than it is tall -- so the vertical axis is the tight one.
-    float distance = (float) (radius / Math.sin(fov / 2) * 1.3);
+    // A sphere around the building, then generous slack for the aspect ratio
+    // this side cannot see. Over-wide is the safe direction to be wrong in.
+    float distance = (float) (radius / Math.sin(fov / 2) * 2.0);
     float pitch = (float) Math.toRadians(50);
 
     // Aimed at the middle of the building, not at the ground, so a tall home is

@@ -37,7 +37,8 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Tiled textures by surface class (fallback) | works (`textures_tile.py`) |
 | Emit the scene file | works (`scene.py`) |
 | Write a real `.sh3d` | works (`Sh3dWriter.java`) |
-| Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`), one level at a time |
+| Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`), all levels in one pass |
+| Frame the camera so the house fits | works (`camera.py`), solved rather than guessed |
 | Rename rooms to HA areas, merge open-plan splits | works (`rooms.py`), mapping written by hand |
 | Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
@@ -345,6 +346,21 @@ this repo, and why it compiles against your own installation.
   whose model is line geometry — they light the scene but render as nothing. Use
   `eTeks#pendantLamp`. `Furniture.jar` must be on the classpath.
 - **Light sources must be visible with power > 0** or the plugin ignores them.
+- **The plugin only sees lights on the SELECTED level.** Not the viewable ones, not all of
+  them — `setViewable(true)` and `setAllLevelsSelection(true)` both make no difference. A
+  two-storey house therefore renders with one floor's lights and no cross-floor spill,
+  which is the entire reason for using a raytracer. The way through: a light's elevation is
+  measured from its own level's floor, so emitting every light against the *lowest* level
+  with its own level's elevation added leaves it in the identical place in space and puts
+  all of them in the render set. Geometry stays on its proper level; only the lights move.
+- **Yaw looks along `(sin yaw, cos yaw)`,** so `yaw = 0` faces *increasing* y. Place the
+  camera on the far side of the plan, leave the yaw at zero, and every render comes back a
+  uniform white frame — a picture of the sky, produced at full raytracing cost without a
+  single warning.
+- **The field of view is horizontal.** So on a 16:9 render the *vertical* angle is the
+  narrow one, and that is the axis a model gets clipped on. Framing by a bounding sphere
+  and a safety multiplier does not account for this: it wastes half the width on a long
+  house and clips the height anyway.
 - **Rendering needs Sweet Home 3D's own 32-bit JVM.** Java3D and YafaRay ship as 32-bit
   natives, and that runtime has only `javaw.exe` — no console — so the render step logs to
   a file. Writing a `.sh3d` runs fine on a normal JDK. Two JVMs; `javabridge.py` exists to

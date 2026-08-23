@@ -79,14 +79,28 @@ def test_each_object_lands_on_its_declared_level(tmp_path, toolchain, java_class
 
     tally = parse_tally(report)
     assert set(tally) == {"Ground", "Upper"}, report
-    # The failure this guards against puts 2/2/2 on Upper and 0/0/0 on Ground.
+    # The failure this guards against puts everything on Upper and nothing on
+    # Ground. Walls and rooms are the test: lights are deliberately all on the
+    # base level -- see test_every_light_is_on_the_base_level_at_its_true_height.
     for name in ("Ground", "Upper"):
-        assert tally[name] == {"walls": 1, "rooms": 1, "lights": 1}, report
+        assert tally[name]["walls"] == 1, report
+        assert tally[name]["rooms"] == 1, report
+    assert tally["Ground"]["lights"] + tally["Upper"]["lights"] == 2, report
 
 
-def test_lights_carry_their_entity_id_and_level(tmp_path, toolchain, java_classes):
-    """The plugin matches objects by name == entity_id; a light on the wrong
-    level still renders, it just lights the wrong room."""
+def test_every_light_is_on_the_base_level_at_its_true_height(tmp_path, toolchain,
+                                                            java_classes):
+    """Deliberate, and the whole reason a multi-level house renders at all.
+
+    The floor-plan plugin only detects lights on the home's SELECTED level, so a
+    light left on the upper storey is invisible to it and that floor renders
+    dark. A light's elevation is measured from its own level's floor, so moving
+    it to the base level and adding that level's elevation leaves it in exactly
+    the same place in space.
+
+    The height assertion is the one that matters: without it this is just
+    putting lights on the wrong floor.
+    """
     model = two_level_model()
     lights = [
         Light(entity_id="light.ground_ceiling", level=0, x=200, y=150, elevation=230),
@@ -98,8 +112,16 @@ def test_lights_carry_their_entity_id_and_level(tmp_path, toolchain, java_classe
     run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
     report = run(toolchain, java_classes, "Sh3dVerify", str(out))
 
-    placed = dict(re.findall(r"LIGHT\s+\[(\S+)\s*\]\s+name=(\S+)", report))
-    assert placed == {"Ground": "light.ground_ceiling", "Upper": "light.upper_ceiling"}, report
+    placed = re.findall(r"LIGHT\s+\[(\S+)\s*\]\s+name=(\S+).*?elev=(-?\d+)", report)
+    by_id = {name: (level, int(elev)) for level, name, elev in placed}
+
+    # Both on the base level, so the plugin can see both.
+    assert {lvl for lvl, _ in by_id.values()} == {"Ground"}, report
+    # And at the heights they would have had on their own levels: the upper
+    # light was declared at 220 on a level standing at 262.
+    assert by_id["light.ground_ceiling"][1] == 230, report
+    assert by_id["light.upper_ceiling"][1] == 262 + 220, report
+
     # A light the plugin would ignore has no sources or no power.
     assert "sources=0" not in report
     assert "power=0.00" not in report
