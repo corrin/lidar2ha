@@ -18,7 +18,7 @@ Coordinates are the MESH frame in metres, with a grid, because that is the frame
 the mesh and its registration live in.
 
 Usage:
-    python -m scan2ha.floormap mesh.obj -o floor
+    python -m lidar2ha.floormap mesh.obj -o floor
 """
 
 from __future__ import annotations

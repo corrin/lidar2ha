@@ -12,7 +12,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from scan2ha.schema import (
+from lidar2ha.schema import (
     Level,
     Model,
     Registration,

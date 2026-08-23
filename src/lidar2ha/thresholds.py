@@ -16,7 +16,7 @@ blue least), because wood-to-carpet is a hue change more than a brightness one
 and plain RGB distance under-reads it.
 
 Usage:
-    python -m scan2ha.thresholds mesh.obj --axis y
+    python -m lidar2ha.thresholds mesh.obj --axis y
 """
 
 from __future__ import annotations

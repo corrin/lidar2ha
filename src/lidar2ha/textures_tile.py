@@ -33,7 +33,7 @@ its median colour, and says so. That happens for the ceiling here: this capture
 barely has one.
 
 Usage:
-    python -m scan2ha.textures_tile mesh.obj -o textures/ --size 256
+    python -m lidar2ha.textures_tile mesh.obj -o textures/ --size 256
 """
 
 import argparse

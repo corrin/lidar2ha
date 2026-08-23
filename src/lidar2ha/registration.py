@@ -35,7 +35,7 @@ of the mesh wall points that the floor actually matched.
 Requires the mesh exported with 'Mesh up axis: Z axis up'.
 
 Usage:
-    python -m scan2ha.registration home.json mesh.obj -o registered.json
+    python -m lidar2ha.registration home.json mesh.obj -o registered.json
 """
 
 import argparse

@@ -57,7 +57,7 @@ def mesh_to_plan_cm(pts_m: np.ndarray, reg) -> np.ndarray:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("fixtures", help="fixtures.json from scan2ha.fixtures")
+    ap.add_argument("fixtures", help="fixtures.json from lidar2ha.fixtures")
     ap.add_argument("fixture_model", help="the fixture capture's registered model json")
     ap.add_argument("geometry_model", help="the geometry capture's NAMED model json")
     ap.add_argument("-o", "--out", default="fixtures_placed.json")

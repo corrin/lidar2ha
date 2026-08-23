@@ -1,4 +1,4 @@
-"""The `scan2ha` command.
+"""The `lidar2ha` command.
 
 Only some of this is built. Commands that do not work yet say so and exit
 non-zero rather than failing somewhere deep with a traceback -- an honest
@@ -29,7 +29,7 @@ def _row(status: str, label: str, detail: str = "") -> None:
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(__version__, prog_name="scan2ha")
+@click.version_option(__version__, prog_name="lidar2ha")
 def cli() -> None:
     """Turn a phone LiDAR scan into a 3D floorplan in Home Assistant."""
 
@@ -49,7 +49,7 @@ def doctor(sh3d_jar: str | None) -> None:
     the point: a doctor that only checked paths would pass happily while the
     sources failed to compile, which is a real thing that has happened here.
     """
-    click.echo(f"scan2ha {__version__}")
+    click.echo(f"lidar2ha {__version__}")
     click.echo(f"  python  {sys.version.split()[0]}  ({sys.executable})")
     click.echo()
 
@@ -105,7 +105,7 @@ def doctor(sh3d_jar: str | None) -> None:
 
     click.echo()
     if problems:
-        click.echo(f"{problems} problem(s) must be fixed before `scan2ha build` will work.")
+        click.echo(f"{problems} problem(s) must be fixed before `lidar2ha build` will work.")
         raise SystemExit(1)
     if warnings:
         click.echo(f"Ready to build a .sh3d. {warnings} warning(s) affect later stages only.")
@@ -119,7 +119,7 @@ def doctor(sh3d_jar: str | None) -> None:
 
 
 PROJECT_YAML = """\
-# scan2ha project. Paths are relative to this file.
+# lidar2ha project. Paths are relative to this file.
 name: {name}
 
 # Uncomment if Sweet Home 3D is not in the usual place for your platform.
@@ -129,7 +129,7 @@ name: {name}
 tile_cm: 100
 
 # Levels whose elevation the mesh could not recover, in centimetres above the
-# lowest floor. `scan2ha build` reports which levels defaulted to 0.
+# lowest floor. `lidar2ha build` reports which levels defaulted to 0.
 elevations: {{}}
 
 # Where to look from. The tool solves HOW FAR back to stand so the whole house
@@ -262,7 +262,7 @@ def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None
         classes = javabridge.compile_java(tc)
     except ToolchainError as exc:
         click.echo(f"\n{exc}\n")
-        raise SystemExit("run `scan2ha doctor` for the full picture") from exc
+        raise SystemExit("run `lidar2ha doctor` for the full picture") from exc
 
     out.parent.mkdir(parents=True, exist_ok=True)
     proc = javabridge.run_writer(tc, classes, "Sh3dWriter", str(scene_path), str(out))
@@ -341,7 +341,7 @@ def lights(model_json: Path, out: Path, registry: Path, refresh: bool, project: 
     if not room_index(model):
         raise SystemExit(
             "No room in this model carries a Home Assistant area. Run "
-            "`python -m scan2ha.rooms` first -- lights are placed by area, not "
+            "`python -m lidar2ha.rooms` first -- lights are placed by area, not "
             "by the name the scanner guessed.")
 
     entities = ha.light_entities(ha.load_registry(registry))
@@ -354,7 +354,7 @@ def lights(model_json: Path, out: Path, registry: Path, refresh: bool, project: 
     click.echo(f"wrote {out}  ({len(placements)} placement(s) from {len(entities)} entities)")
     if report:
         print_report(result, placements)
-    click.echo(f"Next:  scan2ha build {model_json} --lights {out}")
+    click.echo(f"Next:  lidar2ha build {model_json} --lights {out}")
 
 
 # --------------------------------------------------------------------------- #
@@ -366,13 +366,13 @@ def _unbuilt(name: str, what: str, instead: str) -> None:
     @cli.command(name=name, short_help=f"(not implemented) {what}")
     def _command() -> None:
         raise SystemExit(
-            f"`scan2ha {name}` is not implemented yet -- it would {what}.\n{instead}"
+            f"`lidar2ha {name}` is not implemented yet -- it would {what}.\n{instead}"
         )
     _command.__doc__ = f"Not implemented yet: {what}."
 
 
 _unbuilt("add-capture", "unpack a Polycam floorplan zip and mesh into the project",
-         "For now, unzip them yourself and run `python -m scan2ha.polycam` on the DXF.")
+         "For now, unzip them yourself and run `python -m lidar2ha.polycam` on the DXF.")
 _unbuilt("render", "raytrace the model once per light state and emit floorplan.yaml",
          "For now, drive HeadlessRender directly -- see javabridge.run_render.")
 _unbuilt("deploy", "copy the renders and floorplan.yaml to Home Assistant over SSH",

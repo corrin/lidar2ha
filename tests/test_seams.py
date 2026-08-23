@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from shapely.geometry import Polygon
 
-from scan2ha.seams import split_room
+from lidar2ha.seams import split_room
 
 
 def rect(x0, y0, x1, y1) -> Polygon:

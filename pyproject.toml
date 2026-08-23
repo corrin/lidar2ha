@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "scan2ha"
+name = "lidar2ha"
 version = "0.1.0"
 description = "Turn a phone LiDAR scan into an interactive 3D floorplan dashboard in Home Assistant"
 readme = "README.md"
@@ -31,13 +31,13 @@ ha = ["websockets>=12.0"]            # HA registry over the WebSocket API
 dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "types-PyYAML", "build>=1.2"]
 
 [project.scripts]
-scan2ha = "scan2ha.cli:main"
+lidar2ha = "lidar2ha.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/scan2ha"]
+packages = ["src/lidar2ha"]
 # The .java sources are compiled on first use against the user's own Sweet
 # Home 3D install, so they must ship in the wheel like any other data file.
-artifacts = ["src/scan2ha/java/*.java"]
+artifacts = ["src/lidar2ha/java/*.java"]
 
 [tool.ruff]
 line-length = 100
@@ -54,7 +54,7 @@ select = ["E", "F", "I", "B", "UP", "C4"]
 # Deliberately not pinned to requires-python's 3.11 floor: numpy's bundled stubs
 # use 3.12 syntax, and checking against the interpreter actually running is what
 # matches what the tests run on. ruff still enforces 3.11-compatible syntax.
-files = ["src/scan2ha"]
+files = ["src/lidar2ha"]
 # The numeric stack ships no stubs worth the noise; everything of ours is
 # checked, and the boundary to trimesh/ezdxf/scipy is explicitly untyped.
 ignore_missing_imports = true

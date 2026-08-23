@@ -14,7 +14,7 @@ import math
 
 import pytest
 
-from scan2ha.camera import (
+from lidar2ha.camera import (
     CameraConfig,
     View,
     basis,

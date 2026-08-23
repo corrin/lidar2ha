@@ -177,7 +177,7 @@ public class Sh3dWriter {
   /**
    * A crude fallback for a scene file that carries no `camera` record.
    *
-   * This is NOT the framing calculation -- that is in scan2ha.camera, where it
+   * This is NOT the framing calculation -- that is in lidar2ha.camera, where it
    * solves the eight bounding-box corners against the frustum and can be tested
    * without a JVM. It cannot live here, because the tight axis depends on the
    * render's aspect ratio and a .sh3d is written long before anyone picks a

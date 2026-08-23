@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from scipy.spatial import cKDTree
 
-from scan2ha.registration import register, score, transform
+from lidar2ha.registration import register, score, transform
 
 
 def plan_points(step: float = 0.05) -> np.ndarray:

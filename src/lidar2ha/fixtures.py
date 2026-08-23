@@ -38,7 +38,7 @@ Everything is reported for a human to confirm. A bright compact thing is
 does not pretend to know.
 
 Usage:
-    python -m scan2ha.fixtures mesh.obj -o fixtures.json
+    python -m lidar2ha.fixtures mesh.obj -o fixtures.json
 """
 
 from __future__ import annotations

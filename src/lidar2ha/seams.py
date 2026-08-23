@@ -17,7 +17,7 @@ floor for the step and the flooring change that mark a real boundary; on the
 capture above, a 19 cm step and a wood-to-carpet edge landed on the same line.
 
 Usage:
-    python -m scan2ha.seams model.json -o split.json --room "Living Room" \\
+    python -m lidar2ha.seams model.json -o split.json --room "Living Room" \\
         --seam -240,-160 20,-170 --names stairwell den
 """
 

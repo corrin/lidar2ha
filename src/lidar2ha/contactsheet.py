@@ -11,7 +11,7 @@ approval step, not a progress report. Nothing downstream should place a fitting
 the human has not looked at.
 
 Usage:
-    python -m scan2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
+    python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def shorten(text: str, width: int = 26) -> str:
 def build(crops: Path, placed: list[dict]) -> Image.Image:
     files = sorted(crops.glob("*.png"))
     if not files:
-        raise SystemExit(f"no crops in {crops} -- run `python -m scan2ha.fixtures` first")
+        raise SystemExit(f"no crops in {crops} -- run `python -m lidar2ha.fixtures` first")
 
     rows = (len(files) + COLUMNS - 1) // COLUMNS
     width = COLUMNS * (CELL + PAD) + PAD
@@ -72,7 +72,7 @@ def build(crops: Path, placed: list[dict]) -> Image.Image:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("crops", help="directory of per-candidate crops")
-    ap.add_argument("placed", help="fixtures_placed.json from scan2ha.placefixtures")
+    ap.add_argument("placed", help="fixtures_placed.json from lidar2ha.placefixtures")
     ap.add_argument("-o", "--out", default="contactsheet.png")
     args = ap.parse_args()
 

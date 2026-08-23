@@ -11,7 +11,7 @@ import math
 
 import pytest
 
-from scan2ha.polycam import (
+from lidar2ha.polycam import (
     assign_room_labels,
     centreline_and_thickness,
     split_into_floors,

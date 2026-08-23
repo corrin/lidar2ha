@@ -12,8 +12,8 @@ import math
 
 import pytest
 
-from scan2ha.scene import write_scene
-from scan2ha.schema import Level, Light, Model, Room, Wall, WallTexture
+from lidar2ha.scene import write_scene
+from lidar2ha.schema import Level, Light, Model, Room, Wall, WallTexture
 
 
 def records(path):

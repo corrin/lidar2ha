@@ -13,10 +13,10 @@ import math
 import numpy as np
 import pytest
 
-from scan2ha.contactsheet import shorten
-from scan2ha.placefixtures import M_TO_CM, mesh_to_plan_cm
-from scan2ha.registration import transform
-from scan2ha.schema import Registration
+from lidar2ha.contactsheet import shorten
+from lidar2ha.placefixtures import M_TO_CM, mesh_to_plan_cm
+from lidar2ha.registration import transform
+from lidar2ha.schema import Registration
 
 
 def registration(theta_deg=0.0, tx_m=0.0, ty_m=0.0, mirror=False) -> Registration:

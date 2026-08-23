@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from scan2ha import javabridge
-from scan2ha.javabridge import ToolchainError
+from lidar2ha import javabridge
+from lidar2ha.javabridge import ToolchainError
 
 
 @pytest.fixture(scope="session")

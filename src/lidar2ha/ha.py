@@ -35,7 +35,7 @@ repeatedly while you fix names and areas, and it should not need the network or
 a token to do that.
 
 Usage:
-    python -m scan2ha.ha --refresh -o registry.json
+    python -m lidar2ha.ha --refresh -o registry.json
 """
 
 from __future__ import annotations
@@ -230,7 +230,7 @@ def fetch_registry(url: str, token: str) -> dict:
     """One WebSocket session; returns the raw registries plus states.
 
     `websockets` is imported here rather than at module scope because it is an
-    optional extra (`pip install scan2ha[ha]`), and `doctor` has to keep working
+    optional extra (`pip install lidar2ha[ha]`), and `doctor` has to keep working
     on an install that never intends to talk to Home Assistant.
     """
     import asyncio
@@ -240,7 +240,7 @@ def fetch_registry(url: str, token: str) -> dict:
     except ImportError as exc:  # pragma: no cover - depends on the install
         raise SystemExit(
             "The `websockets` package is required to read the Home Assistant "
-            "registry. Install it with:  pip install 'scan2ha[ha]'"
+            "registry. Install it with:  pip install 'lidar2ha[ha]'"
         ) from exc
 
     async def run() -> dict:

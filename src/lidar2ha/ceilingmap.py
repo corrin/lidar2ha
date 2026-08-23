@@ -16,7 +16,7 @@ their immediate surroundings AND compact, and every one is reported for a human
 to confirm rather than used automatically.
 
 An investigation, not a pipeline stage -- if it earns its place, the capability
-belongs in scan2ha's floormap alongside the floor view.
+belongs in lidar2ha's floormap alongside the floor view.
 """
 
 from __future__ import annotations

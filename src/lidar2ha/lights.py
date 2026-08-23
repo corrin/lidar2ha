@@ -26,7 +26,7 @@ lights, an entity excluded by hand -- each is counted and named, because a dark
 room in the final render is otherwise a mystery with no thread to pull.
 
 Usage:
-    python -m scan2ha.lights model.json registry.json -o lights.json \\
+    python -m lidar2ha.lights model.json registry.json -o lights.json \\
         --project project.yaml --report
 """
 
@@ -363,7 +363,7 @@ def print_report(report: Report, lights: list[Light]) -> None:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("model")
-    ap.add_argument("registry", help="registry.json, from `scan2ha lights --refresh`")
+    ap.add_argument("registry", help="registry.json, from `lidar2ha lights --refresh`")
     ap.add_argument("-o", "--out", default="lights.json")
     ap.add_argument("--project", help="project.yaml, for lights.exclude / extra / power")
     ap.add_argument("--fittings", help="real fitting positions, if you have them")
@@ -382,7 +382,7 @@ def main():
     rooms = room_index(model)
     if not rooms:
         raise SystemExit(
-            "No room in the model carries an ha_area. Run `python -m scan2ha.rooms` "
+            "No room in the model carries an ha_area. Run `python -m lidar2ha.rooms` "
             "first -- lights are placed by Home Assistant area, not by scanner name.")
 
     fittings = load_fittings(args.fittings) if args.fittings else None

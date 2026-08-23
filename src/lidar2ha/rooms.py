@@ -20,7 +20,7 @@ the largest resulting piece wins and the rest is reported rather than silently
 dropped.
 
 Usage:
-    python -m scan2ha.rooms model.json project.yaml -o named.json --capture upstairs
+    python -m lidar2ha.rooms model.json project.yaml -o named.json --capture upstairs
 """
 
 from __future__ import annotations

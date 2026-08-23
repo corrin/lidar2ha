@@ -11,7 +11,7 @@ not look like the ones `polycam` queries, that is the work, and it is better
 found now than as an empty model.
 
 Usage:
-    python -m scan2ha.inspect_dxf plan.dxf
+    python -m lidar2ha.inspect_dxf plan.dxf
 """
 
 from __future__ import annotations

@@ -31,7 +31,7 @@ Each side of a wall is projected separately, since the two faces of a wall are
 different surfaces.
 
 Usage:
-    python -m scan2ha.textures_project registered.json mesh.obj -o walltex/
+    python -m lidar2ha.textures_project registered.json mesh.obj -o walltex/
 """
 
 import argparse

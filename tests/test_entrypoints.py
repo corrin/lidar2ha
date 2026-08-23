@@ -20,8 +20,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from scan2ha import ha, lights, preview, registration, rooms, seams
-from scan2ha.schema import Level, Model, Room, Wall, load_model, save_model
+from lidar2ha import ha, lights, preview, registration, rooms, seams
+from lidar2ha.schema import Level, Model, Room, Wall, load_model, save_model
 
 # An L, in metres. Asymmetric on purpose: a rectangle reads the same mirrored,
 # so the fitter's handedness choice would be a coin toss and the test vacuous.
@@ -122,7 +122,7 @@ def test_every_stage_exposes_a_main():
               "polycam", "preview", "registration", "rooms", "seams",
               "textures_project", "textures_tile", "thresholds"]
     missing = [s for s in stages
-               if not callable(getattr(importlib.import_module(f"scan2ha.{s}"), "main", None))]
+               if not callable(getattr(importlib.import_module(f"lidar2ha.{s}"), "main", None))]
     assert missing == []
 
 
@@ -195,7 +195,7 @@ def test_lights_refuses_a_model_that_has_not_been_through_rooms(monkeypatch, tmp
     registry.write_text(json.dumps({"areas": [], "devices": [], "entities": [],
                                     "states": []}), encoding="utf-8")
     out = tmp_path / "lights.json"
-    with pytest.raises(SystemExit, match="scan2ha.rooms"):
+    with pytest.raises(SystemExit, match="lidar2ha.rooms"):
         run(monkeypatch, lights, model_path, registry, "-o", out)
 
 
@@ -223,7 +223,7 @@ def test_compiled_classes_can_load_on_the_bundled_java_8_jvm(toolchain):
     and the bundled javaw.exe has no console -- the stack trace arrives as a
     modal dialog on the user's screen rather than in any log.
     """
-    from scan2ha import javabridge
+    from lidar2ha import javabridge
 
     classes = javabridge.compile_java(toolchain)
     for name in ("HeadlessRender", "Sh3dWriter", "Sh3dVerify"):

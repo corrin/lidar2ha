@@ -8,7 +8,7 @@ lit by the wrong entity.
 
 from __future__ import annotations
 
-from scan2ha.ha import (
+from lidar2ha.ha import (
     LightEntity,
     classify,
     duplicate_names,

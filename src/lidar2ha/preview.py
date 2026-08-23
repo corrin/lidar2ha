@@ -11,7 +11,7 @@ This is also the review artefact for the import and rooms stages: it is the
 picture to answer "do these rooms look like your house?" against.
 
 Usage:
-    python -m scan2ha.preview model.json -o plan.png
+    python -m lidar2ha.preview model.json -o plan.png
 """
 
 from __future__ import annotations

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Inside the package, so an installed wheel actually carries the sources it
-# compiles. Pointing outside src/scan2ha ships a package that cannot build.
+# compiles. Pointing outside src/lidar2ha ships a package that cannot build.
 JAVA_SRC = Path(__file__).resolve().parent / "java"
 
 # Where Sweet Home 3D installs itself, per platform. First hit wins.
@@ -107,7 +107,7 @@ def _find_sh3d_lib(override: str | Path | None = None) -> Path:
             return p
     raise ToolchainError(
         "Sweet Home 3D not found. Install it from https://www.sweethome3d.com/ "
-        "or set sweethome3d_jar in project.yaml (or $SCAN2HA_SH3D_JAR)."
+        "or set sweethome3d_jar in project.yaml (or $LIDAR2HA_SH3D_JAR)."
     )
 
 
@@ -172,7 +172,7 @@ def _find_plugin() -> Path | None:
 
 def detect(sh3d_jar: str | Path | None = None) -> Toolchain:
     """Locate everything. Raises ToolchainError with an actionable message."""
-    sh3d_jar = sh3d_jar or os.environ.get("SCAN2HA_SH3D_JAR")
+    sh3d_jar = sh3d_jar or os.environ.get("LIDAR2HA_SH3D_JAR")
     lib = _find_sh3d_lib(sh3d_jar)
     javac, java = _find_jdk()
     furniture = lib / "Furniture.jar"
@@ -192,7 +192,7 @@ def detect(sh3d_jar: str | Path | None = None) -> Toolchain:
 def _cache_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
     root = Path(base) if base else Path.home() / ".cache"
-    return root / "scan2ha" / "jclasses"
+    return root / "lidar2ha" / "jclasses"
 
 
 # Everything here targets Java 8, once, because everything here ultimately runs

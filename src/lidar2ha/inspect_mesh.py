@@ -12,7 +12,7 @@ means the scan missed walls the floor plan believes exist, which is the
 signature of a mirror or a room the phone never pointed at.
 
 Usage:
-    python -m scan2ha.inspect_mesh mesh.obj
+    python -m lidar2ha.inspect_mesh mesh.obj
 """
 
 from __future__ import annotations

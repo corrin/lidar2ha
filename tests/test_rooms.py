@@ -8,8 +8,8 @@ looks fine until lights group by the wrong half.
 
 from __future__ import annotations
 
-from scan2ha.rooms import apply, polygon_of
-from scan2ha.schema import Level, Model, Room
+from lidar2ha.rooms import apply, polygon_of
+from lidar2ha.schema import Level, Model, Room
 
 
 def model_with(*rooms: Room) -> Model:

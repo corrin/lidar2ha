@@ -23,7 +23,7 @@ Assumes plan and mesh share a frame up to cm-vs-m scaling, which holds when
 registration is near-identity; the reported face counts show if it does not.
 
 Usage:
-    python -m scan2ha.ceilings model.json mesh.obj
+    python -m lidar2ha.ceilings model.json mesh.obj
 """
 
 from __future__ import annotations

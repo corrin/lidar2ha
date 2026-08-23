@@ -21,7 +21,7 @@ averaging or compositing it -- blending outlines 17 cm apart matches neither
 wall.
 
 Usage:
-    python -m scan2ha.compare source.json target.json
+    python -m lidar2ha.compare source.json target.json
 """
 
 from __future__ import annotations

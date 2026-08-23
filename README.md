@@ -1,4 +1,4 @@
-# scan2ha
+# lidar2ha
 
 Turn a phone LiDAR scan of a house into an interactive 3D floorplan in Home Assistant —
 tap a light on your dashboard, watch the room illuminate, raytraced, with light spilling
@@ -44,11 +44,11 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
 | Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), **needs human review** |
 | Review sheet for the fittings found | works (`contactsheet.py`) |
-| `scan2ha doctor`, `build` and `lights` | works (`cli.py`) |
+| `lidar2ha doctor`, `build` and `lights` | works (`cli.py`) |
 | **Seam/seed open-plan splitting** | **does not exist** — `rooms.py` merges named rooms instead |
-| **`scan2ha add-capture` / `render` / `deploy`** | **does not exist** (they exit saying so) |
+| **`lidar2ha add-capture` / `render` / `deploy`** | **does not exist** (they exit saying so) |
 
-`pip install .` now gives you a working `scan2ha` with `doctor`, `lights` and `build`; the
+`pip install .` now gives you a working `lidar2ha` with `doctor`, `lights` and `build`; the
 other three subcommands are registered so `--help` matches this table, and each exits
 telling you what to run instead. The package is not on PyPI. The remaining stages are still scripts you run
 by hand.
@@ -150,10 +150,10 @@ You need Python 3.11+, [Sweet Home 3D](https://www.sweethome3d.com/), the
 Home 3D bundles a runtime but no compiler).
 
 ```bash
-git clone https://github.com/<you>/scan2ha && cd scan2ha
+git clone https://github.com/<you>/lidar2ha && cd lidar2ha
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-scan2ha doctor
+lidar2ha doctor
 ```
 
 `doctor` finds Sweet Home 3D, the plugin and your JDK, then **compiles the Java against
@@ -161,42 +161,42 @@ your own installation** and reports the compiler's own errors. That last step is
 a version check that only looked at paths passed happily while the sources would not build.
 
 Each stage is a module you run by hand, inspecting the output before moving on. Run them
-with `python -m` — they import their shared model from `scan2ha.schema`, so running the
+with `python -m` — they import their shared model from `lidar2ha.schema`, so running the
 files by path fails on the relative import. Paths below are illustrative; substitute your
 own.
 
 ```bash
 # 1. floor plan -> intermediate model
-python -m scan2ha.polycam floorplan.dxf --csv rooms.csv -o home.json
+python -m lidar2ha.polycam floorplan.dxf --csv rooms.csv -o home.json
 
 # 2. what elevation is each floor at?
-python -m scan2ha.mesh mesh.obj
+python -m lidar2ha.mesh mesh.obj
 
 # 3. put the plan and the mesh in the same coordinate frame
-python -m scan2ha.registration home.json mesh.obj -o registered.json
+python -m lidar2ha.registration home.json mesh.obj -o registered.json
 
 # 4. one rectified photo per wall (or textures_tile.py for the cheap fallback)
-python -m scan2ha.textures_project registered.json mesh.obj -o walltex
+python -m lidar2ha.textures_project registered.json mesh.obj -o walltex
 
 # 5. give rooms their HA area names, merging open-plan splits
-python -m scan2ha.rooms registered.json project.yaml -o named.json --capture upstairs
+python -m lidar2ha.rooms registered.json project.yaml -o named.json --capture upstairs
 
 # 5b. OPTIONAL, from a fixture pass: find the real fittings, put them in rooms,
 #     and build the sheet you approve them against before anything is placed
-python -m scan2ha.fixtures fixture_mesh.obj -o fixtures.json --crops crops/
-python -m scan2ha.placefixtures fixtures.json fixture_registered.json named.json \
+python -m lidar2ha.fixtures fixture_mesh.obj -o fixtures.json --crops crops/
+python -m lidar2ha.placefixtures fixtures.json fixture_registered.json named.json \
     -o fixtures_placed.json
-python -m scan2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
+python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 #     Look at sheet.png. Windows and candles look exactly like fittings to the
 #     detector; only you can tell. Then pass the approved file to lights below.
 
 # 6. read the HA registry and place every light.* entity in its room
-scan2ha lights named.json --refresh --project project.yaml -o lights.json \
+lidar2ha lights named.json --refresh --project project.yaml -o lights.json \
     --fittings fixtures_placed.json   # omit to place at the pole instead
 
 # 7. scene file -> .sh3d: compiles and runs the Java for you, then reopens the
 #    result through Sweet Home 3D's own reader
-scan2ha build named.json -o house.sh3d \
+lidar2ha build named.json -o house.sh3d \
     --walltex walltex/manifest.json --lights lights.json --elevation 'Upper=262'
 ```
 
@@ -212,7 +212,7 @@ Rendering has no subcommand yet, so drive it through `javabridge`, which locates
 the **two JVMs** each program needs:
 
 ```python
-from scan2ha import javabridge
+from lidar2ha import javabridge
 tc = javabridge.detect()
 classes = javabridge.compile_java(tc)
 javabridge.run_render(tc, classes, "render.log", "house.sh3d", "render_out")

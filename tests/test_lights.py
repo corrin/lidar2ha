@@ -13,8 +13,8 @@ import json
 import pytest
 from shapely.geometry import Point, Polygon
 
-from scan2ha.ha import LightEntity
-from scan2ha.lights import (
+from lidar2ha.ha import LightEntity
+from lidar2ha.lights import (
     Fitting,
     LightsConfig,
     build_lights,
@@ -25,7 +25,7 @@ from scan2ha.lights import (
     room_index,
     valid_entity_id,
 )
-from scan2ha.schema import Level, Model, Room
+from lidar2ha.schema import Level, Model, Room
 
 # An L. Its centroid is outside it, which is the whole reason for the pole.
 L_SHAPE = [(0, 0), (600, 0), (600, 100), (100, 100), (100, 600), (0, 600)]
