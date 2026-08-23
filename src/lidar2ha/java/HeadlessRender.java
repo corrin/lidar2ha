@@ -44,7 +44,29 @@ public class HeadlessRender {
       System.exit(2);
     }
 
-    boolean listOnly = args.length > 1 && "--list".equals(args[1]);
+    // Flags anywhere, not just as args[1]. The old positional handling meant
+    // `HeadlessRender model.sh3d out --list` silently rendered.
+    boolean listOnly = false;
+    String outDir = null;
+    Integer width = null;
+    Integer height = null;
+    for (int i = 1; i < args.length; i++) {
+      if ("--list".equals(args[i])) {
+        listOnly = true;
+      } else if (outDir == null) {
+        outDir = args[i];
+      } else if (width == null) {
+        width = Integer.valueOf(args[i]);
+      } else if (height == null) {
+        height = Integer.valueOf(args[i]);
+      }
+    }
+    // Both or neither: a lone width used to be accepted and then ignored, so a
+    // render came out at the wrong size with nothing said about it.
+    if ((width == null) != (height == null)) {
+      System.err.println("give both width and height, or neither");
+      System.exit(2);
+    }
 
     UserPreferences prefs = new DefaultUserPreferences();
     Home home = new HomeFileRecorder(9, false, prefs, false, true, true).readHome(args[0]);
@@ -79,7 +101,14 @@ public class HeadlessRender {
 
     // The mixing mode decides how many combinations get rendered, so it has to
     // be set before the count means anything -- including for --list.
-    controller.setLightMixingMode(Controller.LightMixingMode.CSS);
+    //
+    // CSS renders one image per light and lets the browser add them together.
+    // OVERLAY renders every combination of the lights IN EACH ROOM, and FULL
+    // every combination in the house -- which is 2^n, so a house with twenty
+    // lights is a million images. Defaulting to anything else would be a way to
+    // spend a fortnight by accident.
+    controller.setLightMixingMode(Controller.LightMixingMode.valueOf(
+        System.getProperty("mixing", "CSS").toUpperCase()));
     System.out.println("total renders    : " + controller.getNumberOfTotalRenders());
 
     // Reported BEFORE rendering, and before --list returns, because this is the
@@ -90,13 +119,24 @@ public class HeadlessRender {
       return;
     }
 
-    if (args.length > 1) {
-      controller.setOutputDirectory(args[1]);
+    if (outDir != null) {
+      controller.setOutputDirectory(outDir);
     }
-    if (args.length > 3) {
-      controller.setRenderWidth(Integer.parseInt(args[2]));
-      controller.setRenderHeight(Integer.parseInt(args[3]));
+    if (width != null) {
+      controller.setRenderWidth(width);
+      controller.setRenderHeight(height);
     }
+    controller.setRenderer(Controller.Renderer.valueOf(
+        System.getProperty("renderer", "SUNFLOW").toUpperCase()));
+    controller.setImageFormat(Controller.ImageFormat.valueOf(
+        System.getProperty("imageFormat", "PNG").toUpperCase()));
+    if (System.getProperty("sensitivity") != null) {
+      controller.setSensitivity(Integer.parseInt(System.getProperty("sensitivity")));
+    }
+    // "Use existing renders": regenerate the floor plan and YAML from images
+    // already on disk, without raytracing again.
+    controller.setUserExistingRenders(
+        Boolean.parseBoolean(System.getProperty("useExistingRenders", "false")));
     // Quality is not merely a speed dial. Sweet Home 3D's LOW settings capture
     // the Java3D OpenGL view instead of raytracing, so they need a working
     // offscreen GL context -- and when that is unavailable the render does not
@@ -108,9 +148,11 @@ public class HeadlessRender {
     // with -Dquality=LOW when a GL context is known good and speed matters.
     String quality = System.getProperty("quality", "HIGH").toUpperCase();
     controller.setQuality(Controller.Quality.valueOf(quality));
-    controller.setLightMixingMode(Controller.LightMixingMode.CSS);
 
     System.out.println("quality          : " + quality);
+    System.out.println("renderer         : " + controller.getRenderer());
+    System.out.println("mixing           : " + controller.getLightMixingMode());
+    System.out.println("reusing renders  : " + controller.getUserExistingRenders());
     System.out.println("output directory : " + controller.getOutputDirectory());
     System.out.println("render size      : "
         + controller.getRenderWidth() + "x" + controller.getRenderHeight());

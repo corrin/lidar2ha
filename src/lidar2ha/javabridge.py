@@ -257,7 +257,8 @@ def run_writer(tc: Toolchain, classes: Path, main: str, *args: str) -> subproces
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def run_render(tc: Toolchain, classes: Path, log: Path, *args: str) -> subprocess.CompletedProcess:
+def run_render(tc: Toolchain, classes: Path, log: Path, *args: str,
+               **properties: str) -> subprocess.CompletedProcess:
     """Run HeadlessRender the way Sweet Home 3D runs itself.
 
     The renderer is not pure Java. Java3D and YafaRay are native libraries, and
@@ -278,6 +279,23 @@ def run_render(tc: Toolchain, classes: Path, log: Path, *args: str) -> subproces
     outside. Falls back to the JDK only when no bundled runtime is found, which
     will fail on Java3D -- but failing with a clear log beats failing silently.
     """
+    return subprocess.run(render_command(tc, classes, log, *args, **properties),
+                          capture_output=True, text=True)
+
+
+def render_command(tc: Toolchain, classes: Path, log: Path, *args: str,
+                   **properties: str) -> list[str]:
+    """The exact command line a render runs as.
+
+    Separate from run_render because a render is not a thing you wait on
+    blindly: it can take an hour, and against a console-less javaw.exe
+    subprocess.run returns empty output at the end of it. A caller that wants to
+    show progress drives Popen with this and tails `log` -- which keeps the
+    two-JVM knowledge here, where the module docstring promises it lives.
+
+    `properties` become -D flags, so options the plugin reads as system
+    properties (quality, mixing, renderer, ...) are reachable from Python.
+    """
     jvm = tc.render_java or tc.java
     log.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -285,9 +303,8 @@ def run_render(tc: Toolchain, classes: Path, log: Path, *args: str) -> subproces
         f"-DlogFile={log}",
         # Both directories: Java3D's DLLs sit in lib/, YafaRay's in lib/yafaray/.
         f"-Djava.library.path={tc.sh3d_lib}{os.pathsep}{tc.sh3d_lib / 'yafaray'}",
-        "-cp",
-        tc.render_classpath(classes),
-        "HeadlessRender",
-        *args,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    cmd += [f"-D{key}={value}" for key, value in sorted(properties.items())
+            if value is not None]
+    cmd += ["-cp", tc.render_classpath(classes), "HeadlessRender", *args]
+    return cmd

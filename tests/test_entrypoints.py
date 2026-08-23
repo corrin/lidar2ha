@@ -118,7 +118,7 @@ def test_every_stage_exposes_a_main():
     import importlib
 
     stages = ["ceilings", "compare", "contactsheet", "fixtures", "floormap", "ha",
-              "inspect_dxf", "inspect_mesh", "lights", "mesh", "placefixtures",
+              "inspect_dxf", "inspect_mesh", "lights", "mesh", "placefixtures", "render",
               "polycam", "preview", "registration", "rooms", "seams",
               "textures_project", "textures_tile", "thresholds"]
     missing = [s for s in stages

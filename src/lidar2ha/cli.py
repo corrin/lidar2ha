@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from . import __version__, javabridge
+from . import __version__, javabridge, render
 from .javabridge import ToolchainError
 
 OK = "ok"
@@ -140,9 +140,19 @@ camera:
                   # see wall faces, but near walls can hide rooms behind them.
 
 # The render size, which also fixes the aspect ratio the camera is framed for.
+# `render` warns if you ask it for a different shape than `build` framed.
 render:
   width: 1920
   height: 1080
+  quality: HIGH     # LOW does not raytrace at all -- it screenshots the GL view,
+                    # and returns a BLANK frame when there is no GL context.
+  renderer: SUNFLOW # or YAFARAY
+  # How many images get made, and it is not a small difference:
+  #   CSS      one per light, the browser adds them        n + 1
+  #   OVERLAY  every combination of each room's lights     2^(lights in room)
+  #   FULL     every combination in the house              2^n
+  # On one 21-light house: 22 frames, 65541 frames, and 2097152 frames.
+  mixing: CSS
 """
 
 
@@ -358,6 +368,139 @@ def lights(model_json: Path, out: Path, registry: Path, refresh: bool, project: 
 
 
 # --------------------------------------------------------------------------- #
+# render
+# --------------------------------------------------------------------------- #
+
+
+@cli.command(name="render")
+@click.argument("sh3d", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--out", type=click.Path(path_type=Path), default=Path("render_out"),
+              show_default=True, help="where the images and floorplan.yaml go")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="project.yaml, for the render size and quality")
+@click.option("--list", "list_only", is_flag=True,
+              help="report what the plugin detects and what it would cost, and stop")
+@click.option("--preview", is_flag=True,
+              help=f"render small ({render.PREVIEW_WIDTH}x{render.PREVIEW_HEIGHT}) "
+                   "to check the framing before committing to a full pass")
+@click.option("--reuse", is_flag=True,
+              help="regenerate the floor plan and YAML from images already rendered")
+@click.option("--yes", "-y", is_flag=True, help="do not ask before a long render")
+@click.option("--width", type=int, default=None, help="override the project's render width")
+@click.option("--height", type=int, default=None, help="override the project's render height")
+@click.option("--quality", type=click.Choice(["HIGH", "LOW"], case_sensitive=False),
+              default=None, help="LOW does not raytrace; see the warning it prints")
+@click.option("--renderer", type=click.Choice(["SUNFLOW", "YAFARAY"], case_sensitive=False),
+              default=None)
+@click.option("--mixing", type=click.Choice(["CSS", "OVERLAY", "FULL"], case_sensitive=False),
+              default=None, help="OVERLAY and FULL render combinations; read the count first")
+def render_cmd(sh3d: Path, out: Path, project: Path | None, list_only: bool, preview: bool,
+               reuse: bool, yes: bool, width: int | None, height: int | None,
+               quality: str | None, renderer: str | None, mixing: str | None) -> None:
+    """Raytrace the model once per light state and emit floorplan.yaml.
+
+    The cost is knowable before any of it is spent, so it always is: `--list`
+    reports the frame count for free, and a full run prints it and an estimate
+    before starting. The number matters because one setting changes it by orders
+    of magnitude -- CSS renders one image per light, FULL renders every
+    combination of every light in the house.
+    """
+    import subprocess
+
+    settings = _project_settings(project)
+    conf = settings.get("render") or {}
+    if preview:
+        width, height = render.PREVIEW_WIDTH, render.PREVIEW_HEIGHT
+    width = width or int(conf.get("width", 1920))
+    height = height or int(conf.get("height", 1080))
+    quality = (quality or conf.get("quality") or "HIGH").upper()
+    renderer = (renderer or conf.get("renderer") or "SUNFLOW").upper()
+    mixing = (mixing or conf.get("mixing") or "CSS").upper()
+
+    # `build` framed the camera for the project's aspect ratio. Rendering at a
+    # different one silently crops or letterboxes a carefully solved shot.
+    framed = float(conf.get("width", 1920)) / float(conf.get("height", 1080))
+    if abs(width / height - framed) > 0.01:
+        click.echo(f"  warning: rendering at {width}x{height} but the camera was framed "
+                   f"for {framed:.2f}:1. Re-run `build` with a matching project.yaml, "
+                   f"or expect the edges to be wrong.")
+
+    try:
+        tc = javabridge.detect()
+        classes = javabridge.compile_java(tc)
+    except ToolchainError as exc:
+        click.echo(f"\n{exc}\n")
+        raise SystemExit("run `lidar2ha doctor` for the full picture") from exc
+    if not tc.plugin_jar:
+        raise SystemExit(
+            "The home-assistant-floor-plan plugin is not installed, and it is what "
+            "does the rendering. Get it from "
+            "https://github.com/shmuelzon/home-assistant-floor-plan")
+
+    out.mkdir(parents=True, exist_ok=True)
+    log = out / "render.log"
+    properties = {"quality": quality, "renderer": renderer, "mixing": mixing,
+                  "useExistingRenders": "true" if reuse else "false"}
+
+    # The free pass: detection and the frame count, without tracing a pixel.
+    log.unlink(missing_ok=True)
+    javabridge.run_render(tc, classes, log, str(sh3d), "--list", **properties)
+    report = render.parse_log(log.read_text(encoding="utf-8", errors="replace"))
+    for error in report.errors:
+        click.echo(f"  {error}")
+
+    click.echo(f"  detected  : {len(report.lights)} light entities, "
+               f"{len(report.others)} other")
+    for name in report.lights:
+        click.echo(f"      {name}")
+    if not report.lights:
+        click.echo("  Nothing to render. The plugin matches furniture by name against "
+                   "entity ids, so a light it cannot see is usually invisible or has "
+                   "power 0.")
+
+    frames = report.total_renders or 0
+    estimate = render.estimate_seconds(frames, width, height)
+    click.echo(f"  plan      : {frames} frame(s) at {width}x{height}, {mixing} mixing")
+    click.echo(f"  estimate  : about {render.human_duration(estimate)}")
+
+    if list_only:
+        return
+    if frames > render.CONFIRM_ABOVE and not yes:
+        click.confirm(f"  That is {frames} renders. Go ahead?", abort=True)
+
+    click.echo(f"  rendering into {out} ...")
+    log.unlink(missing_ok=True)
+    command = javabridge.render_command(
+        tc, classes, log, str(sh3d), str(out), str(width), str(height), **properties)
+    process = subprocess.Popen(command)
+
+    def progress(done: int, total: int | None) -> None:
+        click.echo(f"      {done}/{total or '?'} frames")
+
+    try:
+        render.follow(log, out, lambda: process.poll() is None, frames, progress)
+    except KeyboardInterrupt:
+        process.terminate()
+        raise SystemExit(
+            f"\nStopped. The frames already in {out / 'renders'} are kept -- re-run "
+            f"with --reuse to rebuild the floor plan from them without raytracing "
+            f"again.") from None
+
+    report = render.parse_log(log.read_text(encoding="utf-8", errors="replace"))
+    for error in report.errors:
+        click.echo(f"  {error}")
+    if process.returncode != 0 or not report.finished:
+        raise SystemExit(f"the render did not finish -- see {log}")
+
+    result = render.describe_output(out)
+    click.echo(f"  done in {render.human_duration(report.seconds or 0)}  "
+               f"({result['renders']} frames, {result['overlays']} overlays)")
+    if not result["card"]:
+        raise SystemExit(f"no floorplan.yaml in {out} -- see {log}")
+    click.echo(f"Next:  lidar2ha deploy {out}")
+
+
+# --------------------------------------------------------------------------- #
 # not built yet
 # --------------------------------------------------------------------------- #
 
@@ -373,8 +516,6 @@ def _unbuilt(name: str, what: str, instead: str) -> None:
 
 _unbuilt("add-capture", "unpack a Polycam floorplan zip and mesh into the project",
          "For now, unzip them yourself and run `python -m lidar2ha.polycam` on the DXF.")
-_unbuilt("render", "raytrace the model once per light state and emit floorplan.yaml",
-         "For now, drive HeadlessRender directly -- see javabridge.run_render.")
 _unbuilt("deploy", "copy the renders and floorplan.yaml to Home Assistant over SSH",
          "For now, copy them to /config/www/ yourself.")
 
