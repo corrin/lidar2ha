@@ -21,7 +21,9 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
+from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
 from lidar2ha import combine as combining
@@ -694,6 +696,122 @@ def test_the_suggestion_reaches_the_work_list_with_what_to_do(trio):
     entries = [w for w in result.worklist if w["kind"].startswith("name_")]
     assert entries
     assert all(w["reasons"] and w["reasons"][0] for w in entries)
+
+
+# --------------------------------------------------------------------------- #
+# the averaged walls, and each capture's distance from them
+# --------------------------------------------------------------------------- #
+
+
+def placed_pair(trio, names):
+    """Two captures in one averaged frame -- the setup several tests share."""
+    models = {n: trio[n] for n in names}
+    poses = combining.global_poses(combining.pairwise_fits(models), set(models))
+    return {n: combining.place_in_frame(models[n].levels[0], poses[n]) for n in models}
+
+
+def test_a_half_turn_between_two_captures_survives_the_averaging(trio):
+    """Rotation averaging by repeated substitution OSCILLATES on two captures.
+
+    `scan7` sits 180.29 deg from `midlevel_fixtures` and the return fit says
+    179.71. Substituting each into the other flips the pair between a half turn
+    and none every round, never settles, and stops at whichever parity the loop
+    runs out on. That placed the pair 35.3 cm apart where their own fit puts
+    them 3.6 cm apart -- a good pair convicted by arithmetic alone."""
+    names = ("scan7", "midlevel_fixtures")
+    models = {n: trio[n] for n in names}
+    poses = combining.global_poses(combining.pairwise_fits(models), set(models))
+
+    turn = math.degrees(poses["scan7"][0] - poses["midlevel_fixtures"][0]) % 360
+    assert 175 < turn < 185, f"the half turn was lost: {turn:.1f} deg"
+
+    clouds = placed_pair(trio, names)
+    apart = combining.median_distance(clouds["scan7"], clouds["midlevel_fixtures"])
+    assert apart is not None
+    assert apart * combining.M_TO_CM < 5.0, (
+        f"averaged poses put a 3.6 cm pair "
+        f"{apart * combining.M_TO_CM:.1f} cm apart")
+
+
+def test_an_abstract_wall_needs_two_captures_to_agree_it_is_there(trio):
+    """One capture's opinion is not a consensus. A wall only one capture drew,
+    admitted to the average, would let that capture be measured against its own
+    answer -- scoring zero exactly where nothing corroborates it, which is where
+    a capture is most likely to be wrong."""
+    clouds = placed_pair(trio, ("scan7", "midlevel_fixtures"))
+
+    together = combining.abstract_walls(clouds)
+    alone = combining.abstract_walls({"scan7": clouds["scan7"]})
+    assert len(together) > 100, "if this is empty the test proves nothing"
+    assert len(alone) == 0, "one capture produced abstract walls on its own"
+
+
+def test_a_capture_that_votes_on_the_walls_flatters_itself(trio):
+    """Why the ballot leaves one out. Measured on all three fixtures in one
+    frame, letting a capture vote on the average it is then measured against
+    moves it from 8.1 cm to 2.5 cm -- and the same flattery, 4.7 cm of it, lands
+    on `midlevel`, the capture the measurement exists to catch."""
+    models = dict(trio)
+    poses = combining.global_poses(combining.pairwise_fits(models), set(models))
+    clouds = {n: combining.place_in_frame(models[n].levels[0], poses[n])
+              for n in models}
+
+    voting = combining.median_distance(clouds["scan7"],
+                                       combining.abstract_walls(clouds))
+    excluded = combining.median_distance(
+        clouds["scan7"], combining.abstract_walls(clouds, exclude="scan7"))
+    assert voting is not None and excluded is not None
+    assert excluded > voting * 2, (
+        f"voting cost only {(excluded - voting) * combining.M_TO_CM:.1f} cm")
+
+
+def test_the_averaged_walls_are_no_denser_than_one_capture(trio):
+    """Every voter emits its own averaged point at the same wall, and a denser
+    reference always yields smaller nearest-neighbour distances. Unthinned, the
+    points land on top of each other -- 0.00 cm median spacing -- so a capture
+    judged against three others would beat one judged against two on arithmetic,
+    and no two levels' figures would be comparable.
+
+    Thinning at HALF the sampling step was not enough: two voters gave 5.12 cm
+    against a capture's own 5.14, but three gave 2.59."""
+    models = dict(trio)
+    poses = combining.global_poses(combining.pairwise_fits(models), set(models))
+    clouds = {n: combining.place_in_frame(models[n].levels[0], poses[n])
+              for n in models}
+
+    def spacing(points):
+        d, _ = cKDTree(points).query(points, k=2)
+        return float(np.median(d[:, 1]))
+
+    one = spacing(clouds["scan7"])
+    assert spacing(combining.abstract_walls(clouds)) > one * 0.8, (
+        "three voters produced a cloud denser than the captures that made it")
+    two = placed_pair(trio, ("scan7", "midlevel_fixtures"))
+    assert spacing(combining.abstract_walls(two)) > one * 0.8
+
+
+def test_the_averaged_walls_put_more_air_around_the_bad_capture(trio):
+    """The whole point of the change. `midlevel` is the capture this house's
+    mid-level model was wrongly built from.
+
+    Against its friendliest single partner it reads 10.5 cm, 3.0x the best.
+    Against the walls the other two agree about it reads 27.4 cm, 8.0x."""
+    onto = combining.fits_onto_others(trio)
+    best = min(onto.values())
+    assert onto["midlevel"] / best > 5.0, (
+        f"midlevel only {onto['midlevel'] / best:.1f}x the best")
+
+
+def test_two_agreeing_captures_say_so_rather_than_claim_a_consensus(combined):
+    """Removing one of two voters leaves a single opinion, not an average. The
+    figure is still worth reporting and it is NOT a consensus, and a column that
+    said only "fits onto the others" would hide which of the two it was."""
+    basis = combined.agreement_basis
+    assert "not a consensus" in basis["scan7"]
+    assert "not a consensus" in basis["midlevel_fixtures"]
+    # ...and the discarded capture, which had no vote to remove, is measured
+    # against the average the other two actually made.
+    assert basis["midlevel"].startswith("the averaged walls")
 
 
 # --------------------------------------------------------------------------- #

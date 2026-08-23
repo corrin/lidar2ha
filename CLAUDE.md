@@ -210,12 +210,27 @@ Three traps, all paid for once already:
   works alone -- per-room misses the strip, connected components fuse adjacent
   new rooms into an unnamed blob.
 
-- **Read the ROW of the pairwise matrix, not the column.** How well other
-  captures fit onto one is circular -- it partly measures how much that capture
-  is being used as the yardstick. How well it fits ONTO ground the others agree
-  about is not. On one level the capture with the most walls, which the first
-  reference rule chose and which the whole model was built from, turned out to
-  be the worst of three at 12.6 cm against 5.4 and 4.0.
+- **Average the walls, then measure each capture against the average.** A
+  capture is judged by how far it sits from walls that several others agree
+  about and that IT DID NOT VOTE ON. Not by how well others fit onto it -- that
+  is circular, it partly measures how much the capture is being used as the
+  yardstick. Not by its friendliest single pairing either: agreeing well with
+  exactly one other capture is not agreement with the level, and it let
+  `nathan_bedroom`, which lands 65 deg out on a hallway, read 7.9 cm.
+  Measured over twelve captures on three storeys, the averaged figure separates
+  2.5-4.3 cm from 14.7-29.2 cm where the best pairing gave 2.6-4.5 against
+  7.9-28.2. Three traps in the averaging itself, all paid for:
+  - **The frame comes from the agreeing captures alone.** Averaging poses over
+    every pairwise fit lets one wrong-basin capture drag the frame for
+    everybody: done that way, `scan9` read 21.6 cm against its measured 2.7.
+  - **Solve the rotations, never iterate them.** Substituting each capture's
+    rotation into its neighbours' oscillates -- a 180.29 deg pairing with a
+    179.71 deg return flips between a half turn and none every round and stops
+    wherever the loop runs out, putting a 3.6 cm pair 35.3 cm apart.
+  - **Thin the averaged walls to the sampling step.** Every voter emits a point
+    at the same wall, and a denser reference shrinks every distance measured to
+    it. Thinning at half the step was not enough: two voters gave 5.12 cm
+    spacing against a capture's own 5.14, three gave 2.59.
 - **The anchor is the capture that resolves the most rooms**, with fit quality
   as a guard rather than the ranking. A capture that fused three rooms into one,
   used as the anchor, makes that fusion the baseline and turns every capture
