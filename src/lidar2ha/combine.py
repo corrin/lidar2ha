@@ -1550,8 +1550,9 @@ def main() -> None:
     ap.add_argument("--worklist", default=None,
                     help="where to write the work list json (default: alongside --out)")
     ap.add_argument("--reference", help="capture id to anchor on; default is chosen")
-    ap.add_argument("--level", help="which level to take from each capture, when a "
-                                    "capture holds more than one")
+    ap.add_argument("--storey", help="which level to take from INSIDE each capture, "
+                                     "when a capture holds more than one. Matches "
+                                     "Level.name in the model json")
     ap.add_argument("--max-median-cm", type=float, default=MAX_MEDIAN_CM,
                     help="a fit worse than this is not the same rooms. NOT a coverage "
                          "threshold -- see the module docstring")
@@ -1571,10 +1572,18 @@ def main() -> None:
             name = Path(path).stem
             for suffix in ("_registered", "_named", "_split"):
                 name = name.removesuffix(suffix)
+        if name in models:
+            # `midlevel_named.json` and `midlevel_registered.json` both reduce to
+            # `midlevel`, and overwriting would drop a whole capture -- reporting
+            # on fewer scans than were listed, with nothing saying so.
+            raise SystemExit(
+                f"two of the files given reduce to the capture id {name!r}, and "
+                f"keeping one of them silently is how a capture stops "
+                f"contributing. Name them apart: {name}_a=path.json")
         models[name] = load_model(path)
 
     try:
-        result = combine(models, level_name=args.level, reference=args.reference,
+        result = combine(models, level_name=args.storey, reference=args.reference,
                          max_median_cm=args.max_median_cm, max_p90_cm=args.max_p90_cm,
                          edge=args.edge_containment)
     except ValueError as exc:

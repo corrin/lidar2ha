@@ -248,8 +248,14 @@ def init(directory: Path) -> None:
               help="the tail matters more than the median: two captures can agree "
                    "at 6 cm median and still differ by 44 cm at p90, which on a "
                    "2.6 m2 room is a large part of the room")
+@click.option("--storey", default=None,
+              help="which level to take from INSIDE each capture, when a capture "
+                   "holds more than one. This is a Level.name in the model json, "
+                   "not the LEVEL argument above -- that names a group of captures "
+                   "in project.yaml")
 def combine(level: str, project: Path, out: Path | None, reference: str | None,
-            max_median_cm: float | None, max_p90_cm: float | None) -> None:
+            max_median_cm: float | None, max_p90_cm: float | None,
+            storey: str | None) -> None:
     """Merge every capture of one LEVEL into one model, and say what to re-scan.
 
     Geometry is SELECTED and never averaged: two plans of one room disagree by
@@ -317,14 +323,15 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                    "work list cannot say which areas ended up with no source.")
 
     multi = [c for c in ids if (captures.get(c) or {}).get("multi_floor")]
-    if multi:
-        click.echo(f"  note: {', '.join(multi)} declared multi_floor -- pass --level "
-                   f"to say which storey to take from each.")
+    if multi and storey is None:
+        click.echo(f"  note: {', '.join(multi)} declared multi_floor. Combining is "
+                   f"per storey, so pass --storey NAME to say which one to take "
+                   f"from each -- otherwise they will be refused.")
 
     click.echo("")
     try:
         result = combining.combine(
-            models, reference=reference, expected_areas=areas,
+            models, level_name=storey, reference=reference, expected_areas=areas,
             max_median_cm=max_median_cm or combining.MAX_MEDIAN_CM,
             max_p90_cm=max_p90_cm or combining.MAX_P90_CM)
     except ValueError as exc:

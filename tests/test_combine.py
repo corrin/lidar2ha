@@ -419,11 +419,24 @@ def test_an_area_the_project_maps_but_nobody_won_is_named(house):
 
 
 def test_a_room_only_the_reference_saw_still_reaches_the_output(combined):
-    """Union runs both ways. The reference's pantry is in no other capture and
-    must survive exactly as the fixture pass's bathroom does."""
-    pantry = room_named(combined.model, "Other 2")
-    assert pantry.source in {"midlevel", "midlevel_fixtures"}
-    assert sum(1 for r in combined.model.levels[0].rooms if r.name == "Other 2") == 2
+    """Union runs both ways. The reference's pantry stands on floor no other
+    capture reached, and must survive exactly as the fixture pass's bathroom
+    does.
+
+    Selected by source AND area, not by name: both captures happen to contain a
+    room called `Other 2` and they are different rooms 2.3 and 9.6 m2 apart, so
+    matching on the name alone accepts either and proves nothing.
+    """
+    pantry = next(r for r in combined.model.levels[0].rooms
+                  if r.name == "Other 2" and r.source == "midlevel")
+    assert Polygon(pantry.points).area / 10_000 == pytest.approx(2.29, abs=0.05)
+
+    group = next(g for g in combined.groups
+                 if any(combined.candidates[i].capture == "midlevel"
+                        and combined.candidates[i].area_m2 < 2.5
+                        and combined.candidates[i].room.name == "Other 2"
+                        for i in g.members))
+    assert group.kind == "unopposed", "if this fails the room was not reference-only"
 
 
 def test_a_malformed_polygon_is_named_rather_than_skipped(house):
