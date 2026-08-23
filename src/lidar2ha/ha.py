@@ -20,15 +20,26 @@ render would be dark in one room with no explanation. They are proposed and
 classified, and the human excludes what is wrong in project.yaml, where the
 decision is recorded and survives a re-run.
 
-GROUPS ARE ONLY HALF-DETECTABLE, and pretending otherwise would be worse than
-not trying. A light group and its members are the same bulbs counted twice, and
-the raytracer will duly light that room twice as brightly. Home Assistant's own
-light-group helper lists its members in an `entity_id` state attribute, so those
-are found and skipped exactly. Integration-native groups -- ZHA and Zigbee
-groups, Hue rooms, deCONZ groups -- expose no such attribute and are
-indistinguishable from an ordinary light from outside their integration. Those
-are flagged for review by name and excluded by hand; the report says which
-mechanism found what, so nobody assumes the coverage is complete.
+GROUPS ARE FOUND BY THREE MECHANISMS, and the report always says which one
+found what, because their coverage is not the same. A group and its members are
+the same bulbs counted twice, and the raytracer will duly light that room twice
+as brightly -- there is no error, just a room that comes out wrong.
+
+  exact   Home Assistant's own light-group helper lists its members in an
+          `entity_id` state attribute. Both sides are known, so a group is
+          skipped only when its members are genuinely present.
+  device  ZHA hangs a Zigbee group's light entity off the COORDINATOR device --
+          the radio, not a lamp. Nothing else in the light domain lives there,
+          because a real bulb is its own device. So the device is a mechanical
+          test where the name is a guess: on this house it finds four groups
+          and the name heuristic finds one of them.
+  name    Hue rooms, deCONZ groups and anything else integration-native expose
+          neither a member list nor a distinguishing device, and are simply
+          indistinguishable from an ordinary light from outside their
+          integration. Those are flagged for review and excluded by hand.
+
+Nothing found any of these ways disappears quietly, and `lights.include` in
+project.yaml puts any of them back.
 
 The registry is fetched once and cached. The review loop is meant to be run
 repeatedly while you fix names and areas, and it should not need the network or
@@ -62,6 +73,9 @@ INDICATOR_WORDS = (
 # there is that placing it may double-count bulbs placed individually.
 GROUP_WORDS = ("group", "all lights", "all")
 INDICATOR_SUFFIXES = ("_led", "_status_led", "_led_ring", "_indicator", "_status")
+# A Zigbee group's light entity is attached to the coordinator device. Nothing
+# else in the light domain is, so this is a mechanical test rather than a hint.
+COORDINATOR_WORD = "coordinator"
 
 
 @dataclass
@@ -73,6 +87,10 @@ class LightEntity:
     area: str | None
     area_from: str = "none"          # "entity" | "device" | "none"
     device_id: str | None = None
+    # The device is not just where the entity lives, it is evidence about what
+    # the entity IS -- see coordinator_groups.
+    device_model: str | None = None
+    device_name: str | None = None
     disabled: bool = False
     hidden: bool = False
     # A light group names its members in its state attributes. Placing the
@@ -109,6 +127,7 @@ def light_entities(registry: dict) -> list[LightEntity]:
             continue
 
         area, source = resolve_area(entity, devices)
+        device = devices.get(entity.get("device_id") or "") or {}
         state = states.get(entity_id, {})
         attributes = state.get("attributes", {}) or {}
 
@@ -126,6 +145,10 @@ def light_entities(registry: dict) -> list[LightEntity]:
             area=area,
             area_from=source,
             device_id=entity.get("device_id"),
+            device_model=device.get("model"),
+            # name_by_user first, for the same reason the entity's own area
+            # beats its device's: it is the name a human chose deliberately.
+            device_name=device.get("name_by_user") or device.get("name"),
             disabled=bool(entity.get("disabled_by")),
             hidden=bool(entity.get("hidden_by")),
             members=[m for m in members if isinstance(m, str)],
@@ -199,6 +222,35 @@ def redundant_groups(entities: list[LightEntity]) -> dict[str, list[str]]:
         covered = [m for m in entity.members if m in present]
         if covered:
             out[entity.entity_id] = sorted(covered)
+    return out
+
+
+def coordinator_groups(entities: list[LightEntity]) -> dict[str, str]:
+    """Integration-native groups identified by the DEVICE they hang off.
+
+    ZHA gives a Zigbee group its own `light.*` entity and attaches it to the
+    coordinator -- the radio itself. Nothing else in the light domain lives on
+    that device, because a real bulb is its own device. So "this light's device
+    is the coordinator" is a mechanical test for a group, where the name is a
+    guess: on the house this was built for it finds four, and the name
+    heuristic finds one of the same four.
+
+    Unlike `redundant_groups` this CANNOT confirm the members are present,
+    because a ZHA group publishes no member list. It relies instead on ZHA
+    exposing every member device individually, which it does; `lights.include`
+    is the escape hatch for an installation where that is somehow untrue.
+
+    Returns entity_id -> the reason, so the report can name the mechanism that
+    found it rather than lumping every group together.
+    """
+    out = {}
+    for entity in entities:
+        for text in (entity.device_model, entity.device_name):
+            if text and _mentions(_words(text), COORDINATOR_WORD):
+                out[entity.entity_id] = (
+                    f"ZHA group -- its entity hangs off the coordinator device "
+                    f"({text.strip()!r}), and its members are placed instead")
+                break
     return out
 
 
@@ -350,6 +402,7 @@ def main():
 
     entities = light_entities(registry)
     groups = redundant_groups(entities)
+    coordinated = coordinator_groups(entities)
 
     print(f"  areas    : {len(registry.get('areas', []))}")
     print(f"  devices  : {len(registry.get('devices', []))}")
@@ -364,7 +417,12 @@ def main():
             flags.append("hidden")
         if entity.entity_id in groups:
             flags.append(f"group of {len(groups[entity.entity_id])}")
-        note = reason or ", ".join(flags)
+        if entity.entity_id in coordinated:
+            flags.append("ZHA group (on the coordinator)")
+        # Both, not one or the other. A ZHA group that ALSO looks like an
+        # indicator by name is two separate things worth knowing, and the old
+        # `reason or flags` hid whichever came second.
+        note = "; ".join(part for part in (", ".join(flags), reason) if part)
         print(f"  {kind:<8} {entity.entity_id:<52} {str(entity.area):<22} "
               f"[{entity.area_from}] {note}")
 

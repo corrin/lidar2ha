@@ -41,7 +41,14 @@ from pathlib import Path
 from shapely.geometry import Point, Polygon
 from shapely.ops import polylabel
 
-from .ha import LightEntity, classify, light_entities, load_registry, redundant_groups
+from .ha import (
+    LightEntity,
+    classify,
+    coordinator_groups,
+    light_entities,
+    load_registry,
+    redundant_groups,
+)
 from .rooms import polygon_of
 from .schema import Level, Light, Model, Room, load_model
 
@@ -181,6 +188,7 @@ def build_lights(
     rooms = room_index(model)
     report = Report()
     groups = redundant_groups(entities)
+    coordinated = coordinator_groups(entities)
 
     # Group by area first: a room's lights have to be spread against each other,
     # so they cannot be placed one at a time.
@@ -204,6 +212,12 @@ def build_lights(
             report.skipped.append(
                 (entity.entity_id,
                  f"light group; its members are placed instead ({member_ids})"))
+            continue
+        if entity.entity_id in coordinated and not forced:
+            # Found by its device rather than by a member list, so the reason
+            # names the mechanism -- this one cannot check that the members are
+            # present, and the reader should know which kind of finding it is.
+            report.skipped.append((entity.entity_id, coordinated[entity.entity_id]))
             continue
 
         areas = [entity.area] if entity.area else []
