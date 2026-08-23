@@ -201,6 +201,15 @@ class Capture(_Base):
     # median is taken over matched points only, so a fit that abandoned part of
     # the plan reports the median of the part it kept.
     p90_error_m: float | None = None
+    # What `combine` decided about this capture's GEOMETRY, and why. A capture
+    # refused for geometry is still listed here, because the three kinds of
+    # data combine differently and this verdict only governs the first of them:
+    # a scan can be worthless for walls and still be the only one that
+    # photographed a ceiling, or the only one that saw a window. Dropping it
+    # from the record entirely makes "never offered" and "offered and refused"
+    # look identical to everything downstream.
+    verdict: str | None = None
+    refused_because: str | None = None
 
 
 class Level(_Base):
