@@ -135,3 +135,38 @@ def test_a_role_nobody_defined_is_refused():
     typo that means "not geometry" would otherwise read as geometry."""
     with pytest.raises(ValidationError):
         Model(source="x.dxf", role="fixture")
+
+
+# --------------------------------------------------------------------------- #
+# the fields `combine` writes
+# --------------------------------------------------------------------------- #
+
+
+def test_a_model_written_before_combine_existed_still_loads():
+    """Every new field is optional with a default, or every capture already on
+    disk stops loading the day one is added."""
+    old = ('{"source": "a.dxf", "units": "cm", "levels": [{"name": "Floor 1", '
+           '"ceiling_height_cm": 250, "walls": [{"xStart": 0, "yStart": 0, '
+           '"xEnd": 100, "yEnd": 0, "thickness": 10, "height": 250}], '
+           '"rooms": [{"name": "Kitchen", "points": [[0,0],[100,0],[100,100]]}]}]}')
+    model = Model.model_validate_json(old)
+    room = model.levels[0].rooms[0]
+    assert (room.source, room.score, room.provisional) == (None, None, False)
+    assert room.provisional_reason == []
+    assert model.levels[0].walls[0].source is None
+    assert model.captures == []
+
+
+def test_a_reason_survives_the_round_trip_to_disk(tmp_path):
+    """`provisional` without its reasons is a flag nobody can act on, and the
+    reasons only help if they are still there when the file is read back."""
+    model = Model(source="a.dxf", levels=[Level(
+        name="Floor 1", ceiling_height_cm=250,
+        rooms=[Room(name="Bathroom", points=[(0, 0), (100, 0), (100, 100)],
+                    source="midlevel_fixtures", score=0.59, provisional=True,
+                    provisional_reason=["the best source is a fixtures pass"])])])
+    path = tmp_path / "m.json"
+    save_model(model, path)
+    back = load_model(path).levels[0].rooms[0]
+    assert back.source == "midlevel_fixtures"
+    assert back.provisional_reason == ["the best source is a fixtures pass"]

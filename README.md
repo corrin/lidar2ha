@@ -40,13 +40,14 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`), all levels in one pass |
 | Frame the camera so the house fits | works (`camera.py`), solved rather than guessed |
 | Rename rooms to HA areas, merge open-plan splits | works (`rooms.py`), mapping written by hand |
+| Merge several captures of one level | works (`combine.py`), geometry selected per room |
 | Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
 | Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), **needs human review** |
 | Separate windows from fittings mechanically | works (`daylight.py`), differences two captures |
 | Review sheet for the fittings found | works (`contactsheet.py`), windows sorted last |
 | Export a named GLB for a real-time 3D card | works (`ObjExport.java`, `glb.py`) |
-| `lidar2ha doctor`, `build`, `lights`, `render`, `deploy`, `export-glb` | works (`cli.py`) |
+| `lidar2ha doctor`, `build`, `combine`, `lights`, `render`, `deploy`, `export-glb` | works (`cli.py`) |
 | **Seam/seed open-plan splitting** | **does not exist** — `rooms.py` merges named rooms instead |
 | **`lidar2ha add-capture`** | **does not exist** (exits saying so) |
 
@@ -212,6 +213,16 @@ python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 #     outlined, but the cutoff is a guess until you have read a sheet against
 #     it -- and a candle or a mirror still looks exactly like a fitting.
 
+# 5c. OPTIONAL, when a level was scanned more than once: merge the captures.
+#     Geometry is SELECTED, never averaged -- two plans of one room disagree by
+#     ~17 cm and blending matches neither wall -- so the best-scoring capture
+#     takes each room whole and the room records which one it came from.
+#     The work list is the other half of the output: which rooms only a fixture
+#     pass has ever seen, where the captures disagree about the layout, and any
+#     floor a capture saw that the model does not contain.
+python -m lidar2ha.combine midlevel_named.json midlevel_fixtures_named.json     -o midlevel_combined.json
+lidar2ha combine "Mid Level" --project project.yaml   # same, via project.yaml
+
 # 6. read the HA registry and place every light.* entity in its room
 lidar2ha lights named.json --refresh --project project.yaml -o lights.json \
     --fittings fixtures_placed.json   # omit to place at the pole instead
@@ -369,10 +380,18 @@ which is what the seam/seed idea was for.
   metre of real surface, measured. No export setting produces more; it's what the camera
   saw.
 - **Windows are missing.** LiDAR passes through glass. Add them by hand in Sweet Home 3D.
-- **One capture per *region*.** Geometry does not merge across captures — see above.
-  Repeat captures of the same space do accumulate, for textures and for features. A single
-  fixture pass may still span several of them; `placefixtures` takes as many geometry
-  models as you give it and sends each fitting to whichever one contains it.
+- **One capture per *region*.** Captures of *adjacent* spaces share no frame and cannot be
+  merged at all. Captures of the *same* level can: `combine` co-registers them and selects
+  the best source for each room, never averaging — two plans of one room disagree by ~17 cm
+  and a blend matches neither wall. What it does not yet do is composite textures across
+  captures, which is the case for rescanning that pays best. A single fixture pass may span
+  several geometry captures; `placefixtures` takes as many models as you give it and sends
+  each fitting to whichever one contains it.
+- **A small capture's numbers cannot be read.** One that spans a fraction of the level fits
+  inside it wherever you put it, so it reports 100% coverage for a wrong placement as
+  readily as a right one — a five-wall bedroom landed 65° out, on top of the hallway, at
+  100% coverage and 18.9 cm median. `combine` says so rather than pretending otherwise, but
+  it cannot yet tell the right answer from the wrong one. Check those placements yourself.
 - **Voids** — stairwell shafts, double-height spaces — have to be declared by hand, because
   a scanner maps rooms, not the empty space between them.
 - **Tuned to one house, one app.** Anything here that looks like a constant is a guess that

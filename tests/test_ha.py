@@ -162,8 +162,8 @@ def test_a_group_whose_members_are_absent_is_kept():
 # bulb behind it. The four ZHA groups all hang off the first.
 COORDINATOR = {"id": "radio", "name": "Sonoff Zigbee Coordinator (EZSP)",
                "model": "Generic Zigbee Coordinator (EZSP)", "area_id": "butcher_s_block"}
-BULB = {"id": "bulb", "name": "Nathan Bedroom - Wall Left", "model": "LWO003",
-        "area_id": "nathan_bedroom"}
+BULB = {"id": "bulb", "name": "Boy Bedroom - Wall Left", "model": "LWO003",
+        "area_id": "boy_bedroom"}
 
 
 def on_coordinator(entity_id: str, name: str) -> LightEntity:
@@ -196,7 +196,7 @@ def test_every_zha_group_is_found_even_when_its_name_says_nothing():
         on_coordinator("light.master_bedroom_downlights", "Master Bedroom - Downlights"),
         on_coordinator("light.den_wall_lights", "Den - Light - Walls And Ceiling"),
         on_coordinator("light.den_cabinet_lights", "Den - Light - Cabinets Group"),
-        on_coordinator("light.nathan_bedroom_lights", "Nathan Bedroom - Lights"),
+        on_coordinator("light.boy_bedroom_lights", "Boy Bedroom - Lights"),
     ]
     found = coordinator_groups(entities)
 
@@ -208,7 +208,7 @@ def test_every_zha_group_is_found_even_when_its_name_says_nothing():
 def test_an_ordinary_bulb_is_not_a_group():
     """A real fitting wrongly called a group vanishes from the render, and the
     room goes dark with nothing to explain it."""
-    plain = LightEntity("light.nathan_wall_left", "Nathan Bedroom - Wall Left", "nathan",
+    plain = LightEntity("light.boy_wall_left", "Boy Bedroom - Wall Left", "boy",
                         device_id="bulb", device_model=BULB["model"],
                         device_name=BULB["name"])
     assert coordinator_groups([plain]) == {}

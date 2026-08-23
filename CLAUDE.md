@@ -160,6 +160,7 @@ registration   model+mesh   -> per-level Registration
 textures_*     model+mesh   -> per-wall or tiled textures
 rooms          model+yaml   -> scanner names replaced by HA area ids, open plan merged
 seams                       -> split a room the scanner never split
+combine        many models  -> one level, geometry selected per room + a work list
 fixtures       fixture mesh -> bright compact clusters, with crops
 placefixtures  + geometry   -> those clusters in named rooms, optionally differenced
 contactsheet   + crops      -> the sheet a human approves
@@ -172,6 +173,27 @@ export-glb     .sh3d        -> named .obj -> obj2gltf -> .glb
 
 `add-capture` is a deliberate stub that exits saying so (`_unbuilt` in `cli.py`).
 An honest `--help` matching the documented workflow beats a short one hiding gaps.
+
+### Combining captures: selection, and the two ways to get it wrong
+
+`combine` is the only stage that reads more than one capture. Two traps, both
+paid for once already:
+
+- **Never reject on coverage.** It is the fraction of the SOURCE's walls the
+  reference explains, so a capture seeing a new room always scores lower. A 90%
+  threshold rejected the one capture containing the mid-level bathroom, at 88%.
+  Accept on fit quality; report low coverage as new ground.
+- **New ground is not a property of a room.** A room 80% overlapping the
+  reference reads as known and the fifth of it nobody else saw disappears. Area
+  comes from the geometric difference over the whole level; identity comes from
+  intersecting that difference back with each capture's rooms. Neither half
+  works alone -- per-room misses the strip, connected components fuse adjacent
+  new rooms into an unnamed blob.
+
+`role` is a scoring prior and never a veto: a fixture pass is likely to be worse
+at geometry, not barred from it. `Room.provisional` is a disjunction of named
+reasons and never a threshold on `Room.score`, because the room that matters
+most scores well enough to pass any cutoff.
 
 ### The one thing that makes lighting subtle
 
