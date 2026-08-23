@@ -488,6 +488,82 @@ def test_a_malformed_polygon_is_named_rather_than_skipped(trio):
 
 
 # --------------------------------------------------------------------------- #
+# the wall grid, which catches what no error figure can
+# --------------------------------------------------------------------------- #
+
+
+def test_the_grid_bearing_survives_a_perpendicular_wall(trio):
+    """A wall and its perpendicular describe the same grid, so the bearing is
+    taken mod 90. Averaged naively they cancel to nothing; the average has to be
+    taken on four times the angle so they reinforce instead."""
+    level = trio["scan7"].levels[0]
+    bearing = combining.grid_bearing(level)
+    assert bearing is not None and 0.0 <= bearing < 90.0
+
+    turned = level.model_copy(update={"walls": [
+        w.model_copy(update={"x_end": w.x_start - (w.y_end - w.y_start),
+                             "y_end": w.y_start + (w.x_end - w.x_start)})
+        for w in level.walls]})
+    rotated = combining.grid_bearing(turned)
+    assert rotated is not None
+    assert min(abs(rotated - bearing), 90 - abs(rotated - bearing)) < 1.0
+
+
+def test_a_capture_on_the_wrong_walls_is_caught_by_the_grid(trio):
+    """The failure no error figure can see. A capture placed 65 degrees out
+    reports 100% coverage and a plausible median, because every point does find
+    a nearby point -- they are simply the wrong walls.
+
+    Every capture of one building shares a wall grid, so only four rotations
+    between two of them are ever valid. Measured, good overlays sit 0.28-0.57
+    degrees off it and wrong-basin ones 14.5-39.4."""
+    scan7 = trio["scan7"].levels[0]
+    fixtures = trio["midlevel_fixtures"].levels[0]
+
+    good = combining.off_grid_deg(179.71, fixtures, scan7)
+    assert good is not None and good < 1.0
+
+    # 30 degrees is not a quarter turn, so it cannot be a valid relationship
+    # between two captures of one building however well it happens to score.
+    assert combining.off_grid_deg(179.71 + 30, fixtures, scan7) > 20.0
+
+
+def test_a_quarter_turn_is_always_a_valid_rotation(trio):
+    """Four classes, not one. A capture held sideways relative to another is an
+    ordinary thing and must not be refused for it."""
+    scan7 = trio["scan7"].levels[0]
+    fixtures = trio["midlevel_fixtures"].levels[0]
+    base = combining.off_grid_deg(179.71, fixtures, scan7)
+    assert base is not None
+    for quarter in (90, 180, 270):
+        assert combining.off_grid_deg(179.71 + quarter, fixtures, scan7) == \
+            pytest.approx(base, abs=1e-6)
+
+
+def test_the_grid_and_the_error_bound_catch_different_things(trio):
+    """Neither channel subsumes the other, which is why both exist.
+
+    `midlevel` is squarely on the grid and still a bad scan -- only the error
+    bound sees that. A capture in the wrong basin lands within the bound on the
+    matched points it found -- only the grid sees that."""
+    result = combining.combine(trio)
+    dropped = result.aligned["midlevel"]
+    assert dropped.verdict == "discarded"
+    assert "off the building's wall grid" not in dropped.reason, \
+        "midlevel is in the right basin; it is simply a poor scan"
+    assert "common area" in dropped.reason
+
+
+def test_a_capture_with_no_walls_has_no_grid_bearing():
+    """None, not zero. A capture with nothing to take a bearing from cannot be
+    checked against the grid, and scoring it as perfectly aligned would let it
+    through on the strength of having no evidence."""
+    empty = Level(name="L", ceiling_height_cm=250)
+    assert combining.grid_bearing(empty) is None
+    assert combining.off_grid_deg(45.0, empty, empty) is None
+
+
+# --------------------------------------------------------------------------- #
 # a small capture, whose coverage means nothing
 # --------------------------------------------------------------------------- #
 
