@@ -77,6 +77,15 @@ public class HeadlessRender {
     }
     System.out.println("light groups (rooms): " + controller.getLightsGroups().keySet());
 
+    // The mixing mode decides how many combinations get rendered, so it has to
+    // be set before the count means anything -- including for --list.
+    controller.setLightMixingMode(Controller.LightMixingMode.CSS);
+    System.out.println("total renders    : " + controller.getNumberOfTotalRenders());
+
+    // Reported BEFORE rendering, and before --list returns, because this is the
+    // number that decides whether to start at all. The plugin raytraces once
+    // per light state, so a house with plenty of entities can mean hours; the
+    // point of --list is to find that out for free.
     if (listOnly) {
       return;
     }
@@ -88,9 +97,20 @@ public class HeadlessRender {
       controller.setRenderWidth(Integer.parseInt(args[2]));
       controller.setRenderHeight(Integer.parseInt(args[3]));
     }
-    controller.setQuality(Controller.Quality.LOW);
+    // Quality is not merely a speed dial. Sweet Home 3D's LOW settings capture
+    // the Java3D OpenGL view instead of raytracing, so they need a working
+    // offscreen GL context -- and when that is unavailable the render does not
+    // fail, it silently returns a BLANK frame in about a second per image. The
+    // high settings go through PhotoRenderer (SunFlow, or YafaRay when its
+    // natives are on the library path), which is software and works anywhere.
+    //
+    // Default to HIGH: a slow correct render beats a fast blank one. Override
+    // with -Dquality=LOW when a GL context is known good and speed matters.
+    String quality = System.getProperty("quality", "HIGH").toUpperCase();
+    controller.setQuality(Controller.Quality.valueOf(quality));
     controller.setLightMixingMode(Controller.LightMixingMode.CSS);
 
+    System.out.println("quality          : " + quality);
     System.out.println("output directory : " + controller.getOutputDirectory());
     System.out.println("render size      : "
         + controller.getRenderWidth() + "x" + controller.getRenderHeight());

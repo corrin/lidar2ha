@@ -149,9 +149,6 @@ public class Sh3dWriter {
    * bounds and pull the camera back far enough to contain them.
    */
   private void frameCamera(Home home) {
-    if (home.getWalls().isEmpty()) {
-      return;
-    }
     float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE;
     float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
     for (Wall w : home.getWalls()) {
@@ -160,19 +157,53 @@ public class Sh3dWriter {
       minY = Math.min(minY, Math.min(w.getYStart(), w.getYEnd()));
       maxY = Math.max(maxY, Math.max(w.getYStart(), w.getYEnd()));
     }
-    float cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-    float radius = (float) Math.hypot(maxX - minX, maxY - minY) / 2;
+    // Rooms too, not just walls. An open-plan volume is a room polygon with no
+    // wall along its open edge -- framing on walls alone would cut it off, and
+    // that is exactly the geometry this writer exists to support.
+    for (Room room : home.getRooms()) {
+      for (float[] point : room.getPoints()) {
+        minX = Math.min(minX, point[0]);
+        maxX = Math.max(maxX, point[0]);
+        minY = Math.min(minY, point[1]);
+        maxY = Math.max(maxY, point[1]);
+      }
+    }
+    if (minX > maxX) {
+      return;
+    }
+
+    // The building's height, which for a multi-level home is most of what has
+    // to fit in frame. Sizing the shot from the plan alone put the top floor
+    // out of the picture.
+    float top = wallHeight;
+    for (Level level : home.getLevels()) {
+      top = Math.max(top, level.getElevation() + level.getHeight());
+    }
+
+    float cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = top / 2;
+    float radius = (float) Math.hypot(Math.hypot(maxX - minX, maxY - minY) / 2, cz);
 
     Camera camera = home.getTopCamera();
     float fov = camera.getFieldOfView();
-    // Pull back so the bounding circle fits, with headroom for wall height.
-    float distance = (float) (radius / Math.tan(fov / 2) * 1.35) + wallHeight;
+    // Far enough back that a sphere around the whole building fits the cone,
+    // with margin because the field of view is horizontal and a render is
+    // usually wider than it is tall -- so the vertical axis is the tight one.
+    float distance = (float) (radius / Math.sin(fov / 2) * 1.3);
     float pitch = (float) Math.toRadians(50);
 
+    // Aimed at the middle of the building, not at the ground, so a tall home is
+    // centred in frame rather than sitting half above it.
     camera.setX(cx);
     camera.setY(cy + distance * (float) Math.cos(pitch));
-    camera.setZ(distance * (float) Math.sin(pitch));
-    camera.setYaw(0f);
+    camera.setZ(cz + distance * (float) Math.sin(pitch));
+    // Sweet Home 3D's yaw looks along (sin yaw, cos yaw), so yaw=0 looks toward
+    // INCREASING y. The camera sits at cy + something, on the far side of the
+    // plan, so yaw=0 pointed it away from the house at empty space -- and the
+    // render came back a uniform white frame rather than failing. Verified by
+    // rendering both: yaw=0 gives one colour, yaw=PI gives a picture.
+    camera.setYaw((float) Math.PI);
+    // Pitch aims at the centre exactly, because the camera's height and its
+    // horizontal offset are both derived from `distance` with the same angle.
     camera.setPitch(pitch);
     home.setCamera(camera);
   }

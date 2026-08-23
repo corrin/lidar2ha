@@ -17,6 +17,7 @@ application uses.
 
 from __future__ import annotations
 
+import math
 import re
 import subprocess
 
@@ -152,3 +153,65 @@ def test_textures_reach_the_archive(tmp_path, toolchain, java_classes):
     names = zipfile.ZipFile(out).namelist()
     assert "Home" in names
     assert len(names) > 1, names
+
+
+def parse_camera(report: str) -> dict:
+    m = re.search(r"camera\s+: \((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\) "
+                  r"yaw=(-?[\d.]+) deg pitch=(-?[\d.]+) deg", report)
+    assert m, report
+    x, y, z, yaw, pitch = (float(g) for g in m.groups())
+    return {"x": x, "y": y, "z": z, "yaw": yaw, "pitch": pitch}
+
+
+def test_the_camera_actually_points_at_the_house(tmp_path, toolchain, java_classes):
+    """The bug this guards produced a uniform white frame, not an error.
+
+    Sweet Home 3D's yaw looks along (sin yaw, cos yaw), so yaw=0 looks toward
+    increasing y. The camera is placed on the far side of the plan, so yaw=0
+    aimed it at empty sky and every render came back blank -- after paying the
+    full raytracing cost to find out.
+    """
+    model = two_level_model()
+    scene = tmp_path / "scene.tsv"
+    write_scene(model, scene)
+    out = tmp_path / "two.sh3d"
+    run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
+    camera = parse_camera(run(toolchain, java_classes, "Sh3dVerify", str(out)))
+
+    # The plan centre, in the same frame write_scene emitted.
+    look = (math.sin(math.radians(camera["yaw"])), math.cos(math.radians(camera["yaw"])))
+    to_centre = (200.0 - camera["x"], 150.0 - camera["y"])
+    assert look[0] * to_centre[0] + look[1] * to_centre[1] > 0, \
+        "the camera is facing away from the house"
+
+
+def test_the_camera_clears_a_multi_level_building(tmp_path, toolchain, java_classes):
+    """Framing from the plan alone left the top floor out of the picture."""
+    model = two_level_model()
+    scene = tmp_path / "scene.tsv"
+    write_scene(model, scene)
+    out = tmp_path / "two.sh3d"
+    run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
+    camera = parse_camera(run(toolchain, java_classes, "Sh3dVerify", str(out)))
+
+    # Upper level sits at 262 with a 240 ceiling, so the building tops out at 502.
+    assert camera["z"] > 502, "the camera is below the roof it is meant to look down on"
+
+
+def test_a_home_of_rooms_with_no_walls_is_still_framed(tmp_path, toolchain, java_classes):
+    """Open plan is a room polygon with no wall along its open edge, which is
+    the geometry this writer exists to support -- and framing on walls alone
+    would have ignored it entirely."""
+    model = Model(source="open.dxf", levels=[
+        Level(name="Ground", ceiling_height_cm=250, elevation_cm=0,
+              walls=[Wall(x_start=0, y_start=0, x_end=10, y_end=0,
+                          thickness=10, height=250)],
+              rooms=[Room(name="Open", points=[(0, 0), (900, 0), (900, 700), (0, 700)])])])
+    scene = tmp_path / "open.tsv"
+    write_scene(model, scene)
+    out = tmp_path / "open.sh3d"
+    run(toolchain, java_classes, "Sh3dWriter", str(scene), str(out))
+    camera = parse_camera(run(toolchain, java_classes, "Sh3dVerify", str(out)))
+
+    # Framed on the single tiny wall, the camera would sit almost on top of it.
+    assert camera["y"] > 700, "the room polygon was not included in the framing"

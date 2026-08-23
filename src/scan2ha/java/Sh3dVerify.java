@@ -1,4 +1,5 @@
 import com.eteks.sweethome3d.io.HomeFileRecorder;
+import com.eteks.sweethome3d.model.Camera;
 import com.eteks.sweethome3d.model.Home;
 import com.eteks.sweethome3d.model.HomeLight;
 import com.eteks.sweethome3d.model.HomePieceOfFurniture;
@@ -40,6 +41,15 @@ public class Sh3dVerify {
     System.out.println("  name        : " + home.getName());
     System.out.println("  wallHeight  : " + home.getWallHeight());
     System.out.println("  selected    : " + levelName(home.getSelectedLevel()));
+
+    // The camera decides whether a render shows the house or a blank frame, and
+    // the plugin has no camera settings of its own -- it uses whatever the Home
+    // carries. A wrong camera costs a full render to discover otherwise.
+    Camera camera = home.getCamera();
+    System.out.printf("  camera      : (%.0f, %.0f, %.0f) yaw=%.1f deg pitch=%.1f deg fov=%.1f deg%n",
+        camera.getX(), camera.getY(), camera.getZ(),
+        Math.toDegrees(camera.getYaw()), Math.toDegrees(camera.getPitch()),
+        Math.toDegrees(camera.getFieldOfView()));
 
     // Counts per level, so a collapse onto one floor is visible at a glance.
     Map<String, int[]> tally = new LinkedHashMap<>();
