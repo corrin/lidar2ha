@@ -177,6 +177,12 @@ tile_cm: 100
 # lowest floor. `lidar2ha build` reports which levels defaulted to 0.
 elevations: {{}}
 
+# Which captures make up each level, for `lidar2ha combine <level>`. Geometry
+# never merges across levels -- captures of different storeys share no frame --
+# so combining is per level, and this is what says which captures share one.
+# Key by the names in `homeassistant.floors`; the values are ids from `captures`.
+levels: {{}}
+
 # Where to look from. The tool solves HOW FAR back to stand so the whole house
 # fits; these are the choices it cannot make for you.
 camera:
@@ -216,6 +222,123 @@ def init(directory: Path) -> None:
     click.echo(f"  {config.name}")
     click.echo("  captures/   put the Polycam exports here")
     click.echo("  build/      generated files land here")
+
+
+# --------------------------------------------------------------------------- #
+# combine
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("level")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("project.yaml"), show_default=True,
+              help="project.yaml, which says which captures make up this level")
+@click.option("-o", "--out", type=click.Path(path_type=Path), default=None,
+              help="combined model json  [default: <level>_combined.json]")
+@click.option("--reference", default=None,
+              help="capture id to anchor the level on. The default picks the "
+                   "geometry capture with the most walls")
+@click.option("--max-median-cm", type=float, default=None,
+              help="a fit worse than this is not the same rooms. This is a FIT "
+                   "QUALITY threshold, never a coverage one -- a capture that sees "
+                   "a room the others do not always scores lower on coverage, and "
+                   "rejecting on that discards the reason to combine at all")
+@click.option("--max-p90-cm", type=float, default=None,
+              help="the tail matters more than the median: two captures can agree "
+                   "at 6 cm median and still differ by 44 cm at p90, which on a "
+                   "2.6 m2 room is a large part of the room")
+def combine(level: str, project: Path, out: Path | None, reference: str | None,
+            max_median_cm: float | None, max_p90_cm: float | None) -> None:
+    """Merge every capture of one LEVEL into one model, and say what to re-scan.
+
+    Geometry is SELECTED and never averaged: two plans of one room disagree by
+    around 17 cm, and blending them matches neither wall. The winner takes each
+    room whole and the room records which capture it came from.
+
+    The model is only half the output. The other half is the work list -- the
+    rooms whose best source is a fixture pass, the places the captures disagree,
+    and the floor some capture saw that the model does not contain.
+    """
+    import json
+
+    from . import combine as combining
+    from .schema import load_model, save_model
+
+    settings = _project_settings(project)
+    levels = settings.get("levels") or {}
+    if not levels:
+        raise SystemExit(
+            f"{project} has no `levels:` section, so there is nothing saying which\n"
+            f"captures make up {level!r}. Add one, keyed by the names in\n"
+            f"`homeassistant.floors` and listing the ids from `captures:`:\n\n"
+            f"levels:\n"
+            f'  "Mid Level": [midlevel, midlevel_fixtures]\n')
+    if level not in levels:
+        raise SystemExit(f"{project} has no level {level!r}. It has: "
+                         f"{', '.join(sorted(levels))}")
+
+    ids = list(levels[level] or [])
+    if len(ids) < 2:
+        raise SystemExit(f"level {level!r} lists {len(ids)} capture(s). One capture "
+                         f"needs no combining -- build from it directly.")
+
+    captures = settings.get("captures") or {}
+    models = {}
+    for capture_id in ids:
+        # Prefer the model `rooms` has already named. A scanner name is not
+        # identity, and combining before naming makes the work list ask about
+        # rooms the project has already answered for.
+        found = None
+        for suffix in ("_named.json", "_registered.json", ".json"):
+            for base in (project.parent / f"exports/{capture_id}",
+                         project.parent / "captures" / capture_id, project.parent):
+                path = base / f"{capture_id}{suffix}"
+                if path.exists():
+                    found = path
+                    break
+            if found:
+                break
+        if found is None:
+            raise SystemExit(
+                f"no model json found for capture {capture_id!r}. Looked for "
+                f"{capture_id}_named.json, {capture_id}_registered.json and "
+                f"{capture_id}.json under {project.parent}.\n"
+                f"Run `python -m lidar2ha.polycam` and `.registration` on it first.")
+        click.echo(f"  {capture_id:<22} {found.relative_to(project.parent)}")
+        models[capture_id] = load_model(found)
+
+    areas: set[str] = set()
+    for capture_id in ids:
+        mapping = (settings.get("rooms") or {}).get(capture_id) or {}
+        areas.update(a for a in mapping.values() if a)
+    if not areas:
+        click.echo("  note: project.yaml maps no areas for these captures, so the "
+                   "work list cannot say which areas ended up with no source.")
+
+    multi = [c for c in ids if (captures.get(c) or {}).get("multi_floor")]
+    if multi:
+        click.echo(f"  note: {', '.join(multi)} declared multi_floor -- pass --level "
+                   f"to say which storey to take from each.")
+
+    click.echo("")
+    try:
+        result = combining.combine(
+            models, reference=reference, expected_areas=areas,
+            max_median_cm=max_median_cm or combining.MAX_MEDIAN_CM,
+            max_p90_cm=max_p90_cm or combining.MAX_P90_CM)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    combining.report(result)
+    slug = level.lower().replace(" ", "_")
+    out = out or Path(f"{slug}_combined.json")
+    save_model(result.model, out)
+    work = out.with_name(out.stem + "_worklist.json")
+    work.write_text(json.dumps(result.worklist, indent=2), encoding="utf-8")
+    click.echo(f"\nwrote  {out}")
+    click.echo(f"wrote  {work}  ({len(result.worklist)} thing(s) to do about the house)")
+    click.echo(f"\nNext:  lidar2ha lights {out} --project {project} -o lights.json")
 
 
 # --------------------------------------------------------------------------- #

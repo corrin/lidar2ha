@@ -52,6 +52,11 @@ class Wall(_Base):
     thickness: float
     height: float
 
+    # Which capture this wall came from. Walls are selected across captures the
+    # same way rooms are -- see Capture -- so the provenance has to survive on
+    # the wall itself, not only on the room it happens to enclose.
+    source: str | None = None
+
     @property
     def length_cm(self) -> float:
         """Used to size a rectified texture so it covers the wall exactly once."""
@@ -95,6 +100,19 @@ class Room(_Base):
     # each carry partial information, so every element records its source and
     # nothing is silently averaged. See Capture.
     source: str | None = None
+    # What `combine` scored the winning candidate at, 0-1. A number beside the
+    # reasons below, never a substitute for them.
+    score: float | None = None
+    # This is the best geometry available for the room and it is still not good
+    # enough -- the flag that turns into "go re-scan this". It is a DISJUNCTION
+    # of the reasons below and never a threshold on `score` alone: the room this
+    # whole mechanism exists to catch is a bathroom only a fixture pass has ever
+    # seen, and it scores well enough to pass any sensible cutoff.
+    provisional: bool = False
+    # Every reason that applies, not the first one found. A room can be
+    # unopposed AND won by a fixture pass AND inside a disagreement, and
+    # reporting one of the three is the silent drop in miniature.
+    provisional_reason: list[str] = Field(default_factory=list)
 
 
 class Door(_Base):
@@ -147,13 +165,18 @@ class Capture(_Base):
     Compositing requires captures of the same space to be co-registered, which
     is tractable precisely because they overlap heavily -- unlike two captures
     of *adjacent* spaces, which share no frame and cannot be merged at all.
+
+    `combine` is what constructs these. A model that carries none was built from
+    a single capture, which is what every stage before `combine` produces.
     """
 
     id: str
     # What this capture is FOR. A fixture pass is scanned differently on
     # purpose -- every light on, the phone aimed at each fitting, geometry
-    # sacrificed -- so its walls and elevations are not evidence about the
-    # building and must never be selected as geometry. See Model.role.
+    # sacrificed. That makes it LIKELY TO BE WORSE at supplying geometry, not
+    # barred from it: `combine` scores it down and lets it win a room anyway
+    # when nothing else has seen that room. A prior, never a veto -- the one
+    # room this pipeline was missing is a bathroom only a fixture pass caught.
     role: Role = "geometry"
     # Quality, measured rather than asserted. Populated by `register` and
     # `inspect`, and used to decide which capture wins a contested room.
@@ -164,6 +187,20 @@ class Capture(_Base):
     wall_area_ratio: float | None = None
     windows_found: int | None = None
     note: str | None = None
+
+    # --- where this capture sits in the combined frame ----------------------
+    # The rigid transform `combine` used to move this capture's plan onto the
+    # reference's. Without it nothing downstream can re-derive where a room came
+    # from, and the selection becomes an assertion rather than a record. The
+    # reference carries the identity transform and is_reference=True.
+    theta_deg: float | None = None
+    tx_m: float | None = None
+    ty_m: float | None = None
+    is_reference: bool = False
+    # p90 of the matched disagreement. Read it beside `median_error_m`: the
+    # median is taken over matched points only, so a fit that abandoned part of
+    # the plan reports the median of the part it kept.
+    p90_error_m: float | None = None
 
 
 class Level(_Base):
@@ -195,9 +232,10 @@ class Model(_Base):
     role: Role = "geometry"
     units: Literal["cm"] = "cm"
     levels: list[Level] = Field(default_factory=list)
-    # The scans this model was built from. Empty for a single-capture project,
-    # which is all the pipeline supports today -- but Room.source points here,
-    # so carrying the list is what makes that provenance mean anything.
+    # The scans this model was built from, written by `combine`. Empty for a
+    # single-capture project, which is everything upstream of `combine` -- but
+    # Room.source and Wall.source point here, so carrying the list is what makes
+    # that provenance mean anything.
     captures: list[Capture] = Field(default_factory=list)
 
     def bounds(self) -> tuple[float, float, float, float]:

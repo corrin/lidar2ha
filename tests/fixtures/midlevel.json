@@ -1,0 +1,663 @@
+{
+  "source": "23_08_2026.dxf",
+  "role": "geometry",
+  "units": "cm",
+  "levels": [
+    {
+      "name": "Floor 1",
+      "ceiling_height_cm": 470.0,
+      "elevation_cm": null,
+      "walls": [
+        {
+          "xStart": -342.95,
+          "yStart": 394.07,
+          "xEnd": -283.84999999999997,
+          "yEnd": 394.07,
+          "thickness": 10.000000000000053,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": -139.26000000000002,
+          "yStart": -407.61,
+          "xEnd": -139.26000000000002,
+          "yEnd": -358.83,
+          "thickness": 10.000000000000009,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": -283.84999999999997,
+          "yStart": 394.07,
+          "xEnd": -283.84999999999997,
+          "yEnd": 675.27,
+          "thickness": 9.999999999999964,
+          "height": 229.99999999999997,
+          "source": null
+        },
+        {
+          "xStart": -224.14000000000001,
+          "yStart": -491.58,
+          "xEnd": -224.14000000000001,
+          "yEnd": -71.47,
+          "thickness": 10.000000000000053,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": -283.84999999999997,
+          "yStart": 675.27,
+          "xEnd": -19.830000000000002,
+          "yEnd": 675.27,
+          "thickness": 9.999999999999964,
+          "height": 229.99999999999997,
+          "source": null
+        },
+        {
+          "xStart": 60.28,
+          "yStart": -125.07,
+          "xEnd": 60.28,
+          "yEnd": -433.77,
+          "thickness": 10.000000000000009,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": -126.72000000000001,
+          "yStart": -53.37,
+          "xEnd": -126.72000000000001,
+          "yEnd": 225.54,
+          "thickness": 10.000000000000009,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": -126.72000000000001,
+          "yStart": 225.54,
+          "xEnd": -342.95,
+          "yEnd": 225.54,
+          "thickness": 10.000000000000053,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": -24.26,
+          "yStart": -487.99,
+          "xEnd": -24.26,
+          "yEnd": -675.27,
+          "thickness": 10.000000000000004,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": -19.830000000000002,
+          "yStart": 675.27,
+          "xEnd": -19.830000000000002,
+          "yEnd": 600.61,
+          "thickness": 9.999999999999998,
+          "height": 229.99999999999997,
+          "source": null
+        },
+        {
+          "xStart": -19.830000000000002,
+          "yStart": 600.61,
+          "xEnd": 150.48999999999998,
+          "yEnd": 600.61,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": 342.94,
+          "yStart": -433.77,
+          "xEnd": 60.28,
+          "yEnd": -433.77,
+          "thickness": 9.999999999999964,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": 150.48999999999998,
+          "yStart": 600.61,
+          "xEnd": 150.48999999999998,
+          "yEnd": 465.86999999999995,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": -34.88,
+          "yStart": -53.37,
+          "xEnd": 60.28,
+          "yEnd": -125.07,
+          "thickness": 9.996601505956724,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": 79.97,
+          "yStart": 221.3,
+          "xEnd": 79.97,
+          "yEnd": 465.86999999999995,
+          "thickness": 10.000000000000009,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": -285.86,
+          "yStart": -675.27,
+          "xEnd": -285.86,
+          "yEnd": -491.58,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": -26.85,
+          "yStart": 145.71,
+          "xEnd": -26.85,
+          "yEnd": 221.3,
+          "thickness": 10.000000000000004,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": 342.94,
+          "yStart": 465.86999999999995,
+          "xEnd": 342.94,
+          "yEnd": -433.77,
+          "thickness": 9.999999999999964,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": -126.72000000000001,
+          "yStart": -53.37,
+          "xEnd": -34.88,
+          "yEnd": -53.37,
+          "thickness": 10.000000000000009,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": 34.78,
+          "yStart": -433.77,
+          "xEnd": -24.26,
+          "yEnd": -487.99,
+          "thickness": 10.003292977291219,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": -19.830000000000002,
+          "yStart": 600.61,
+          "xEnd": -19.830000000000002,
+          "yEnd": 465.86999999999995,
+          "thickness": 9.999999999999998,
+          "height": 229.99999999999997,
+          "source": null
+        },
+        {
+          "xStart": 60.28,
+          "yStart": -433.77,
+          "xEnd": 34.78,
+          "yEnd": -433.77,
+          "thickness": 9.999999999999964,
+          "height": 270.0,
+          "source": null
+        },
+        {
+          "xStart": -138.63,
+          "yStart": -675.27,
+          "xEnd": -138.63,
+          "yEnd": -491.58,
+          "thickness": 10.000000000000009,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": -138.63,
+          "yStart": -675.27,
+          "xEnd": -285.86,
+          "yEnd": -675.27,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": -224.14000000000001,
+          "yStart": -491.58,
+          "xEnd": -138.63,
+          "yEnd": -491.58,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": 79.97,
+          "yStart": 221.3,
+          "xEnd": -26.85,
+          "yEnd": 221.3,
+          "thickness": 9.999999999999964,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": 79.97,
+          "yStart": 465.86999999999995,
+          "xEnd": 150.48999999999998,
+          "yEnd": 465.86999999999995,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": 150.48999999999998,
+          "yStart": 465.86999999999995,
+          "xEnd": 342.94,
+          "yEnd": 465.86999999999995,
+          "thickness": 9.999999999999964,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": -24.26,
+          "yStart": -675.27,
+          "xEnd": -138.63,
+          "yEnd": -675.27,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": -285.86,
+          "yStart": -491.58,
+          "xEnd": -224.14000000000001,
+          "yEnd": -491.58,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        },
+        {
+          "xStart": -342.95,
+          "yStart": 225.54,
+          "xEnd": -342.95,
+          "yEnd": 394.07,
+          "thickness": 9.999999999999964,
+          "height": 470.0,
+          "source": null
+        },
+        {
+          "xStart": -19.830000000000002,
+          "yStart": 465.86999999999995,
+          "xEnd": 79.97,
+          "yEnd": 465.86999999999995,
+          "thickness": 9.999999999999964,
+          "height": 220.00000000000003,
+          "source": null
+        }
+      ],
+      "rooms": [
+        {
+          "name": "Dining Room",
+          "points": [
+            [
+              342.94,
+              465.86999999999995
+            ],
+            [
+              150.48999999999998,
+              465.86999999999995
+            ],
+            [
+              79.97,
+              465.86999999999995
+            ],
+            [
+              79.97,
+              221.3
+            ],
+            [
+              342.94,
+              221.3
+            ]
+          ],
+          "ceiling_low_cm": 320.0,
+          "ceiling_high_cm": 470.0,
+          "sloped": true,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Office 2",
+          "points": [
+            [
+              -224.14000000000001,
+              -491.58
+            ],
+            [
+              -138.63,
+              -491.58
+            ],
+            [
+              -138.63,
+              -675.27
+            ],
+            [
+              -24.26,
+              -675.27
+            ],
+            [
+              -24.26,
+              -487.99
+            ],
+            [
+              34.78,
+              -433.77
+            ],
+            [
+              60.28,
+              -433.77
+            ],
+            [
+              60.28,
+              -410.35
+            ],
+            [
+              -224.14000000000001,
+              -410.35
+            ]
+          ],
+          "ceiling_low_cm": 220.00000000000003,
+          "ceiling_high_cm": 270.0,
+          "sloped": true,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Other 2",
+          "points": [
+            [
+              150.48999999999998,
+              465.86999999999995
+            ],
+            [
+              150.48999999999998,
+              600.61
+            ],
+            [
+              -19.830000000000002,
+              600.61
+            ],
+            [
+              -19.830000000000002,
+              465.86999999999995
+            ],
+            [
+              79.97,
+              465.86999999999995
+            ]
+          ],
+          "ceiling_low_cm": 220.00000000000003,
+          "ceiling_high_cm": 220.00000000000003,
+          "sloped": false,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Laundry",
+          "points": [
+            [
+              -224.14000000000001,
+              -491.58
+            ],
+            [
+              -285.86,
+              -491.58
+            ],
+            [
+              -285.86,
+              -675.27
+            ],
+            [
+              -138.63,
+              -675.27
+            ],
+            [
+              -138.63,
+              -491.58
+            ]
+          ],
+          "ceiling_low_cm": 220.00000000000003,
+          "ceiling_high_cm": 220.00000000000003,
+          "sloped": false,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Kitchen",
+          "points": [
+            [
+              79.97,
+              465.86999999999995
+            ],
+            [
+              -19.830000000000002,
+              465.86999999999995
+            ],
+            [
+              -19.830000000000002,
+              600.61
+            ],
+            [
+              -19.830000000000002,
+              675.27
+            ],
+            [
+              -283.84999999999997,
+              675.27
+            ],
+            [
+              -283.84999999999997,
+              394.07
+            ],
+            [
+              79.97,
+              394.07
+            ]
+          ],
+          "ceiling_low_cm": 229.99999999999997,
+          "ceiling_high_cm": 229.99999999999997,
+          "sloped": false,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Living Room",
+          "points": [
+            [
+              79.97,
+              221.3
+            ],
+            [
+              -26.85,
+              221.3
+            ],
+            [
+              -26.85,
+              145.71
+            ],
+            [
+              -126.72000000000001,
+              145.71
+            ],
+            [
+              -126.72000000000001,
+              -53.37
+            ],
+            [
+              -34.88,
+              -53.37
+            ],
+            [
+              60.28,
+              -125.07
+            ],
+            [
+              60.28,
+              -433.77
+            ],
+            [
+              342.94,
+              -433.77
+            ],
+            [
+              342.94,
+              221.3
+            ]
+          ],
+          "ceiling_low_cm": 270.0,
+          "ceiling_high_cm": 270.0,
+          "sloped": false,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Other 1",
+          "points": [
+            [
+              60.28,
+              -410.35
+            ],
+            [
+              60.28,
+              -125.07
+            ],
+            [
+              -34.88,
+              -53.37
+            ],
+            [
+              -126.72000000000001,
+              -53.37
+            ],
+            [
+              -126.72000000000001,
+              -71.47
+            ],
+            [
+              -224.14000000000001,
+              -71.47
+            ],
+            [
+              -224.14000000000001,
+              -410.35
+            ]
+          ],
+          "ceiling_low_cm": 270.0,
+          "ceiling_high_cm": 270.0,
+          "sloped": false,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Office 1",
+          "points": [
+            [
+              -283.84999999999997,
+              394.07
+            ],
+            [
+              -342.95,
+              394.07
+            ],
+            [
+              -342.95,
+              225.54
+            ],
+            [
+              -126.72000000000001,
+              225.54
+            ],
+            [
+              -126.72000000000001,
+              145.71
+            ],
+            [
+              -26.85,
+              145.71
+            ],
+            [
+              -26.85,
+              221.3
+            ],
+            [
+              79.97,
+              221.3
+            ],
+            [
+              79.97,
+              394.07
+            ]
+          ],
+          "ceiling_low_cm": 250.0,
+          "ceiling_high_cm": 470.0,
+          "sloped": true,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        }
+      ],
+      "doors": [],
+      "registration": {
+        "theta_deg": 359.99,
+        "tx_m": -0.0689,
+        "ty_m": 0.043,
+        "mirror": false,
+        "median_error_m": 0.0096,
+        "coverage": 1.0,
+        "floor_z_m": -2.204
+      }
+    }
+  ],
+  "captures": []
+}
