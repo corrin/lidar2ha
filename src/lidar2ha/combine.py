@@ -59,8 +59,8 @@ from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
-from .compare import Fit, plan_fit
-from .registration import sample_along_walls, sample_segments, transform
+from .compare import MATCH_LIMIT_M, Fit, plan_fit
+from .registration import register, sample_along_walls, sample_segments, transform
 from .rooms import polygon_of
 from .schema import Capture, Level, Model, Room, Wall, load_model, save_model
 
@@ -204,16 +204,34 @@ CEIL_SLACK_CM = 25.0
 CEIL_MAX_CM = 700.0
 CEIL_RAMP_CM = 30.0
 
+# Averaging the walls needs the captures in one frame, and the frame is
+# gauge-fixed by pinning one capture at the origin. The pin is a least-squares
+# row like any other, so it carries a weight large enough that the fits cannot
+# outvote it. Nothing depends on its value: moving every capture together
+# changes no distance between two of them.
+GAUGE_WEIGHT = 1e3
+# One abstract wall point per cell, at exactly the step the walls are sampled
+# at, so the averaged walls come out as dense as a single capture no matter how
+# many captures voted. Measured, thinning at half the step was not enough: two
+# voters gave 5.12 cm spacing against a capture's own 5.14, but three gave 2.59.
+CONSENSUS_THIN_CM = 5.0
+# Below this many points the abstract walls are not a floor plan, they are a
+# handful of coincidences, and a median over them says nothing.
+MIN_CONSENSUS_POINTS = 3
+
 # How much worse than the best a capture may be at landing on the others and
-# still be allowed to anchor the level. Two levels of evidence: the one bad
-# capture sits 3.2x off its level's best, and the widest spread among good ones
-# is 1.65x. The gap between those is where this sits, and it is a two-point
-# calibration -- widen it if a good capture is being refused the anchor.
+# still be allowed to anchor the level. Three storeys of evidence, measured
+# against the averaged walls: the worst capture on a storey sits 8.1x and 8.8x
+# off its level's best, and the widest spread among captures that agree is
+# 1.72x. The gap between those is very wide and this sits in it -- widen it
+# further if a good capture is being refused the anchor.
 REFERENCE_TOLERANCE = 2.0
 # Above this multiple of the level's best, a capture is called out as the
-# outlier. Reported, never refused: two levels is not enough evidence to start
-# discarding captures automatically, and the one bad capture measured here still
-# supplies rooms nothing else has.
+# outlier. Reported, never refused: the bad captures measured here still supply
+# rooms nothing else has. Against the averaged walls the outliers sit 8.1x and
+# 8.8x out while everything that agrees stays inside 1.72x, so this sits in a
+# gap rather than near an edge. The tightest case was `boy_bedroom`, which
+# cleared the old figure by a hair at 2.26x and clears this one at 4.3x.
 OUTLIER_RATIO = 2.0
 
 # What a fixture pass costs a room WHEN NOTHING CAN BE MEASURED INSTEAD.
@@ -273,6 +291,9 @@ WEIGHTS: dict[str, float] = {
 }
 
 Kind = Literal["one_to_one", "unopposed", "disagreement", "tangled"]
+
+# One capture's place in the averaged frame: rotation in radians, then metres.
+Pose = tuple[float, float, float]
 
 
 # --------------------------------------------------------------------------- #
@@ -475,42 +496,261 @@ def coverage_is_uninformative(source: np.ndarray, reference: np.ndarray, *,
     return share if share < ratio else None
 
 
-def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
-    """Median error of fitting each capture ONTO each of the others, averaged.
+def pairwise_fits(models: Mapping[str, Model]) -> dict[tuple[str, str], Fit]:
+    """Fit every capture onto every other, both directions. Computed once.
 
-    Read the rows of the pairwise matrix, never the columns. How well others fit
-    onto a capture is circular -- it partly measures how much that capture is
-    being used as the yardstick. How well a capture fits ONTO ground several
-    others independently agree about is not.
-
-    The difference is not academic. Measured on one level, the capture with the
-    most walls -- which the old reference rule chose, and which this house's
-    whole mid-level model was built from -- turns out to be the worst of the
-    three, at 12.6 cm against 5.4 and 4.0. Every per-capture error figure
-    reported against it was that capture's own error charged to everyone else.
+    Both the membership arithmetic and the averaged frame below are worked out
+    from this matrix rather than by re-fitting, which matters because each fit
+    is seconds and the selection iterates.
     """
-    return agreement_from(pairwise_medians(models), set(models))
-
-
-def pairwise_medians(models: Mapping[str, Model]) -> dict[tuple[str, str], float]:
-    """Median error of fitting every capture onto every other, both directions.
-
-    Computed once. The set of captures worth keeping is then worked out by
-    arithmetic over this matrix rather than by re-fitting, which matters because
-    each fit is seconds and the selection below iterates.
-    """
-    out: dict[tuple[str, str], float] = {}
+    out: dict[tuple[str, str], Fit] = {}
     for name, model in models.items():
         for other, target in models.items():
             if other == name:
                 continue
             try:
-                error = plan_fit(model, target)["median_error_m"]
+                fit = plan_fit(model, target)
             except ValueError:
                 continue
-            if math.isfinite(error):
-                out[(name, other)] = error
+            if math.isfinite(fit["median_error_m"]):
+                out[(name, other)] = fit
     return out
+
+
+def pairwise_medians(models: Mapping[str, Model]) -> dict[tuple[str, str], float]:
+    """Just the error from every pairwise fit, which is what membership reads."""
+    return {k: f["median_error_m"] for k, f in pairwise_fits(models).items()}
+
+
+def global_poses(fits: Mapping[tuple[str, str], Fit],
+                 names: set[str]) -> dict[str, Pose]:
+    """Average the pairwise transforms into one frame that no capture owns.
+
+    Every fit says where one capture sits relative to one other. Averaged over
+    the whole graph they say where each capture sits in a frame none of them
+    holds, which is what the abstract walls need: a wall cannot be averaged
+    across captures until the captures share coordinates, and choosing one
+    capture to supply them puts that capture's error into the average.
+
+    The frame is gauge-fixed on whichever name sorts first. That choice moves
+    every capture together and so cannot change a distance between two of them.
+    """
+    ordered = sorted(names)
+    idx = {n: i for i, n in enumerate(ordered)}
+    count = len(ordered)
+    edges = [(idx[i], idx[j], f["theta_rad"], float(f["matched"]))
+             for (i, j), f in fits.items() if i in idx and j in idx]
+    if count == 0 or not edges:
+        return {}
+
+    # ROTATION IS SOLVED, NEVER ITERATED. Substituting each capture's rotation
+    # into its neighbours' oscillates: scan7 sits 180.29 deg from
+    # midlevel_fixtures and the return fit says 179.71, so the pair flips
+    # between a half turn and none every round and stops at whichever parity
+    # the loop runs out on. That placed a 3.6 cm pair 35.3 cm apart -- a good
+    # pair convicted by arithmetic. As the leading eigenvector of the connection
+    # matrix there is no round to run out of.
+    connection = np.zeros((count, count), dtype=complex)
+    for a, b, theta, weight in edges:
+        connection[a, b] += weight * np.exp(1j * theta)     # z_a = z_b e^(i0)
+        connection[b, a] += weight * np.exp(-1j * theta)
+    _, vectors = np.linalg.eigh(connection)
+    z = vectors[:, -1]
+    magnitude = np.abs(z)
+    magnitude[magnitude == 0] = 1.0
+    z = z / magnitude
+    z = z / z[0]
+    angles = np.angle(z)
+
+    # Translation is then linear: T_a - T_b = R(angle_b) t_ab. Weighted by the
+    # overlap each fit was measured over, so a pair that shares one room does
+    # not pull as hard as a pair that shares a storey.
+    rows: list[np.ndarray] = []
+    rhs: list[float] = []
+    for a, b, _theta, weight in edges:
+        fit = fits[(ordered[a], ordered[b])]
+        c, s = math.cos(angles[b]), math.sin(angles[b])
+        offset = np.array([[c, -s], [s, c]]) @ np.array([fit["tx"], fit["ty"]])
+        root = math.sqrt(weight)
+        for k in range(2):
+            row = np.zeros(2 * count)
+            row[2 * a + k] = root
+            row[2 * b + k] = -root
+            rows.append(row)
+            rhs.append(root * offset[k])
+    for k in range(2):
+        gauge = np.zeros(2 * count)
+        gauge[k] = GAUGE_WEIGHT
+        rows.append(gauge)
+        rhs.append(0.0)
+    solved, *_ = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)
+    return {ordered[i]: (float(angles[i]), float(solved[2 * i]),
+                         float(solved[2 * i + 1])) for i in range(count)}
+
+
+def place_in_frame(level: Level, pose: Pose) -> np.ndarray:
+    """This level's wall points, in the averaged frame, in metres."""
+    theta, tx, ty = pose
+    return transform(sample_along_walls(level.walls), theta, tx, ty, False)
+
+
+def thin_to_grid(points: np.ndarray, cell_m: float = CONSENSUS_THIN_CM * CM_TO_M
+                 ) -> np.ndarray:
+    """One point per cell, so a consensus of many captures is no denser than one.
+
+    Every voter emits its own averaged point at the same wall. Left as they
+    fall, the reference cloud gets denser with each capture and every distance
+    measured to it shrinks -- so a capture judged against four others would beat
+    one judged against two on arithmetic alone, and the figures would not be
+    comparable between levels.
+    """
+    if not len(points):
+        return points
+    cells = np.round(points / cell_m).astype(np.int64)
+    _, first = np.unique(cells, axis=0, return_index=True)
+    return points[np.sort(first)]
+
+
+def abstract_walls(clouds: Mapping[str, np.ndarray], *, exclude: str | None = None,
+                   match_m: float = WALL_MATCH_CM * CM_TO_M) -> np.ndarray:
+    """The averaged walls: where two captures independently put one, halfway.
+
+    TWO SUPPORTERS, NEVER ONE. A wall only one capture drew is that capture's
+    opinion, and admitting it would let that capture be measured against its own
+    answer -- scoring zero exactly where nothing corroborates it, which is where
+    a capture is most likely to be wrong.
+
+    `exclude` drops one capture from the ballot. A capture is measured against
+    walls it had no vote on, or the average bends toward whoever is being judged
+    and bends furthest for the capture furthest out.
+    """
+    voters = {n: c for n, c in clouds.items() if n != exclude and len(c)}
+    trees = {n: cKDTree(c) for n, c in voters.items()}
+    agreed: list[np.ndarray] = []
+    for name, cloud in voters.items():
+        for other, tree in trees.items():
+            if other == name:
+                continue
+            d, i = tree.query(cloud, k=1, distance_upper_bound=match_m)
+            hit = np.isfinite(d)
+            if hit.any():
+                agreed.append((cloud[hit] + voters[other][i[hit]]) / 2.0)
+    return thin_to_grid(np.vstack(agreed)) if agreed else np.empty((0, 2))
+
+
+def median_distance(points: np.ndarray, target: np.ndarray,
+                    cap_m: float = MATCH_LIMIT_M) -> float | None:
+    """Median distance from `points` to the nearest `target`, matched only.
+
+    None when nothing matched at all, which is not the same as zero and not the
+    same as a large number: it means these two things do not overlap.
+    """
+    if len(target) < MIN_CONSENSUS_POINTS or not len(points):
+        return None
+    d, _ = cKDTree(target).query(points, k=1, distance_upper_bound=cap_m)
+    matched = d[np.isfinite(d)]
+    return float(np.median(matched)) if len(matched) else None
+
+
+@dataclass
+class Agreement:
+    """How far one capture sits from the walls the others agree about, and what
+    that figure was actually measured against.
+
+    The basis travels with the number because it is not always the same
+    measurement. Where three or more captures agree it is a real average; where
+    only two do, removing one leaves a single opinion and the figure degenerates
+    to the pairwise one. Reporting both as "fits onto the others" without saying
+    which would hide the difference between a consensus and a second opinion.
+    """
+
+    error_m: float
+    voters: int
+    basis: str
+
+
+def fits_onto_consensus(levels: Mapping[str, Level],
+                        fits: Mapping[tuple[str, str], Fit],
+                        agreeing: set[str]) -> dict[str, Agreement]:
+    """How far each capture sits from the averaged walls of the ones that agree.
+
+    THE WALLS ARE AVERAGED, AND THE CAPTURE BEING JUDGED DID NOT VOTE. Measured
+    over all twelve captures of this house's three storeys that separates far
+    wider than the best single pairing does:
+
+        agree      consensus 2.5-4.3 cm      best pairing 2.6-4.5 cm
+        do not     consensus 14.7-29.2 cm    best pairing 7.9-28.2 cm
+
+    The 5 cm bound moves from a 4.5-to-7.9 gap into a 4.3-to-14.7 one. What
+    closed the old gap was `boy_bedroom`, which lands 65 deg out on a hallway
+    and reads 7.9 cm against its friendliest partner: agreeing well with exactly
+    one other capture was enough, and against the averaged walls it reads 14.7.
+
+    THE FRAME COMES FROM THE AGREEING SET ALONE. Averaging poses over every
+    pairwise fit lets one wrong-basin capture drag the frame for everybody: done
+    that way on the ground level, `scan9` read 21.6 cm against its own measured
+    2.7 cm. A capture outside that set has no place in the frame, so it is
+    fitted onto the abstract walls directly.
+    """
+    poses = global_poses(fits, agreeing) if len(agreeing) >= 2 else {}
+    clouds = {n: place_in_frame(levels[n], poses[n])
+              for n in poses if n in levels}
+    consensus = abstract_walls(clouds)
+
+    out: dict[str, Agreement] = {}
+    for name, level in levels.items():
+        if name in clouds:
+            walls = abstract_walls(clouds, exclude=name)
+            voters, basis = len(clouds) - 1, "the averaged walls of the others"
+            if len(walls) < MIN_CONSENSUS_POINTS and len(clouds) == 2:
+                # Two agreeing captures. Removing one leaves a single opinion
+                # rather than an average, and saying so is the honest answer --
+                # this is the figure two captures can support, and no more.
+                other = next(n for n in clouds if n != name)
+                walls = clouds[other]
+                basis = f"{other} alone, a second opinion and not a consensus"
+            error = median_distance(clouds[name], walls)
+        elif len(consensus) >= MIN_CONSENSUS_POINTS and level.walls:
+            points = sample_along_walls(level.walls)
+            fit: Any = register(points, consensus, cKDTree(consensus),
+                                force_mirror=False)
+            error = median_distance(
+                transform(points, fit["theta_rad"], fit["tx"], fit["ty"], False),
+                consensus)
+            voters, basis = len(clouds), ("the averaged walls, which it was "
+                                          "fitted onto because it is not in the "
+                                          "set that made them")
+        else:
+            continue
+        if error is not None:
+            out[name] = Agreement(error_m=error, voters=voters, basis=basis)
+    return out
+
+
+def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
+    """Each capture's distance from the walls the others agree about.
+
+    Read the rows of the pairwise matrix, never the columns. How well others fit
+    onto a capture is circular -- it partly measures how much that capture is
+    being used as the yardstick. How far a capture sits from ground several
+    others independently agree about is not.
+
+    The difference is not academic. Measured on one level, the capture with the
+    most walls -- which the old reference rule chose, and which this house's
+    whole mid-level model was built from -- turns out to be the worst of the
+    three, at 27.4 cm against 3.4 and 3.6.
+    """
+    fits = pairwise_fits(models)
+    medians = {k: f["median_error_m"] for k, f in fits.items()}
+    agreeing, fallback = consensus_set(medians, set(models),
+                                       MAX_MEDIAN_CM * CM_TO_M)
+    levels = {n: m.levels[0] for n, m in models.items() if m.levels}
+    scored = fits_onto_consensus(levels, fits, agreeing)
+    # Where nothing could be averaged -- two captures that disagree leave no
+    # agreeing set at all -- the best single pairing is what remains to report.
+    # It is a worse figure, and it is better than no figure.
+    return {n: scored[n].error_m if n in scored else fallback[n]
+            for n in models if n in scored or n in fallback}
 
 
 def agreement_from(pairwise: Mapping[tuple[str, str], float],
@@ -1405,6 +1645,9 @@ class Combined:
     slivers: int
     cautions: dict[str, str]
     agreement: dict[str, float]
+    # What each figure in `agreement` was measured against. A consensus and a
+    # second opinion are different evidence and the report has to say which.
+    agreement_basis: dict[str, str]
     # The contract: one verdict per capture, including the discarded ones.
     aligned: dict[str, Alignment]
     naming: list[Naming]
@@ -1491,8 +1734,11 @@ def alignment_record(result: Combined) -> list[dict[str, Any]]:
     capture marked suspect really was bad, and captures marked good had never
     been measured at all.
 
-    `fits_onto_others_m` is the figure to read. The rest are measured against
-    the reference, so they partly describe the reference.
+    `fits_onto_others_cm` is the figure to read, and
+    `fits_onto_others_basis` says what it was measured against -- the averaged
+    walls of the captures that agree, or, where there was nothing to average, a
+    single other capture. The rest are measured against the reference, so they
+    partly describe the reference.
     """
     def basin(fit: Fit) -> dict[str, Any]:
         return {
@@ -1515,6 +1761,7 @@ def alignment_record(result: Combined) -> list[dict[str, Any]]:
             "against": result.reference,
             "fits_onto_others_cm": (None if record.agreement_m is None
                                     else round(record.agreement_m * M_TO_CM, 1)),
+            "fits_onto_others_basis": result.agreement_basis.get(name),
             "caution": result.cautions.get(name),
         }
         if record.fit is not None:
@@ -1672,10 +1919,21 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
 
     # MEMBERSHIP IS DECIDED BEFORE THE ANCHOR IS, and without reference to it.
     # Otherwise the union depends on which capture was chosen to hold the frame.
-    pairwise = pairwise_medians(single) if len(single) > 1 else {}
-    in_union, agreement = (consensus_set(pairwise, set(single),
-                                         max_median_cm * CM_TO_M)
-                           if pairwise else (set(single), {}))
+    all_fits = pairwise_fits(single) if len(single) > 1 else {}
+    pairwise = {k: f["median_error_m"] for k, f in all_fits.items()}
+    in_union, best_pairing = (consensus_set(pairwise, set(single),
+                                            max_median_cm * CM_TO_M)
+                              if pairwise else (set(single), {}))
+
+    # ...and only then are the walls averaged, from the captures that agree, so
+    # every capture can be measured against ground it did not place itself.
+    scored = fits_onto_consensus(levels, all_fits, in_union) if all_fits else {}
+    agreement = {n: scored[n].error_m if n in scored else best_pairing[n]
+                 for n in single if n in scored or n in best_pairing}
+    agreement_basis = {
+        n: scored[n].basis if n in scored else "its best single pairing, because "
+                                              "there was nothing to average"
+        for n in agreement}
     ref = reference or pick_reference(
         {n: lv for n, lv in levels.items() if n in in_union} or levels, agreement)
     if ref not in levels:
@@ -1746,11 +2004,20 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                 f"This is the wrong basin, not a poor fit -- every wall found a "
                 f"neighbour, they are simply the wrong walls")
         if name not in in_union:
-            best = agreement.get(name)
+            # MEMBERSHIP IS DECIDED ON THE PAIRWISE FIGURE, so that is the one
+            # quoted against the limit. The averaged-wall figure is reported
+            # beside it and never in place of it: they answer different
+            # questions and one number standing for both would hide which
+            # measurement actually discarded the capture.
+            closest = best_pairing.get(name)
+            averaged = agreement.get(name)
             failures.append(
                 "agrees with no other capture on this level"
-                + (f" -- its closest is {best * M_TO_CM:.1f} cm, against a limit of "
-                   f"{max_median_cm:.0f}" if best is not None else "")
+                + (f" -- its closest single pairing is {closest * M_TO_CM:.1f} cm, "
+                   f"against a limit of {max_median_cm:.0f}"
+                   if closest is not None else "")
+                + (f", and it sits {averaged * M_TO_CM:.1f} cm from the walls the "
+                   f"others agree about" if averaged is not None else "")
                 + ". This is the odd one out, and it is measured against the other "
                   "captures rather than against the anchor, so the answer does not "
                   "depend on which capture holds the frame")
@@ -1900,7 +2167,8 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         model=model, reference=ref, candidates=cands, groups=groups, scores=scores,
         decisions=decisions, fits=fits, rejected=rejected, malformed=malformed,
         dropped_walls=dropped, fragments=fragments, sliver_m2=sliver_m2,
-        slivers=slivers, cautions=cautions, agreement=agreement, aligned=aligned,
+        slivers=slivers, cautions=cautions, agreement=agreement,
+        agreement_basis=agreement_basis, aligned=aligned,
         naming=naming,
         worklist=worklist(decisions, cands, scores, fragments, naming, expected_areas),
     )
@@ -1953,11 +2221,11 @@ def report(result: Combined) -> None:
 
     if len(result.agreement) >= 3:
         # The non-circular number. Every column above is measured against the
-        # reference, so it partly describes the reference; this asks how well
-        # each capture lands on ground the OTHERS independently agree about, and
-        # a capture cannot flatter itself in it.
-        print("\n  fits onto the OTHER captures (not onto the reference, so a bad")
-        print("  reference cannot charge its own error to everyone else):")
+        # reference, so it partly describes the reference; this asks how far
+        # each capture sits from walls the OTHERS agree about and it did not
+        # vote on, so a capture cannot flatter itself in it.
+        print("\n  distance from the AVERAGED walls of the other captures (not from")
+        print("  the reference, so a bad reference cannot charge its error to all):")
         best = min(result.agreement.values())
         for name, err in sorted(result.agreement.items(), key=lambda kv: kv[1]):
             ratio = err / best if best > 0 else 1.0
@@ -1965,6 +2233,10 @@ def report(result: Combined) -> None:
             gone = "" if result.aligned[name].usable else "  (discarded above)"
             print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {ratio:4.1f}x best"
                   f"{mark}{gone}")
+            # Never just the number. Two captures that agree cannot average
+            # anything once one of them is the capture being judged, and a
+            # figure measured against one other capture is a second opinion.
+            print(f"    {'':22s} against {result.agreement_basis[name]}")
         worst = max(result.agreement.values())
         if best > 0 and worst / best > OUTLIER_RATIO:
             print("  This is what identifies the odd one out, and it is the reason to")
