@@ -1,10 +1,15 @@
 """Combining several captures of one level.
 
-MOST OF THESE RUN ON THE REAL HOUSE. `tests/fixtures/midlevel.json` and
-`midlevel_fixtures.json` are two actual captures of one storey, trimmed to walls
-and room polygons. They are here because the numbers in this module -- 270.84
-degrees, 88% coverage, 3% overlap, 23 duplicate walls -- came off real scans, and
-invented geometry would agree with whatever the code happened to do.
+MOST OF THESE RUN ON THE REAL HOUSE. `tests/fixtures/` holds three actual
+captures of one storey, trimmed to walls and room polygons. They are here because
+the numbers in this module -- 270.84 degrees, 88% coverage, 3% overlap, 23
+duplicate walls -- came off real scans, and invented geometry would agree with
+whatever the code happened to do.
+
+`scan7.json` is the third, and it earns its place by being the capture that
+showed `midlevel` was the worst of the three rather than the yardstick. Two
+captures cannot show that: it takes a third for "fits onto the others" to mean
+anything.
 
 The mid-level bathroom is the case the whole module exists for: it is in the
 fixture pass, absent from the geometry pass, and before `combine` it vanished
@@ -27,7 +32,7 @@ from lidar2ha.combine import (
     group_rooms,
     select_walls,
 )
-from lidar2ha.schema import Level, Model, Room, Wall, load_model
+from lidar2ha.schema import Capture, Level, Model, Room, Wall, load_model
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -531,6 +536,126 @@ def test_the_suggestion_reaches_the_work_list_with_what_to_do(house):
     entries = [w for w in result.worklist if w["kind"].startswith("name_")]
     assert entries
     assert all(w["reasons"] and w["reasons"][0] for w in entries)
+
+
+# --------------------------------------------------------------------------- #
+# choosing the anchor, which decides what every other number means
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def trio() -> dict[str, Model]:
+    """All three real captures of the mid level, including the poor one."""
+    return {name: load_model(FIXTURES / f"{name}.json")
+            for name in ("midlevel", "midlevel_fixtures", "scan7")}
+
+
+def test_agreement_is_read_across_captures_not_against_the_anchor(trio):
+    """The row of the pairwise matrix, not the column. How well others fit onto
+    a capture partly measures how much it is being used as the yardstick; how
+    well it fits onto ground others agree about does not.
+
+    On this level the two differ completely: `midlevel` receives good fits and
+    lands badly, which is what a bad anchor looks like from the inside."""
+    onto = combining.fits_onto_others(trio)
+    assert onto["midlevel"] > 2 * onto["scan7"]
+    assert onto["midlevel"] > 2 * onto["midlevel_fixtures"]
+
+
+def test_the_anchor_is_the_capture_that_resolves_the_most_rooms(trio):
+    """The reference is the room set everything else is corresponded against, so
+    a capture that fused three rooms into one makes that fusion the baseline and
+    turns every capture that got it right into a disagreement.
+
+    Wall count, which used to choose, cannot see this: `midlevel` and `scan7`
+    have 32 walls each and 8 rooms against 10."""
+    result = combining.combine(trio)
+    assert result.reference == "scan7"
+    assert len(trio["midlevel"].levels[0].walls) == len(trio["scan7"].levels[0].walls), \
+        "if these differ the test proves nothing about wall count"
+
+
+def test_a_capture_far_worse_than_the_rest_may_not_anchor(trio):
+    """`midlevel` has more rooms than the fixture pass and would out-rank it on
+    room count alone, but it lands 3.2x worse than the best on ground the others
+    agree about. An anchor charges its own error to everything else."""
+    onto = combining.fits_onto_others(trio)
+    levels = {n: m.levels[0] for n, m in trio.items()}
+    assert combining.pick_reference(levels, onto) == "scan7"
+    # ...and with the outlier gone, room count decides between the rest.
+    rest = {n: onto[n] for n in ("midlevel", "midlevel_fixtures")}
+    assert combining.pick_reference(
+        {n: levels[n] for n in rest}, rest) == "midlevel"
+
+
+def test_two_captures_are_not_enough_to_disqualify_either(house):
+    """The guard needs a consensus to be a consensus. With two captures the
+    figure is one directed measurement, and the asymmetry between the two
+    directions is the very thing in doubt -- excluding on it let a five-room
+    fixture pass anchor over an eight-room survey on a tenth of a centimetre."""
+    result = combining.combine(house)
+    assert result.reference == "midlevel"
+
+
+def test_the_poor_capture_is_named_as_the_outlier(trio):
+    """A capture several times worse than the rest drags every correspondence it
+    touches. Reported and not refused -- it still holds rooms nothing else has —
+    but it must not be silent, because every other number moves when it is in."""
+    result = combining.combine(trio)
+    best = min(result.agreement.values())
+    assert result.agreement["midlevel"] / best > combining.OUTLIER_RATIO
+
+
+# --------------------------------------------------------------------------- #
+# fusion, which is where a fixture pass actually loses
+# --------------------------------------------------------------------------- #
+
+
+def test_a_polygon_covering_several_rooms_is_penalised_for_it(combined):
+    """A capture laying one polygon over four rooms another keeps apart is not
+    slightly wrong about a boundary, it is missing three walls. That is
+    measurable, and it is the real defect behind what `role` was guessing at."""
+    fused = next(c for c in combined.candidates
+                 if c.capture == "midlevel_fixtures" and c.room.name == "Living Room")
+    group = next(g for g in combined.groups if fused.index in g.members)
+    assert combining.partitioning(fused, group, combined.candidates) <= 0.25
+
+
+def test_a_room_matching_one_room_is_not_penalised(combined):
+    """One room to one room is the ordinary case and has to cost nothing, or
+    every candidate in every correspondence pays for the fused ones."""
+    laundry = next(c for c in combined.candidates
+                   if c.capture == "midlevel_fixtures" and c.room.name == "Laundry")
+    group = next(g for g in combined.groups if laundry.index in g.members)
+    assert combining.partitioning(laundry, group, combined.candidates) == 1.0
+
+
+def test_fusion_is_unmeasurable_when_nobody_else_saw_the_room(combined):
+    """The third answer. A room no other capture has seen cannot be shown to
+    fuse anything, which is not the same as being known not to."""
+    bathroom = next(c for c in combined.candidates if c.room.name == "Bathroom")
+    group = next(g for g in combined.groups if bathroom.index in g.members)
+    assert combining.partitioning(bathroom, group, combined.candidates) is None
+    assert "partitioning" in combined.scores[bathroom.index].missing
+
+
+def test_the_role_prior_yields_to_the_measurement(combined):
+    """`role` used to be charged to every fixture-pass room. Measured over two
+    levels the fixture pass is the BEST-registered capture on both, so charging
+    it for its name on top of a measurement of the thing the name stood for is
+    charging it twice. The prior applies only where fusion is unmeasurable."""
+    laundry = next(c for c in combined.candidates
+                   if c.capture == "midlevel_fixtures" and c.room.name == "Laundry")
+    group = next(g for g in combined.groups if laundry.index in g.members)
+    score = combining.score_room(
+        laundry, group, combined.candidates, own_tree=None, others_tree=None,
+        capture=Capture(id="midlevel_fixtures", role="fixtures"))
+    penalised = combining.score_room(
+        laundry, group, combined.candidates, own_tree=None, others_tree=None,
+        capture=Capture(id="midlevel_fixtures", role="fixtures"),
+        role_penalty=0.9)
+    assert score.total == penalised.total, \
+        "the role penalty was charged despite fusion being measurable"
 
 
 # --------------------------------------------------------------------------- #
