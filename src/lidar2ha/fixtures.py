@@ -55,6 +55,7 @@ import trimesh
 LUMA = np.array([0.2126, 0.7152, 0.0722])
 
 CLUSTER_M = 0.22        # faces closer than this belong to the same fitting
+MERGE_M = 0.35          # candidate centres closer than this are one fitting, broken up
 MIN_FACES = 6           # fewer is a speckle
 MAX_EXTENT_M = 1.20     # a fitting is compact; a window or wall is not
 CEILING_NZ = -0.5
@@ -147,6 +148,60 @@ def cluster(points: np.ndarray, radius: float) -> list[np.ndarray]:
     return groups
 
 
+def extent_of(points: np.ndarray) -> float:
+    """The diagonal of a candidate's bounding box, in metres."""
+    return float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+
+
+def merge_fragments(selections: list[np.ndarray], centers: np.ndarray,
+                    merge_m: float = MERGE_M,
+                    max_extent_m: float = MAX_EXTENT_M) -> tuple[list[np.ndarray], int]:
+    """Rejoin candidates that are one fitting the brightness threshold broke up.
+
+    A downlight ring, a strip, a shade with a dark band across it: the bright
+    faces come in pieces separated by more than CLUSTER_M, so one fitting is
+    counted three or four times. That inflates the contact sheet, which is the
+    thing that costs a human their evening -- a ground-level pass produced 38
+    candidates for perhaps 12-14 real fittings.
+
+    Raising CLUSTER_M instead would be wrong. It is the radius that decides
+    whether two ADJACENT DOWNLIGHTS are one fitting or two, and those really
+    are 30-40 cm apart; loosening it merges things that are genuinely separate.
+    Merging afterwards, on the candidates' centres, keeps that decision at the
+    right scale.
+
+    THE EXTENT CAP IS WHAT MAKES THIS SAFE. Without it a chain of merges walks
+    along a lit wall or a sunlit sill, joining fragment to fragment, and ends
+    with one enormous "fitting" spanning a room. Every merge is checked against
+    max_extent_m -- the same compactness rule a single cluster has to pass --
+    so the result cannot be less compact than a candidate is allowed to be.
+
+    Closest pair first, so the tightest fragments join before the marginal
+    ones, and repeat until nothing is close enough. Returns the surviving
+    selections and how many merges happened, because the count is exactly what
+    is in question here and hiding it would defeat the purpose.
+    """
+    sels = [np.asarray(s) for s in selections]
+    merges = 0
+    while True:
+        best = None
+        for i in range(len(sels)):
+            ci = centers[sels[i]].mean(axis=0)
+            for j in range(i + 1, len(sels)):
+                distance = float(np.linalg.norm(ci - centers[sels[j]].mean(axis=0)))
+                if distance > merge_m or (best is not None and distance >= best[0]):
+                    continue
+                union = np.concatenate([sels[i], sels[j]])
+                if extent_of(centers[union]) > max_extent_m:
+                    continue
+                best = (distance, i, j, union)
+        if best is None:
+            return sels, merges
+        _, i, j, union = best
+        sels = [s for k, s in enumerate(sels) if k not in (i, j)] + [union]
+        merges += 1
+
+
 def classify(normals: np.ndarray) -> str:
     """What kind of surface this cluster sits on."""
     nz = normals[:, 2]
@@ -165,6 +220,9 @@ def main():
                     help="brightness percentile above which a face is a candidate")
     ap.add_argument("--min-luma", type=float, default=200.0,
                     help="absolute floor, so a dark capture cannot promote grey to bright")
+    ap.add_argument("--merge-m", type=float, default=MERGE_M, dest="merge_m",
+                    help="candidates whose centres are closer than this are one "
+                         "fitting the threshold broke into pieces")
     ap.add_argument("--crops", metavar="DIR",
                     help="save a crop of the source photo around each candidate, "
                          "so a human can see what was actually detected")
@@ -185,21 +243,33 @@ def main():
     idx = np.where(bright)[0]
     groups = cluster(centers[idx], CLUSTER_M)
 
-    found = []
+    selections = []
     for g in groups:
         sel = idx[g]
         if len(sel) < MIN_FACES:
             continue
-        pts = centers[sel]
-        extent = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
-        if extent > MAX_EXTENT_M:
+        if extent_of(centers[sel]) > MAX_EXTENT_M:
             continue          # a window, a sunlit wall, a whole bright surface
+        selections.append(sel)
+
+    # One fitting can arrive as several clusters. Rejoining them here rather
+    # than loosening CLUSTER_M keeps adjacent downlights separate -- see
+    # merge_fragments.
+    before = len(selections)
+    selections, merges = merge_fragments(selections, centers, args.merge_m)
+    if merges:
+        print(f"merged {merges} fragment(s): {before} clusters -> "
+              f"{len(selections)} candidates\n")
+
+    found = []
+    for sel in selections:
+        pts = centers[sel]
         found.append({
             "x": round(float(pts[:, 0].mean()), 3),
             "y": round(float(pts[:, 1].mean()), 3),
             "z": round(float(pts[:, 2].mean()), 3),
             "faces": int(len(sel)),
-            "extent_m": round(extent, 3),
+            "extent_m": round(extent_of(pts), 3),
             "luma": round(float(luma[sel].mean()), 1),
             "surface": classify(normals[sel]),
             "_sel": sel,
@@ -207,18 +277,24 @@ def main():
 
     # Brightest and biggest first: the most confident candidates at the top.
     found.sort(key=lambda f: (f["faces"], f["luma"]), reverse=True)
+    # Name the crop NOW, while the order is this one. Everything downstream
+    # pairs a record with its picture by this name rather than by position,
+    # because placefixtures re-sorts the records and a positional pairing
+    # would relabel every cell on the contact sheet without saying so.
+    for i, f in enumerate(found):
+        f["crop"] = f"{i:02d}.png"
 
     if args.crops:
         crops = Path(args.crops)
         crops.mkdir(parents=True, exist_ok=True)
-        for i, f in enumerate(found):
+        for f in found:
             sel = f["_sel"]
             # Faces of one fitting can straddle two atlases; crop from whichever
             # holds most of it.
             ids, counts = np.unique(atlas_ids[sel], return_counts=True)
             aid = int(ids[counts.argmax()])
             on_atlas = sel[atlas_ids[sel] == aid]
-            save_crop(atlases, aid, atlas_xy[on_atlas], crops / f"{i:02d}.png")
+            save_crop(atlases, aid, atlas_xy[on_atlas], crops / str(f["crop"]))
         print(f"wrote {len(found)} crops to {crops}\n")
 
     for f in found:
