@@ -394,8 +394,21 @@ def test_the_combined_model_is_buildable(combined):
     model IS one, even where a fixture pass supplied a room -- which capture
     supplied what is recorded on the rooms, not on the model."""
     assert combined.model.role == "geometry"
-    assert {c.id for c in combined.model.captures} == {"scan7", "midlevel_fixtures"}
     assert sum(1 for c in combined.model.captures if c.is_reference) == 1
+    supplied = {c.id for c in combined.model.captures if c.verdict != "discarded"}
+    assert supplied == {"scan7", "midlevel_fixtures"}
+
+
+def test_a_refused_capture_stays_on_the_record(combined):
+    """The verdict governs GEOMETRY only. Textures composite and features union,
+    so a capture that cannot supply a wall may still be the only one that
+    photographed a ceiling -- on this level the discarded capture is exactly
+    that. Dropping it from `Model.captures` makes "never offered" and "offered
+    and refused" indistinguishable to everything downstream."""
+    refused = next(c for c in combined.model.captures if c.id == "midlevel")
+    assert refused.verdict == "discarded"
+    assert refused.refused_because
+    assert refused.median_error_m is not None, "the measurement that refused it"
 
 
 def test_the_combined_frame_is_the_reference_frame(combined):

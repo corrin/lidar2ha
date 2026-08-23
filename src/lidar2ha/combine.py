@@ -1413,11 +1413,11 @@ def capture_record(name: str, role: str, fit: Fit | None,
         # these None instead made `capture_quality` unmeasurable for the one
         # capture whose placement is certain, so every reference room silently
         # lost that signal's weight to the others.
-        return Capture(id=name, role=role,  # type: ignore[arg-type]
+        return Capture(id=name, role=role, verdict="reference",  # type: ignore[arg-type]
                        median_error_m=0.0, coverage=1.0, p90_error_m=0.0,
                        theta_deg=0.0, tx_m=0.0, ty_m=0.0, is_reference=is_reference)
     return Capture(
-        id=name, role=role,  # type: ignore[arg-type]
+        id=name, role=role, verdict="accepted",  # type: ignore[arg-type]
         median_error_m=fit["median_error_m"], coverage=fit["coverage"],
         p90_error_m=fit["p90_m"],
         theta_deg=round(math.degrees(fit["theta_rad"]) % 360, 2),
@@ -1800,7 +1800,22 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                       # combined frame IS the reference's plan frame -- so
                       # `textures_project` still indexes into its mesh.
                       registration=base.registration)],
-        captures=[captures[n] for n in accepted],
+        # EVERY capture considered, refused ones included. The doctrine has
+        # three kinds of data and this verdict governs only the first: geometry
+        # is SELECTED, textures COMPOSITE, features UNION. A capture that cannot
+        # supply a wall may still be the only one that photographed a ceiling,
+        # or the only one that saw a window -- measured here, the capture this
+        # gate discards at 10.5 cm is the only mid-level ordinary capture whose
+        # mesh covers the ceilings well enough to difference fittings against.
+        # Dropping it from the record makes "never offered" and "offered and
+        # refused" indistinguishable to everything downstream.
+        captures=[captures[n] for n in accepted] + [
+            Capture(id=n, role=roles.get(n, "geometry"),
+                    verdict=a.verdict, refused_because=a.reason,
+                    median_error_m=None if not a.candidates
+                    else a.candidates[0]["median_error_m"],
+                    coverage=None if not a.candidates else a.candidates[0]["coverage"])
+            for n, a in aligned.items() if not a.usable],
     )
     return Combined(
         model=model, reference=ref, candidates=cands, groups=groups, scores=scores,
