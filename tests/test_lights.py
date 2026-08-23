@@ -8,14 +8,18 @@ every refusal has to be counted and named.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from shapely.geometry import Point, Polygon
 
 from scan2ha.ha import LightEntity
 from scan2ha.lights import (
+    Fitting,
     LightsConfig,
     build_lights,
     elevation_for,
+    load_fittings,
     place,
     pole_of,
     room_index,
@@ -275,3 +279,81 @@ def test_config_reads_the_project_yaml_shape():
 
 def test_a_project_with_no_lights_section_is_fine():
     assert LightsConfig.from_project({}).exclude == set()
+
+
+# --------------------------------------------------------------------------- #
+# measured fittings, which are the point of a fixture pass
+# --------------------------------------------------------------------------- #
+
+
+def test_one_entity_with_several_fittings_gets_a_placement_at_each():
+    """The common case, not the exception.
+
+    One real upstairs had roughly 18 fittings and 5 light.* entities; the rest
+    were dumb switches. The plugin sums sources sharing a name, so N placements
+    carrying one entity_id is the correct model of one switch driving N bulbs.
+    """
+    model = model_with(room("office"))
+    found = {"office": [Fitting(50, 50, 240), Fitting(150, 150, 240),
+                        Fitting(250, 250, 240)]}
+    lights, report = build_lights(model, [light("light.office", "office")], None, found)
+
+    assert len(lights) == 3
+    assert {lt.entity_id for lt in lights} == {"light.office"}
+    assert {(lt.x, lt.y) for lt in lights} == {(50, 50), (150, 150), (250, 250)}
+    assert report.measured == [("office", 3, 1)]
+
+
+def test_a_measured_height_replaces_the_ceiling_guess():
+    """Measuring the fittings is the whole point; the guess is wrong for every
+    pendant, wall light and lamp in the house."""
+    model = model_with(room("hall", ceiling_low_cm=250, ceiling_high_cm=250))
+    found = {"hall": [Fitting(100, 100, 172.5)]}
+    lights, _ = build_lights(model, [light("light.hall", "hall")], None, found)
+
+    assert lights[0].elevation == 172.5, "fell back to ceiling minus the drop"
+
+
+def test_a_fitting_with_no_measured_height_falls_back_to_the_ceiling():
+    model = model_with(room("hall", ceiling_low_cm=250, ceiling_high_cm=250))
+    found = {"hall": [Fitting(100, 100, None)]}
+    lights, _ = build_lights(model, [light("light.hall", "hall")], None, found)
+    assert lights[0].elevation == 230
+
+
+def test_several_entities_and_several_fittings_is_reported_not_guessed():
+    """Which entity drives which fitting is not in the geometry, and pairing by
+    proximity would be confidently wrong about as often as it is right."""
+    model = model_with(room("lounge"))
+    found = {"lounge": [Fitting(50, 50, 240), Fitting(250, 250, 240)]}
+    lights, report = build_lights(
+        model, [light("light.a", "lounge"), light("light.b", "lounge")], None, found)
+
+    assert report.ambiguous == [("lounge", 2, 2)]
+    assert len(lights) == 2
+    # Fell back to the pole rather than pairing them off by distance.
+    assert {(lt.x, lt.y) for lt in lights} != {(50, 50), (250, 250)}
+
+
+def test_load_fittings_drops_records_that_landed_in_no_room(tmp_path):
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps([
+        {"room": "kitchen", "plan_x_cm": 10, "plan_y_cm": 20, "elevation_cm": 240},
+        {"room": "OUTSIDE", "plan_x_cm": 900, "plan_y_cm": 900},
+    ]), encoding="utf-8")
+
+    found = load_fittings(path)
+    assert set(found) == {"kitchen"}
+    assert found["kitchen"][0].elevation == 240
+
+
+def test_load_fittings_accepts_a_flagged_near_miss(tmp_path):
+    """A fitting just the wrong side of a wall line is common and still useful;
+    placefixtures marks it rather than discarding it."""
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps(
+        [{"room": "~pantry (+42cm)", "plan_x_cm": 10, "plan_y_cm": 20}]), encoding="utf-8")
+
+    found = load_fittings(path)
+    assert set(found) == {"pantry"}
+    assert found["pantry"][0].elevation is None

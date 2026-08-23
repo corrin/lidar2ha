@@ -37,11 +37,12 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Tiled textures by surface class (fallback) | works (`textures_tile.py`) |
 | Emit the scene file | works (`scene.py`) |
 | Write a real `.sh3d` | works (`Sh3dWriter.java`) |
-| Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`) |
+| Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`), one level at a time |
 | Rename rooms to HA areas, merge open-plan splits | works (`rooms.py`), mapping written by hand |
 | Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
-| Find real fittings in the scan | investigation only (`ceilingmap.py`) |
+| Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), **needs human review** |
+| Review sheet for the fittings found | works (`contactsheet.py`) |
 | `scan2ha doctor`, `build` and `lights` | works (`cli.py`) |
 | **Seam/seed open-plan splitting** | **does not exist** — `rooms.py` merges named rooms instead |
 | **`scan2ha add-capture` / `render` / `deploy`** | **does not exist** (they exit saying so) |
@@ -100,6 +101,16 @@ modelled. Walk the stairs; don't stop and restart. The mesh is the world coordin
 a second capture has a different and unrelated frame, and **geometry cannot be merged
 across captures** — fitting one capture's plan onto another's gives 17 cm median and 80 cm
 p90 disagreement, against 1–5 cm for a plan fitted to its own mesh.
+
+**Then take a second, different capture of the same level: a fixture pass.** Turn on every
+light — including the ones Home Assistant cannot control — and walk the level aiming the
+phone at each fitting in turn. Geometry does not matter here and will be poor; that is the
+trade. What you are recording is where the lights physically are, which no amount of
+careful geometry scanning will tell you.
+
+Two passes per level, serving different purposes, neither compromised for the other. See
+[Lights](#lights-which-room-is-solved-where-in-the-room-is-not) for what happens to it —
+including the human review step, which is not optional.
 
 That is a limit on *merging*, not on rescanning. Rescanning is how this gets repaired:
 cover the mirror you missed, point the phone up at the double-height space, walk the room
@@ -169,8 +180,18 @@ python -m scan2ha.textures_project registered.json mesh.obj -o walltex
 # 5. give rooms their HA area names, merging open-plan splits
 python -m scan2ha.rooms registered.json project.yaml -o named.json --capture upstairs
 
+# 5b. OPTIONAL, from a fixture pass: find the real fittings, put them in rooms,
+#     and build the sheet you approve them against before anything is placed
+python -m scan2ha.fixtures fixture_mesh.obj -o fixtures.json --crops crops/
+python -m scan2ha.placefixtures fixtures.json fixture_registered.json named.json \
+    -o fixtures_placed.json
+python -m scan2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
+#     Look at sheet.png. Windows and candles look exactly like fittings to the
+#     detector; only you can tell. Then pass the approved file to lights below.
+
 # 6. read the HA registry and place every light.* entity in its room
-scan2ha lights named.json --refresh --project project.yaml -o lights.json
+scan2ha lights named.json --refresh --project project.yaml -o lights.json \
+    --fittings fixtures_placed.json   # omit to place at the pole instead
 
 # 7. scene file -> .sh3d: compiles and runs the Java for you, then reopens the
 #    result through Sweet Home 3D's own reader
@@ -218,12 +239,37 @@ bulbs in different rooms, and an integration-native light group sits on whatever
 coordinator lives in — so device-first files half a house's lights in the cupboard with the
 USB stick.
 
-**Where in the room** is a guess: the pole of inaccessibility, the point furthest from any
-wall, with several lights in a room spread around it. Better than the centroid, which for
-an L-shaped room can lie outside the room entirely — but still not where your fittings
-actually are. The scan does know, because a fitting is a bright compact blob on the
-ceiling, and `ceilingmap.py` is the start of finding them. `lights --fittings` already
-accepts real positions; nothing writes that file yet.
+**Where in the room** is a guess by default: the pole of inaccessibility, the point
+furthest from any wall, with several lights in a room spread around it. Better than the
+centroid, which for an L-shaped room can lie outside the room entirely — but still not
+where your fittings actually are.
+
+A **fixture pass** replaces that guess with a measurement. It is a second capture taken
+deliberately differently: every light switched on, the phone aimed at each fitting,
+geometry quality sacrificed on purpose. `fixtures` clusters bright faces in 3D,
+`placefixtures` carries them into the geometry capture's rooms through both registrations,
+and `contactsheet` crops each candidate out of the photograph it came from.
+
+**That step needs a human, and not as a formality.** Brightness cannot separate a lit bulb
+from a sunlit window — both saturate the sensor — so the detector finds windows. On one
+real run it also found a candle burning on a desk. It will not stop doing this: the
+limitation is in the physics, not the threshold.
+
+So the output is a numbered contact sheet and the question *"which of these are real
+fittings?"*. On that run, 24 candidates contained about 18 fittings and the extras were all
+glass — obvious to a person, invisible to the detector. What it is genuinely better at than
+a person is the tedious part: it found exactly one fitting in each of two 1.6 m² wardrobes
+and placed each in the right cupboard.
+
+One discriminator would remove the windows mechanically and is not built: a window is
+bright in *every* capture, a fitting only when switched on, so differencing a fixture pass
+against an ordinary capture of the same rooms isolates the fittings. Until that exists,
+human review is the filter.
+
+Expect far more fittings than entities. The upstairs of the house this was built for has
+roughly 18 fittings and 5 `light.*` entities; the rest are dumb switches. Fittings with no
+entity are **reported, never invented** — placing an uncontrollable light would render
+prettily and respond to nothing.
 
 **Not every `light.*` entity is a light.** Status LEDs, indicator rings, and controllers
 exposing sound channels in the light domain all turn up. They are placed and flagged rather

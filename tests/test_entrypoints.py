@@ -117,9 +117,10 @@ def test_every_stage_exposes_a_main():
     """A stage without main() cannot be run, and nothing else would say so."""
     import importlib
 
-    stages = ["ceilings", "compare", "floormap", "ha", "inspect_dxf", "inspect_mesh",
-              "lights", "mesh", "polycam", "preview", "registration", "rooms",
-              "seams", "textures_project", "textures_tile", "thresholds"]
+    stages = ["ceilings", "compare", "contactsheet", "fixtures", "floormap", "ha",
+              "inspect_dxf", "inspect_mesh", "lights", "mesh", "placefixtures",
+              "polycam", "preview", "registration", "rooms", "seams",
+              "textures_project", "textures_tile", "thresholds"]
     missing = [s for s in stages
                if not callable(getattr(importlib.import_module(f"scan2ha.{s}"), "main", None))]
     assert missing == []

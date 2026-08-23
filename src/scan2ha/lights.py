@@ -89,6 +89,10 @@ class Report:
     areas_without_rooms: set[str] = field(default_factory=set)
     rooms_without_lights: list[str] = field(default_factory=list)
     duplicate_names: dict[str, list[str]] = field(default_factory=dict)
+    # (area, fittings, entities) where measured positions were used.
+    measured: list[tuple[str, int, int]] = field(default_factory=list)
+    # (area, fittings, entities) where several of each made the pairing a guess.
+    ambiguous: list[tuple[str, int, int]] = field(default_factory=list)
 
 
 def room_index(model: Model) -> dict[str, tuple[int, Level, Room]]:
@@ -169,7 +173,7 @@ def build_lights(
     model: Model,
     entities: list[LightEntity],
     config: LightsConfig | None = None,
-    fittings: dict[str, list[tuple[float, float]]] | None = None,
+    fittings: dict[str, list[Fitting]] | None = None,
 ) -> tuple[list[Light], Report]:
     """Place every placeable entity, and account for every one that is not."""
     config = config or LightsConfig()
@@ -225,17 +229,44 @@ def build_lights(
     for area, in_area in sorted(wanted.items()):
         level_index, level, room = rooms[area]
         poly = polygon_of(room)
-        positions = place(poly, len(in_area), fittings.get(area))
-        elevation = elevation_for(room, level)
-        for entity, (x, y) in zip(in_area, positions, strict=True):
+        measured = fittings.get(area) or []
+        default_elevation = elevation_for(room, level)
+
+        # How measured fittings pair with entities. Most rooms in a real house
+        # have more fittings than entities -- one upstairs had roughly 18
+        # fittings and 5 light.* entities, the rest on dumb switches -- so the
+        # one-entity-many-fittings case is the common one, not the exception.
+        pairs: list[tuple[LightEntity, tuple[float, float], float | None]] = []
+        if measured and len(in_area) == 1:
+            # The plugin sums sources sharing a name, so N placements carrying
+            # one entity_id is the correct representation of one switch driving
+            # N bulbs -- not a workaround for having too few entities.
+            entity = in_area[0]
+            pairs = [(entity, (f.x, f.y), f.elevation) for f in measured]
+            report.measured.append((area, len(measured), 1))
+        elif measured and len(in_area) > 1:
+            # Which entity drives which fitting is not knowable from geometry,
+            # and pairing by proximity would be a confident guess that is wrong
+            # as often as it is right. Fall back to spreading and say so.
+            report.ambiguous.append((area, len(measured), len(in_area)))
+            positions = place(poly, len(in_area))
+            pairs = [(e, p, None) for e, p in zip(in_area, positions, strict=True)]
+        else:
+            positions = place(poly, len(in_area))
+            pairs = [(e, p, None) for e, p in zip(in_area, positions, strict=True)]
+
+        for entity, (x, y), measured_elevation in pairs:
             power = config.power.get(entity.entity_id, config.default_power)
             if power <= 0:
                 # The plugin ignores a source with no power, so it would vanish
                 # from the render with nothing to explain why.
                 report.skipped.append((entity.entity_id, f"power {power} is not > 0"))
                 continue
+            elevation = (measured_elevation if measured_elevation is not None
+                         else default_elevation)
             lights.append(Light(entity_id=entity.entity_id, level=level_index,
-                                x=x, y=y, elevation=elevation, power=power))
+                                x=x, y=y, elevation=max(MIN_ELEVATION_CM, elevation),
+                                power=power))
             report.placed.append((entity.entity_id, area, f"level {level_index}"))
 
     lit = set(wanted)
@@ -243,16 +274,40 @@ def build_lights(
     return lights, report
 
 
-def load_fittings(path: str | Path) -> dict[str, list[tuple[float, float]]]:
-    """Real fitting positions per area, in model centimetres.
+@dataclass
+class Fitting:
+    """One measured light fitting, in the model's own frame."""
 
-    Produced by the fitting-detection stage, which does not exist yet -- this is
-    the interface it will write to.
+    x: float
+    y: float
+    # Height above its level's floor. None when the fixture capture had no floor
+    # to measure from, in which case the room's ceiling is used as before.
+    elevation: float | None = None
+
+
+def load_fittings(path: str | Path) -> dict[str, list[Fitting]]:
+    """Measured fitting positions per area, from `placefixtures`.
+
+    Records whose room is `OUTSIDE` are dropped: they landed in no room and
+    there is nothing to attach them to. A room prefixed `~` is a flagged
+    near-miss -- the fitting fell just outside a wall line, which is common and
+    still useful -- so the marker is stripped and the room used.
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    out: dict[str, list[tuple[float, float]]] = {}
+    out: dict[str, list[Fitting]] = {}
     for entry in raw:
-        out.setdefault(entry["area"], []).append((float(entry["x"]), float(entry["y"])))
+        room = str(entry.get("room") or entry.get("area") or "")
+        if not room or room.startswith("OUTSIDE"):
+            continue
+        room = room.lstrip("~").split(" (")[0]
+        x = entry.get("plan_x_cm", entry.get("x"))
+        y = entry.get("plan_y_cm", entry.get("y"))
+        if x is None or y is None:
+            continue
+        elevation = entry.get("elevation_cm")
+        out.setdefault(room, []).append(
+            Fitting(float(x), float(y),
+                    float(elevation) if elevation is not None else None))
     return out
 
 
@@ -286,6 +341,18 @@ def print_report(report: Report, lights: list[Light]) -> None:
     if report.rooms_without_lights:
         print(f"\n  ROOMS WITH NO LIGHTS: {report.rooms_without_lights}")
         print("    These will render dark. Check the area assignment in Home Assistant.")
+
+    if report.measured:
+        print("\nMEASURED from a fixture pass (position and height, not guessed):")
+        for area, found, entities in report.measured:
+            print(f"    {area:<22} {found} fitting(s) on {entities} entity")
+
+    if report.ambiguous:
+        print("\nAMBIGUOUS -- measured fittings ignored, placed at the pole instead:")
+        for area, found, entities in report.ambiguous:
+            print(f"    {area:<22} {found} fitting(s) and {entities} entities")
+        print("    Which entity drives which fitting is not in the geometry. Split the")
+        print("    room with `seams`, or name the pairing in project.yaml.")
 
     if report.duplicate_names:
         print("\n  SHARED FRIENDLY NAMES (often one fitting exposed several ways):")
