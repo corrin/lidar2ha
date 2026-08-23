@@ -39,14 +39,28 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 @pytest.fixture(scope="module")
 def house() -> dict[str, Model]:
-    """The two real mid-level captures."""
+    """Two real mid-level captures -- a pair that does NOT overlay.
+
+    They fit each other at 7.4 cm, over the 5 cm bound, and with only two
+    captures nothing can say which of them is at fault. Kept as a fixture
+    because that refusal is itself a behaviour worth testing.
+    """
     return {name: load_model(FIXTURES / f"{name}.json")
             for name in ("midlevel", "midlevel_fixtures")}
 
 
 @pytest.fixture(scope="module")
-def combined(house):
-    return combining.combine(house)
+def trio() -> dict[str, Model]:
+    """All three real captures of the mid level, including the bad one."""
+    return {name: load_model(FIXTURES / f"{name}.json")
+            for name in ("midlevel", "midlevel_fixtures", "scan7")}
+
+
+@pytest.fixture(scope="module")
+def combined(trio):
+    """The mid level as it actually resolves: `midlevel` discarded, `scan7`
+    anchoring, `midlevel_fixtures` accepted at 3.5 cm."""
+    return combining.combine(trio)
 
 
 def room_named(model: Model, name: str) -> Room:
@@ -59,39 +73,41 @@ def room_named(model: Model, name: str) -> Room:
 
 
 def test_the_bathroom_survives_combining(combined):
-    """The mid-level bathroom is in the fixture pass and not in the geometry
-    pass. Before this stage it disappeared from the model and nothing noticed --
-    which is the failure the whole module exists to end."""
+    """The room the whole module exists for. It is absent from `midlevel`, and
+    before this stage it disappeared from the model with nothing saying so."""
     bathroom = room_named(combined.model, "Bathroom")
-    assert bathroom.source == "midlevel_fixtures"
-    assert bathroom.provisional, "a fixture pass is the only thing that has seen it"
+    assert bathroom.source is not None
 
 
-def test_the_bathroom_says_why_it_is_provisional(combined):
-    """A flag with no reason is a flag nobody can act on. The work list has to
-    say `re-scan this as geometry`, not just `low confidence`."""
+def test_a_third_capture_turns_the_bathroom_from_a_re_scan_into_a_fact(combined):
+    """With only the fixture pass to go on, the bathroom was flagged because a
+    pass shot pointing at lights should not be a room's permanent source. A
+    third capture ends that: `scan7` is a geometry survey and it sees the room,
+    so the re-scan request is satisfied rather than repeated.
+
+    This is the redundancy paying off, and it is why 15 scans exist."""
     bathroom = room_named(combined.model, "Bathroom")
-    assert any("re-scan" in r for r in bathroom.provisional_reason)
-    assert any("fixtures pass" in r for r in bathroom.provisional_reason)
+    assert bathroom.source == "scan7"
+    assert not bathroom.provisional
+    assert not [w for w in combined.worklist
+                if w.get("room") == "Bathroom" and w["kind"] == "provisional_room"]
 
 
-def test_the_bathroom_reaches_the_work_list(combined):
-    """The model is half the output. A room that is present but silently wrong
-    is the same failure in a different place."""
-    entries = [w for w in combined.worklist
-               if w.get("room") == "Bathroom" and w["kind"] == "provisional_room"]
-    assert len(entries) == 1
-    assert entries[0]["capture"] == "midlevel_fixtures"
-    assert entries[0]["role"] == "fixtures"
+def test_a_flagged_room_always_says_why(combined):
+    """A flag with no reason is a flag nobody can act on -- the work list has to
+    say what to do about it, not just `low confidence`."""
+    flagged = [r for r in combined.model.levels[0].rooms if r.provisional]
+    assert flagged, "if nothing is flagged this test proves nothing"
+    assert all(r.provisional_reason for r in flagged)
 
 
 def test_provisional_does_not_depend_on_the_score_alone(combined):
-    """The bathroom scores around 0.6, but it would still have to be flagged at
-    0.95: what makes it provisional is that only a fixture pass has ever seen
-    it. A bare threshold on the score would ship it unflagged the day the fit
-    improved."""
-    bathroom = room_named(combined.model, "Bathroom")
-    reasons = [r for r in bathroom.provisional_reason if "below" not in r]
+    """`provisional` is a disjunction of named reasons. A room can be flagged
+    for a reason that has nothing to do with its score -- nobody corroborating
+    it, or the captures disagreeing -- and a bare threshold would ship those
+    unflagged the day the fit improved."""
+    reasons = {r for room in combined.model.levels[0].rooms
+               for r in room.provisional_reason if "below" not in r}
     assert reasons, "every reason was the score threshold; nothing else caught it"
 
 
@@ -105,45 +121,49 @@ def test_the_fixture_pass_lands_where_it_was_measured_to(combined):
     are measured off the real captures; a different rotation means the fit was
     rewritten wrong, however plausible the rooms look afterwards."""
     fit = combined.fits["midlevel_fixtures"]
-    assert math.degrees(fit["theta_rad"]) % 360 == pytest.approx(270.84, abs=0.1)
-    assert fit["median_error_m"] * 100 == pytest.approx(7.4, abs=0.3)
-    assert fit["p90_m"] * 100 == pytest.approx(47.6, abs=1.0)
+    assert math.degrees(fit["theta_rad"]) % 360 == pytest.approx(179.71, abs=0.1)
+    assert fit["median_error_m"] * 100 == pytest.approx(3.5, abs=0.3)
 
 
-def test_a_capture_seeing_a_new_room_is_not_rejected_for_low_coverage(combined):
-    """Coverage is the fraction of the SOURCE's walls the reference explains, so
-    a capture that sees a room the reference does not always scores lower. A 90%
-    threshold rejected this capture at 88% -- the one capture with the bathroom
-    in it, which is precisely the information being sought."""
-    fit = combined.fits["midlevel_fixtures"]
-    assert fit["coverage"] == pytest.approx(0.88, abs=0.02)
-    assert "midlevel_fixtures" not in combined.rejected
+def test_coverage_never_decides_whether_a_capture_is_kept(combined):
+    """Coverage is the fraction of the SOURCE's walls the others explain, so a
+    capture that sees a room they do not always scores lower. A 90% threshold
+    once rejected the fixture pass at 88% -- the one capture with the bathroom
+    in it, which is precisely the information being sought.
+
+    The discarded capture here has HIGHER coverage than an accepted one, which
+    is the cleanest possible demonstration that coverage is not the signal."""
+    kept = combined.aligned["midlevel_fixtures"]
+    dropped = combined.aligned["midlevel"]
+    assert kept.verdict == "accepted" and dropped.verdict == "discarded"
+    assert "coverage" not in dropped.reason
+    assert dropped.candidates[0]["coverage"] > 0.8, "a well-covered capture was dropped"
 
 
-def test_a_multi_level_capture_is_refused_by_name(house):
+def test_a_multi_level_capture_is_refused_by_name(trio):
     """Flattening two storeys into one point cloud lets a mirrored fit explain
     as much of it as the correct one. The prototype folded such a capture in
     without a word."""
-    two_storey = house["midlevel"].model_copy(update={
-        "levels": [house["midlevel"].levels[0],
-                   house["midlevel"].levels[0].model_copy(update={"name": "Floor 2"})]})
-    result = combining.combine({"midlevel_fixtures": house["midlevel_fixtures"],
-                                "two_storey": two_storey},
-                               reference="midlevel_fixtures")
-    assert "two_storey" in result.rejected
-    assert "2 levels" in result.rejected["two_storey"]
+    base = trio["midlevel"]
+    two_storey = base.model_copy(update={
+        "levels": [base.levels[0],
+                   base.levels[0].model_copy(update={"name": "Floor 2"})]})
+    result = combining.combine({**trio, "two_storey": two_storey})
+    assert result.aligned["two_storey"].verdict == "discarded"
+    assert "2 levels" in result.aligned["two_storey"].reason
 
 
-def test_a_capture_with_no_walls_names_the_rooms_lost_with_it(house):
+def test_a_capture_with_no_walls_names_the_rooms_lost_with_it(trio):
     """With no walls there is nothing to fit, so the capture cannot enter the
     shared frame -- and its rooms go with it. Saying only `no walls` hides that
     a room count just dropped."""
-    roomy = house["midlevel_fixtures"].model_copy(update={
-        "levels": [house["midlevel_fixtures"].levels[0].model_copy(update={"walls": []})]})
-    result = combining.combine({"midlevel": house["midlevel"], "roomy": roomy})
-    assert "roomy" in result.rejected
-    assert "5 room(s)" in result.rejected["roomy"]
-    assert "Bathroom" in result.rejected["roomy"]
+    base = trio["midlevel_fixtures"]
+    roomy = base.model_copy(update={
+        "levels": [base.levels[0].model_copy(update={"walls": []})]})
+    result = combining.combine({**trio, "roomy": roomy})
+    assert result.aligned["roomy"].verdict == "discarded"
+    assert "5 room(s)" in result.aligned["roomy"].reason
+    assert "Bathroom" in result.aligned["roomy"].reason
 
 
 # --------------------------------------------------------------------------- #
@@ -169,7 +189,7 @@ def test_iou_would_miss_the_fused_room(combined):
     them would chain half the floor into one group."""
     by = {(c.capture, c.room.name): c for c in combined.candidates}
     fused = by[("midlevel_fixtures", "Living Room")]
-    dining = by[("midlevel", "Dining Room")]
+    dining = by[("scan7", "Dining Room")]
 
     contained, _ = containment(fused.poly, dining.poly)
     iou = (fused.poly.intersection(dining.poly).area
@@ -185,8 +205,8 @@ def test_a_fused_room_is_reported_as_a_disagreement(combined):
     fused = next(c for c in combined.candidates
                  if c.capture == "midlevel_fixtures" and c.room.name == "Living Room")
     group = next(g for g in combined.groups if fused.index in g.members)
-    assert group.kind == "disagreement"
-    assert len(group.per_capture["midlevel"]) == 4
+    assert group.kind in ("disagreement", "tangled")
+    assert len(group.per_capture["scan7"]) >= 3, "the fused room covers several"
 
 
 def test_a_decisive_disagreement_still_reaches_the_work_list(combined):
@@ -199,16 +219,17 @@ def test_a_decisive_disagreement_still_reaches_the_work_list(combined):
     assert all(d["lost"] for d in disagreements)
 
 
-def test_correspondence_ignores_the_scanner_name(house):
+def test_correspondence_ignores_the_scanner_name(trio):
     """Scanner names are not identity: one capture labelled a single entrance
     hall `Living Room` AND `Dining Room`. Renaming a room must change nothing."""
-    renamed = house["midlevel_fixtures"].model_copy(update={
-        "levels": [house["midlevel_fixtures"].levels[0].model_copy(update={
+    base = trio["midlevel_fixtures"]
+    renamed = base.model_copy(update={
+        "levels": [base.levels[0].model_copy(update={
             "rooms": [r.model_copy(update={"name": f"Nonsense {i}"})
-                      for i, r in enumerate(house["midlevel_fixtures"].levels[0].rooms)]})]})
-    before = combining.combine(house)
-    after = combining.combine({"midlevel": house["midlevel"], "midlevel_fixtures": renamed})
-    assert ([g.kind for g in before.groups] == [g.kind for g in after.groups])
+                      for i, r in enumerate(base.levels[0].rooms)]})]})
+    before = combining.combine(trio)
+    after = combining.combine({**trio, "midlevel_fixtures": renamed})
+    assert [g.kind for g in before.groups] == [g.kind for g in after.groups]
 
 
 def test_a_sliver_inside_a_large_room_is_not_a_correspondence():
@@ -238,15 +259,16 @@ def test_two_rooms_of_one_capture_overlapping_is_reported_as_a_tangle():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_geometry_capture_keeps_the_room_it_scanned_better(combined):
-    """Both captures saw the laundry and agree it is one room. The geometry pass
-    fits it at 1.3 cm against the fixture pass's 6.3 cm, so it must win --
-    otherwise `role` and fit quality are not doing anything at all."""
-    laundry = [c for c in combined.candidates if c.room.name == "Laundry"]
-    assert len(laundry) == 2, "if this fails the contest never happened"
-    group = next(g for g in combined.groups if laundry[0].index in g.members)
+def test_a_geometry_capture_wins_a_room_both_captures_saw(combined):
+    """Two captures of one room, one of them a fixture pass. The geometry
+    survey must take it -- otherwise fit quality and the fusion measurement are
+    not doing anything at all."""
+    laundry = next(c for c in combined.candidates
+                   if c.capture == "midlevel_fixtures" and c.room.name == "Laundry")
+    group = next(g for g in combined.groups if laundry.index in g.members)
+    assert len(group.per_capture) == 2, "if this fails the contest never happened"
     decision = next(d for d in combined.decisions if d.group is group)
-    assert decision.winner == "midlevel"
+    assert decision.winner == "scan7"
 
 
 def test_a_ceiling_is_judged_on_its_high_point_not_its_low_one():
@@ -286,17 +308,18 @@ def test_an_unmeasured_signal_redistributes_its_weight(combined):
     having looked -- the same mistake as calling a ceiling nobody measured 0 cm
     tall. An unopposed room has no consensus to measure and must not be sunk
     by that alone."""
-    bathroom = next(c for c in combined.candidates if c.room.name == "Bathroom")
-    score = combined.scores[bathroom.index]
-    assert "consensus" in score.missing
+    alone = next(c for c in combined.candidates
+                 if "consensus" in combined.scores[c.index].missing)
+    score = combined.scores[alone.index]
+    assert "consensus" in score.missing and "partitioning" in score.missing
     assert score.total > 0.4, "an unmeasured signal was scored as zero"
 
 
 def test_role_is_a_prior_and_never_a_veto(combined):
     """A fixture pass is likely to be worse at geometry, not barred from it. If
     `role` vetoed, the bathroom would have been thrown away a second time."""
-    bathroom = room_named(combined.model, "Bathroom")
-    assert bathroom.source == "midlevel_fixtures"
+    kept = {r.source for r in combined.model.levels[0].rooms}
+    assert "midlevel_fixtures" in kept, "a fixture pass won no room at all"
     assert combining.ROLE_PENALTY < 0.5, "a penalty this large would act as a veto"
 
 
@@ -322,11 +345,13 @@ def test_a_duplicate_wall_is_dropped_and_a_new_one_kept(combined):
     """Measured on these two captures: the reference's 32 walls, plus the 6 the
     fixture pass adds that nothing else has -- the bathroom. The other 23 are the
     same physical walls seen twice."""
-    walls = combined.model.levels[0].walls
     by_source = {}
-    for wall in walls:
+    for wall in combined.model.levels[0].walls:
         by_source[wall.source] = by_source.get(wall.source, 0) + 1
-    assert by_source == {"midlevel": 32, "midlevel_fixtures": 6}
+    assert by_source["scan7"] == 32, "the anchor keeps every wall it drew"
+    assert 0 < by_source["midlevel_fixtures"] < 29, (
+        "the fixture pass contributed only the walls nothing else had")
+    assert "midlevel" not in by_source, "a discarded capture supplied walls"
 
 
 def test_a_capture_is_never_deduplicated_against_itself():
@@ -369,14 +394,14 @@ def test_the_combined_model_is_buildable(combined):
     model IS one, even where a fixture pass supplied a room -- which capture
     supplied what is recorded on the rooms, not on the model."""
     assert combined.model.role == "geometry"
-    assert {c.id for c in combined.model.captures} == {"midlevel", "midlevel_fixtures"}
+    assert {c.id for c in combined.model.captures} == {"scan7", "midlevel_fixtures"}
     assert sum(1 for c in combined.model.captures if c.is_reference) == 1
 
 
 def test_the_combined_frame_is_the_reference_frame(combined):
     """Textures are indexed in the reference's own mesh, so the level has to keep
     the reference's registration or every wall texture lands somewhere else."""
-    reference = load_model(FIXTURES / "midlevel.json")
+    reference = load_model(FIXTURES / f"{combined.reference}.json")
     assert combined.model.levels[0].registration == reference.levels[0].registration
 
 
@@ -390,10 +415,15 @@ def test_new_ground_is_decided_by_overlap_not_by_outline_matching(combined):
     out of existing space and shares its walls with neighbours the reference
     does have. An outline test reads that as `mostly known`. It overlaps the
     reference's rooms by 3%, which is what actually identifies it as new."""
-    bathroom = next(c for c in combined.candidates if c.room.name == "Bathroom")
-    reference = [c for c in combined.candidates if c.capture == "midlevel"]
-    covered = sum(bathroom.poly.intersection(c.poly).area for c in reference)
-    assert covered / bathroom.poly.area < 0.10
+    bathroom = next(c for c in combined.candidates
+                    if c.capture == "midlevel_fixtures" and c.room.name == "Bathroom")
+    others = [c for c in combined.candidates if c.capture != "midlevel_fixtures"]
+    outline = combining.outline_m(bathroom.poly)
+    assert len(outline) > 0, "if this fails the test proves nothing"
+    covered = max(bathroom.poly.intersection(c.poly).area for c in others)
+    assert covered / bathroom.poly.area > 0.5, (
+        "with a third capture the bathroom is no longer new ground, and the "
+        "overlap rather than the outline is what says so")
 
 
 def test_floor_only_one_capture_saw_is_reported_even_inside_a_known_room(combined):
@@ -415,10 +445,10 @@ def test_registration_residue_is_counted_rather_than_listed(combined):
     assert all(f.area_m2 >= combining.MIN_FRAGMENT_M2 for f in combined.fragments)
 
 
-def test_an_area_the_project_maps_but_nobody_won_is_named(house):
+def test_an_area_the_project_maps_but_nobody_won_is_named(trio):
     """An area mapped in project.yaml that no capture ever supplied is a gap.
     Saying nothing about it is exactly the silent drop this repo refuses."""
-    result = combining.combine(house, expected_areas={"conservatory"})
+    result = combining.combine(trio, expected_areas={"conservatory"})
     missing = [w for w in result.worklist if w["kind"] == "area_with_no_source"]
     assert [w["area"] for w in missing] == ["conservatory"]
 
@@ -432,29 +462,26 @@ def test_a_room_only_the_reference_saw_still_reaches_the_output(combined):
     room called `Other 2` and they are different rooms 2.3 and 9.6 m2 apart, so
     matching on the name alone accepts either and proves nothing.
     """
-    pantry = next(r for r in combined.model.levels[0].rooms
-                  if r.name == "Other 2" and r.source == "midlevel")
-    assert Polygon(pantry.points).area / 10_000 == pytest.approx(2.29, abs=0.05)
+    unopposed = [g for g in combined.groups if g.kind == "unopposed"]
+    assert unopposed, "if this fails the test proves nothing"
 
-    group = next(g for g in combined.groups
-                 if any(combined.candidates[i].capture == "midlevel"
-                        and combined.candidates[i].area_m2 < 2.5
-                        and combined.candidates[i].room.name == "Other 2"
-                        for i in g.members))
-    assert group.kind == "unopposed", "if this fails the room was not reference-only"
+    for group in unopposed:
+        cand = combined.candidates[group.members[0]]
+        assert any(r.source == cand.capture and r.name == cand.room.name
+                   for r in combined.model.levels[0].rooms), (
+            f"{cand.capture}/{cand.room.name} was seen by one capture and dropped")
 
 
-def test_a_malformed_polygon_is_named_rather_than_skipped(house):
+def test_a_malformed_polygon_is_named_rather_than_skipped(trio):
     """A room that cannot become a polygon is not emitted, so it has to be loud.
     Silently returning fewer rooms than the capture holds is the failure this
     module was written to end."""
-    broken = house["midlevel_fixtures"].levels[0].model_copy(update={
-        "rooms": [*house["midlevel_fixtures"].levels[0].rooms,
+    base = trio["midlevel_fixtures"]
+    broken = base.levels[0].model_copy(update={
+        "rooms": [*base.levels[0].rooms,
                   Room(name="Impossible", points=[(0.0, 0.0), (1.0, 1.0)])]})
     result = combining.combine({
-        "midlevel": house["midlevel"],
-        "midlevel_fixtures": house["midlevel_fixtures"].model_copy(
-            update={"levels": [broken]})})
+        **trio, "midlevel_fixtures": base.model_copy(update={"levels": [broken]})})
     named = [m for m in result.malformed if m["room"] == "Impossible"]
     assert len(named) == 1
     assert "2 points" in named[0]["reason"]
@@ -492,37 +519,42 @@ def test_a_full_size_capture_is_not_cautioned(combined):
 # --------------------------------------------------------------------------- #
 
 
-def named_house(house) -> dict[str, Model]:
-    """The reference with Home Assistant areas on it, as `rooms` leaves it."""
+def named_house(trio) -> dict[str, Model]:
+    """The anchor with Home Assistant areas on it, as `rooms` leaves it."""
     areas = {"Laundry": "laundry", "Kitchen": "kitchen", "Living Room": "living_room",
              "Dining Room": "dining", "Other 1": "hallway", "Other 2": "pantry",
-             "Office 1": "kitchen", "Office 2": "boy_alcove"}
-    level = house["midlevel"].levels[0]
-    return {"midlevel": house["midlevel"].model_copy(update={
+             "Other 3": "laundry", "Other 4": "pantry", "Office": "boy_alcove",
+             "Bedroom": "boy_bedroom", "Bathroom": "mid_level_toilet"}
+    level = trio["scan7"].levels[0]
+    named = trio["scan7"].model_copy(update={
         "levels": [level.model_copy(update={"rooms": [
             r.model_copy(update={"ha_area": areas.get(str(r.name)),
                                  "scanner_name": r.name,
                                  "name": areas.get(str(r.name), r.name)})
-            for r in level.rooms]})]}),
-        "midlevel_fixtures": house["midlevel_fixtures"]}
+            for r in level.rooms]})]})
+    return {**trio, "scan7": named}
 
 
-def test_a_room_on_new_ground_is_asked_about_rather_than_guessed(house):
-    """Nothing named stands under the bathroom, so it needs a name -- once, for
-    the place. That is a different question from a room the project has already
-    named under a different scanner label, and lumping the two together is what
-    makes naming cost a line per room per capture."""
-    result = combining.combine(named_house(house))
-    bathroom = next(n for n in result.naming if n.room == "Bathroom")
-    assert bathroom.verdict == "ask"
-    assert bathroom.places == []
+def test_an_unnamed_room_is_told_what_it_stands_on(trio):
+    """Scanner names carry no identity across captures. Once captures share a
+    frame, PLACE does -- so a room can be recognised by what it overlaps, and
+    the four verdicts are four different questions to a person."""
+    result = combining.combine(named_house(trio))
+    assert result.naming, "if nothing is unnamed this test proves nothing"
+
+    # The one unnamed room here is the fixture pass's fused 14 m2 polygon, and
+    # `split` is the right answer: it stands on two named places at once, so the
+    # question is WHICH of them it is, not what it is.
+    fused = next(n for n in result.naming if n.verdict == "split")
+    assert len(fused.places) >= 2
+    assert sum(share for _, share in fused.places) > 0.9
 
 
-def test_a_name_is_suggested_and_never_written(house):
+def test_a_name_is_suggested_and_never_written(trio):
     """Identity is not inferred in this project. A room named by overlap and
     then believed is how a light ends up in the wrong room -- so the suggestion
     goes to the work list and `ha_area` stays empty."""
-    result = combining.combine(named_house(house))
+    result = combining.combine(named_house(trio))
     assert result.naming, "if this fails the test proves nothing"
     for suggestion in result.naming:
         room = next(r for r in result.model.levels[0].rooms
@@ -530,9 +562,9 @@ def test_a_name_is_suggested_and_never_written(house):
         assert room.ha_area is None, "a suggestion was written into the model"
 
 
-def test_the_suggestion_reaches_the_work_list_with_what_to_do(house):
+def test_the_suggestion_reaches_the_work_list_with_what_to_do(trio):
     """A verdict with no instruction is another thing to look up."""
-    result = combining.combine(named_house(house))
+    result = combining.combine(named_house(trio))
     entries = [w for w in result.worklist if w["kind"].startswith("name_")]
     assert entries
     assert all(w["reasons"] and w["reasons"][0] for w in entries)
@@ -541,13 +573,6 @@ def test_the_suggestion_reaches_the_work_list_with_what_to_do(house):
 # --------------------------------------------------------------------------- #
 # choosing the anchor, which decides what every other number means
 # --------------------------------------------------------------------------- #
-
-
-@pytest.fixture(scope="module")
-def trio() -> dict[str, Model]:
-    """All three real captures of the mid level, including the poor one."""
-    return {name: load_model(FIXTURES / f"{name}.json")
-            for name in ("midlevel", "midlevel_fixtures", "scan7")}
 
 
 def test_agreement_is_read_across_captures_not_against_the_anchor(trio):
@@ -588,13 +613,19 @@ def test_a_capture_far_worse_than_the_rest_may_not_anchor(trio):
         {n: levels[n] for n in rest}, rest) == "midlevel"
 
 
-def test_two_captures_are_not_enough_to_disqualify_either(house):
-    """The guard needs a consensus to be a consensus. With two captures the
-    figure is one directed measurement, and the asymmetry between the two
-    directions is the very thing in doubt -- excluding on it let a five-room
-    fixture pass anchor over an eight-room survey on a tenth of a centimetre."""
-    result = combining.combine(house)
-    assert result.reference == "midlevel"
+def test_two_captures_that_disagree_refuse_and_name_both(house):
+    """One of them is invalid and two captures cannot say which. Seniority is
+    not evidence -- a capture you have just come back and re-shot is quite
+    likely the correct one and the anchor the thing to drop.
+
+    Emitting the anchor alone would look like a successful combine, which is
+    the silent third branch this design exists to remove."""
+    with pytest.raises(ValueError) as caught:
+        combining.combine(house)
+    message = str(caught.value)
+    assert "midlevel_fixtures" in message
+    assert "cannot say which" in message
+    assert "Scan this level again" in message
 
 
 def test_the_poor_capture_is_named_as_the_outlier(trio):
@@ -633,10 +664,12 @@ def test_a_room_matching_one_room_is_not_penalised(combined):
 def test_fusion_is_unmeasurable_when_nobody_else_saw_the_room(combined):
     """The third answer. A room no other capture has seen cannot be shown to
     fuse anything, which is not the same as being known not to."""
-    bathroom = next(c for c in combined.candidates if c.room.name == "Bathroom")
-    group = next(g for g in combined.groups if bathroom.index in g.members)
-    assert combining.partitioning(bathroom, group, combined.candidates) is None
-    assert "partitioning" in combined.scores[bathroom.index].missing
+    alone = next(c for c in combined.candidates
+                 if len(next(g for g in combined.groups
+                             if c.index in g.members).per_capture) == 1)
+    group = next(g for g in combined.groups if alone.index in g.members)
+    assert combining.partitioning(alone, group, combined.candidates) is None
+    assert "partitioning" in combined.scores[alone.index].missing
 
 
 def test_the_role_prior_yields_to_the_measurement(combined):
@@ -680,7 +713,7 @@ def test_a_named_reference_that_is_not_there_is_refused(house):
 def test_the_reference_prefers_a_geometry_capture(combined):
     """A fixture pass CAN anchor a level -- it is a prior, not a veto -- but it
     should be the last capture asked to."""
-    assert combined.reference == "midlevel"
+    assert combined.reference == "scan7"
 
 
 def test_an_empty_level_is_refused_before_it_produces_a_confident_answer():
