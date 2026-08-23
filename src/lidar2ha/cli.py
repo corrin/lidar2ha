@@ -256,6 +256,12 @@ def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None
     from .schema import Light, load_model, load_wall_textures
 
     model = load_model(model_json)
+    if model.role != "geometry":
+        raise SystemExit(
+            f"{model_json} is a {model.role} capture, not a survey of the building.\n"
+            "A fixture pass trades geometry away on purpose -- its walls and floor\n"
+            "heights are wrong by design. Build from the geometry capture and feed\n"
+            "this one in through `placefixtures` and `lights --fittings` instead.")
     settings = _project_settings(project)
     # The render size decides the aspect ratio, and the aspect ratio decides how
     # far back the camera has to be -- so the framing has to agree with whatever

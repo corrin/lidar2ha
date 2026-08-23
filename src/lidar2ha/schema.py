@@ -36,6 +36,12 @@ class _Base(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
+# A capture is scanned for one of two purposes and they are not interchangeable.
+# Keeping the distinction in the type means a fixture pass cannot be mistaken
+# for a survey by anything that reads a model.
+Role = Literal["geometry", "fixtures"]
+
+
 class Wall(_Base):
     """A wall centreline. Polycam gives outlines; `polycam` reduces them."""
 
@@ -144,6 +150,11 @@ class Capture(_Base):
     """
 
     id: str
+    # What this capture is FOR. A fixture pass is scanned differently on
+    # purpose -- every light on, the phone aimed at each fitting, geometry
+    # sacrificed -- so its walls and elevations are not evidence about the
+    # building and must never be selected as geometry. See Model.role.
+    role: Role = "geometry"
     # Quality, measured rather than asserted. Populated by `register` and
     # `inspect`, and used to decide which capture wins a contested room.
     median_error_m: float | None = None
@@ -168,7 +179,20 @@ class Level(_Base):
 
 
 class Model(_Base):
+    """One capture's geometry, or -- for a fixture pass -- one capture's lights.
+
+    ROLE IS LOAD-BEARING. A fixture pass is a deliberately bad scan: lights on,
+    phone aimed at fittings, geometry quality traded away. Its walls still
+    register onto its own mesh, which is exactly what `placefixtures` needs,
+    and that same registration recovers a floor elevation that is worthless.
+    Nothing in the pipeline could previously tell the two kinds apart, so a
+    fixture capture could be built into a house or contribute a level height
+    with no complaint. Defaulted, because every model.json written before this
+    existed came from a geometry pass.
+    """
+
     source: str
+    role: Role = "geometry"
     units: Literal["cm"] = "cm"
     levels: list[Level] = Field(default_factory=list)
     # The scans this model was built from. Empty for a single-capture project,
