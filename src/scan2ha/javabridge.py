@@ -283,9 +283,8 @@ def run_render(tc: Toolchain, classes: Path, log: Path, *args: str) -> subproces
     cmd = [
         str(jvm),
         f"-DlogFile={log}",
-        f"-Djava.library.path={tc.sh3d_lib}",
-        # Sweet Home 3D finds YafaRay relative to this, not on the library path.
-        f"-Dcom.eteks.sweethome3d.j3d.yafarayPath={tc.sh3d_lib / 'yafaray'}",
+        # Both directories: Java3D's DLLs sit in lib/, YafaRay's in lib/yafaray/.
+        f"-Djava.library.path={tc.sh3d_lib}{os.pathsep}{tc.sh3d_lib / 'yafaray'}",
         "-cp",
         tc.render_classpath(classes),
         "HeadlessRender",
