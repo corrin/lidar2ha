@@ -117,7 +117,7 @@ def test_every_stage_exposes_a_main():
     """A stage without main() cannot be run, and nothing else would say so."""
     import importlib
 
-    stages = ["ceilings", "compare", "contactsheet", "fixtures", "floormap", "ha",
+    stages = ["ceilings", "compare", "contactsheet", "deploy", "fixtures", "floormap", "ha",
               "inspect_dxf", "inspect_mesh", "lights", "mesh", "placefixtures", "render",
               "polycam", "preview", "registration", "rooms", "seams",
               "textures_project", "textures_tile", "thresholds"]

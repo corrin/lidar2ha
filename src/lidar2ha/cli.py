@@ -501,6 +501,87 @@ def render_cmd(sh3d: Path, out: Path, project: Path | None, list_only: bool, pre
 
 
 # --------------------------------------------------------------------------- #
+# deploy
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("render_out", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="project.yaml, for deploy.host / user / port / key")
+@click.option("--push", is_flag=True, help="actually copy the files")
+@click.option("--all", "push_all", is_flag=True,
+              help="push every file, not only the ones that differ")
+@click.option("--card", "show_card", is_flag=True,
+              help="print floorplan.yaml, to paste as a dashboard card")
+@click.option("--env", type=click.Path(path_type=Path), default=Path(".env"),
+              show_default=True, help="file to read HA_SSH_* from")
+def deploy(render_out: Path, project: Path | None, push: bool, push_all: bool,
+           show_card: bool, env: Path) -> None:
+    """Copy the floor plan to Home Assistant, and print the card.
+
+    Writes nothing unless you pass --push. This is the one step that touches a
+    live system, and a manifest you have to opt out of is cheaper than undoing a
+    mistake in someone's /config.
+    """
+    from . import deploy as deployer
+    from . import ha
+
+    local = deployer.deployable(render_out)
+    card = deployer.card_path(render_out).read_text(encoding="utf-8")
+
+    missing = deployer.check_card_matches_images(card, local)
+    if missing:
+        raise SystemExit(
+            f"The card refers to images that are not in {local}: {missing}\n"
+            "They are written by one render and must ship together -- the card's "
+            "?version= hashes are derived from the image contents. Re-run "
+            "`lidar2ha render`.")
+
+    settings = _project_settings(project)
+    ha.load_dotenv(env)
+
+    # Connect even for a dry run. Listing a directory is not a write, and a
+    # manifest that cannot see the target can only say "everything is new",
+    # which is the one thing you already knew. Failing to connect is reported
+    # and not fatal: the local side of the manifest is still worth seeing.
+    transport = None
+    try:
+        transport = deployer.SFTPTransport(**deployer.credentials(settings))
+    except SystemExit:
+        if push:
+            raise
+        click.echo("  Not connected, so this lists what exists locally rather than "
+                   "what would change. Set HA_SSH_HOST to compare against the target.")
+    except Exception as exc:                       # noqa: BLE001 - reported, not swallowed
+        if push:
+            raise SystemExit(f"could not connect: {exc}") from exc
+        click.echo(f"  Could not reach the target ({exc}); listing local files only.")
+
+    try:
+        remote = transport.listdir(deployer.REMOTE_ROOT) if transport else []
+        manifest = deployer.plan(local, remote)
+        if push_all:
+            manifest.changed += manifest.unchanged
+            manifest.unchanged = []
+        deployer.print_manifest(manifest, deployer.REMOTE_ROOT, pushing=push)
+
+        if transport and not manifest.empty:
+            transport.makedirs(deployer.REMOTE_ROOT)
+            for path, _size in manifest.to_push:
+                transport.put(path, deployer.REMOTE_ROOT / path.name)
+                click.echo(f"    pushed {path.name}")
+            click.echo("\n  Done. The card below points at these files.")
+    finally:
+        if transport:
+            transport.close()
+
+    if show_card or not push:
+        click.echo("\n--- floorplan.yaml -- paste this as a picture-elements card ---")
+        click.echo(card)
+
+
+# --------------------------------------------------------------------------- #
 # not built yet
 # --------------------------------------------------------------------------- #
 
@@ -516,8 +597,6 @@ def _unbuilt(name: str, what: str, instead: str) -> None:
 
 _unbuilt("add-capture", "unpack a Polycam floorplan zip and mesh into the project",
          "For now, unzip them yourself and run `python -m lidar2ha.polycam` on the DXF.")
-_unbuilt("deploy", "copy the renders and floorplan.yaml to Home Assistant over SSH",
-         "For now, copy them to /config/www/ yourself.")
 
 
 def main() -> None:

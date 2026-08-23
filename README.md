@@ -44,13 +44,13 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
 | Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), **needs human review** |
 | Review sheet for the fittings found | works (`contactsheet.py`) |
-| `lidar2ha doctor`, `build` and `lights` | works (`cli.py`) |
+| `lidar2ha doctor`, `build`, `lights`, `render`, `deploy` | works (`cli.py`) |
 | **Seam/seed open-plan splitting** | **does not exist** — `rooms.py` merges named rooms instead |
-| **`lidar2ha add-capture` / `render` / `deploy`** | **does not exist** (they exit saying so) |
+| **`lidar2ha add-capture`** | **does not exist** (exits saying so) |
 
-`pip install .` now gives you a working `lidar2ha` with `doctor`, `lights` and `build`; the
-other three subcommands are registered so `--help` matches this table, and each exits
-telling you what to run instead. The package is not on PyPI. The remaining stages are still scripts you run
+`pip install .` now gives you a working `lidar2ha`: `doctor`, `build`, `lights`, `render`
+and `deploy`. Only `add-capture` is still a stub, and it exits telling you what to run
+instead. The package is not on PyPI. The remaining stages are still scripts you run
 by hand.
 
 Roughly: the geometry-and-rendering half is real, the Home-Assistant-integration half is
@@ -198,6 +198,15 @@ lidar2ha lights named.json --refresh --project project.yaml -o lights.json \
 #    result through Sweet Home 3D's own reader
 lidar2ha build named.json -o house.sh3d \
     --walltex walltex/manifest.json --lights lights.json --elevation 'Upper=262'
+
+# 8. raytrace it. --list first: free, and tells you what it will cost.
+lidar2ha render house.sh3d -o render_out --project project.yaml --list
+lidar2ha render house.sh3d -o render_out --project project.yaml --preview
+lidar2ha render house.sh3d -o render_out --project project.yaml
+
+# 9. copy it to Home Assistant. Writes nothing without --push.
+lidar2ha deploy render_out --project project.yaml
+lidar2ha deploy render_out --project project.yaml --push
 ```
 
 `lights` needs `HA_URL` and a long-lived access token in `HA_TOKEN` (environment or a
@@ -224,9 +233,11 @@ generating `.sh3d` files. `examples/twolevel.tsv` is the one that matters if you
 writer: a single-level scene cannot catch a level-assignment bug, because with one level
 every wrong answer is also the right one.
 
-At this point `render_out/` holds the overlay images and a generated `floorplan.yaml`. You
-copy those to `/config/www/` yourself and paste the card in yourself. That's the missing
-`deploy`.
+`deploy` writes nothing until you pass `--push`: the bare command connects read-only,
+prints a manifest of what would change, and shows the card. The images must land at
+`/config/www/floorplan/` because the plugin hard-codes `/local/floorplan/` into the card,
+and the card and its images ship together -- each image is referenced with a `?version=`
+hash of its own contents.
 
 ### Lights: which room is solved, where in the room is not
 
@@ -383,8 +394,28 @@ this repo, and why it compiles against your own installation.
   lights the deck". Resolve device-first and every integration-native light group lands
   wherever its coordinator happens to be plugged in.
 - **Units are centimetres.** Most scanning apps export millimetres or metres.
-- **The plugin's "use existing renders"** reprocesses without re-rendering, so iterating on
-  layout and YAML after the first pass is free.
+- **The plugin's "use existing renders"** reprocesses without re-rendering. It regenerates
+  the floor plan and YAML only, so what it lets you change is the dashboard layer -- display
+  type, icon, tap action, sensitivity. Not the lighting: that is baked into the frames.
+- **One setting changes the render count by five orders of magnitude.** The light mixing
+  mode decides how many images get made, and nothing warns you. On one 21-light house at
+  640x360, same model and same size:
+
+  | mixing | what it renders | frames | time |
+  |---|---|---|---|
+  | `CSS` | one per light; the browser adds them | 22 | 5 min |
+  | `OVERLAY` | every combination of each room's lights | 65,541 | 9 days |
+  | `FULL` | every combination in the house | 2,097,152 | 10 months |
+
+  `getNumberOfTotalRenders()` knows before a pixel is traced, which is why
+  `lidar2ha render --list` is free and always worth running first.
+- **`Quality.LOW` does not raytrace.** It screenshots the Java3D OpenGL view, and with no
+  usable GL context it returns a *blank frame* in about a second without erroring. Seven
+  perfectly-generated blank PNGs cost someone an hour here.
+- **Rendering is slow and the machine barely matters.** It runs single-process on Sweet
+  Home 3D's bundled 32-bit Java 8 runtime, because Java3D and YafaRay are 32-bit natives.
+  Measured: 179.7 s for 7 frames at 800x600 on a real model, about 26 s a frame. Scene
+  complexity counts as much as pixels -- a near-empty test scene managed 6.5 s a frame.
 
 ---
 
