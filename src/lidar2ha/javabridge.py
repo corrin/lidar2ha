@@ -258,8 +258,9 @@ def run_writer(tc: Toolchain, classes: Path, main: str, *args: str) -> subproces
 
 
 def run_render(tc: Toolchain, classes: Path, log: Path, *args: str,
+               main_class: str = "HeadlessRender",
                **properties: str) -> subprocess.CompletedProcess:
-    """Run HeadlessRender the way Sweet Home 3D runs itself.
+    """Run a Java3D program the way Sweet Home 3D runs itself.
 
     The renderer is not pure Java. Java3D and YafaRay are native libraries, and
     Sweet Home 3D ships them as DLLs beside its jars -- j3dcore-ogl, j3dcore-d3d
@@ -278,12 +279,21 @@ def run_render(tc: Toolchain, classes: Path, log: Path, *args: str,
     it while the render runs, because a raytrace and a hang look identical from
     outside. Falls back to the JDK only when no bundled runtime is found, which
     will fail on Java3D -- but failing with a clear log beats failing silently.
+
+    `main_class` is here because rendering is not the only thing that needs
+    this environment. ObjExport builds Java3D scene graphs to export geometry,
+    never traces a ray, and still dies on a 64-bit JDK with "Can't load IA
+    32-bit .dll" -- so it needs the same JVM, the same native path and the same
+    logFile, and gets them by naming itself rather than by a second copy of
+    this.
     """
-    return subprocess.run(render_command(tc, classes, log, *args, **properties),
-                          capture_output=True, text=True)
+    return subprocess.run(
+        render_command(tc, classes, log, *args, main_class=main_class, **properties),
+        capture_output=True, text=True)
 
 
 def render_command(tc: Toolchain, classes: Path, log: Path, *args: str,
+                   main_class: str = "HeadlessRender",
                    **properties: str) -> list[str]:
     """The exact command line a render runs as.
 
@@ -303,8 +313,13 @@ def render_command(tc: Toolchain, classes: Path, log: Path, *args: str,
         f"-DlogFile={log}",
         # Both directories: Java3D's DLLs sit in lib/, YafaRay's in lib/yafaray/.
         f"-Djava.library.path={tc.sh3d_lib}{os.pathsep}{tc.sh3d_lib / 'yafaray'}",
+        # NO -Djava.awt.headless=true. It is the obvious flag for a program with
+        # no window and it is the one that breaks this: VirtualUniverse's static
+        # initialiser wants a display, so setting it throws HeadlessException
+        # during class loading -- before main(), and so before the logFile
+        # handler above is installed to record it.
     ]
     cmd += [f"-D{key}={value}" for key, value in sorted(properties.items())
             if value is not None]
-    cmd += ["-cp", tc.render_classpath(classes), "HeadlessRender", *args]
+    cmd += ["-cp", tc.render_classpath(classes), main_class, *args]
     return cmd
