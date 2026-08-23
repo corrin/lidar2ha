@@ -1,25 +1,20 @@
-﻿name: CI
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
 
-# A second push supersedes the first; the older run's answer is about code nobody
-# has any more.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Nothing here writes anything back.
 permissions:
   contents: read
 
 jobs:
   check:
     strategy:
-      # Both legs always report. The interesting failure is one platform passing
-      # and the other not, and fail-fast would cancel exactly the run that says so.
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
@@ -28,17 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # No python-version here: uv reads .python-version, so the interpreter is
-      # pinned in the repo rather than duplicated in this file where it would drift.
+      # The interpreter comes from .python-version; naming one here would drift.
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
-      # --locked is the point of this job. It fails when uv.lock has fallen behind
-      # pyproject.toml, which is the one thing no amount of local care catches:
-      # everything keeps working on the machine that already has the packages.
-      # --all-extras because paramiko and websockets are extras, and a bare sync
-      # would remove them and take test_deploy and test_ha with it.
+      # --all-extras is load-bearing: paramiko and websockets are extras, and a
+      # bare sync removes them along with test_deploy and test_ha.
       - name: Install from the lock, exactly
         run: uv sync --locked --all-extras
 
@@ -48,9 +39,6 @@ jobs:
       - name: mypy
         run: uv run mypy
 
-      # -rs lists what was skipped and why. The java tests need Sweet Home 3D and a
-      # JDK and skip themselves here, and a silent skip is indistinguishable from a
-      # test that quietly stopped covering anything.
       - name: pytest
         run: uv run pytest -q -rs
 
@@ -65,11 +53,8 @@ jobs:
       - name: Build the wheel
         run: uv build
 
-      # The .java sources are compiled at runtime against the user's own Sweet
-      # Home 3D install, so they have to be inside the wheel. pyproject.toml says
-      # so with hatch's `artifacts`, and until now nothing checked it was true.
-      # A wheel missing them installs perfectly and fails at the first `build`,
-      # on someone else's machine, with a compiler error about a missing file.
+      # The .java sources compile at runtime against the user's own Sweet Home 3D,
+      # so a wheel without them installs cleanly and fails at the first `build`.
       - name: The wheel must carry the Java sources
         run: |
           python - <<'PY'
@@ -82,7 +67,7 @@ jobs:
               if n.endswith(".java")
           }
           on_disk = {p.name for p in pathlib.Path("src/lidar2ha/java").glob("*.java")}
-          assert on_disk, "no .java sources found on disk -- this check proves nothing"
+          assert on_disk, "no .java sources on disk -- this check proves nothing"
 
           missing = on_disk - packaged
           if missing:
