@@ -40,7 +40,7 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`), all levels in one pass |
 | Frame the camera so the house fits | works (`camera.py`), solved rather than guessed |
 | Rename rooms to HA areas, merge open-plan splits | works (`rooms.py`), mapping written by hand |
-| Merge several captures of one level | works (`combine.py`), geometry selected per room |
+| Merge several captures of one level | works (`combine.py`), align-or-discard, needs 3+ scans |
 | Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
 | Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), **needs human review** |
@@ -380,24 +380,33 @@ which is what the seam/seed idea was for.
   metre of real surface, measured. No export setting produces more; it's what the camera
   saw.
 - **Windows are missing.** LiDAR passes through glass. Add them by hand in Sweet Home 3D.
-- **One capture per *region*.** Captures of *adjacent* spaces share no frame and cannot be
-  merged at all. Captures of the *same* level can: `combine` co-registers them and selects
-  the best source for each room, never averaging — two plans of one room disagree by ~17 cm
-  and a blend matches neither wall. What it does not yet do is composite textures across
-  captures, which is the case for rescanning that pays best. A single fixture pass may span
-  several geometry captures; `placefixtures` takes as many models as you give it and sends
-  each fitting to whichever one contains it.
+- **Scan every level at least three times.** Captures of *adjacent* spaces share no frame
+  and cannot be merged at all; captures of the *same* level can, and `combine` selects the
+  best source for each room rather than averaging — two plans of one room disagree by ~17 cm
+  and a blend matches neither wall. But a capture that does not overlay is **discarded**,
+  not folded in with a caveat, and with only two captures nothing can say which of them is
+  at fault. A third identifies the odd one out immediately. On this house that mattered: the
+  capture the whole mid-level model had been built from turned out to be the worst of its
+  three, and only the third scan revealed it. When you go back to rescan a room, rescan a
+  room you already have as well, so the new capture has common ground to overlay onto.
+  What `combine` does not yet do is composite textures across captures, which is the case
+  for rescanning that pays best. A single fixture pass may span several geometry captures;
+  `placefixtures` takes as many models as you give it and sends each fitting to whichever
+  one contains it.
 - **A capture is only as good as the one you compare it against.** Every per-capture
   error figure is measured against a chosen reference, so a poor reference charges its
   own error to everything else — on one level here the anchor turned out to be the worst
   of three captures, and every number reported against it was wrong in the same
   direction. `combine` also reports how well each capture fits onto *the others*, which
   is the figure that cannot flatter itself, and names the outlier. Read that one.
-- **A small capture's numbers cannot be read.** One that spans a fraction of the level fits
-  inside it wherever you put it, so it reports 100% coverage for a wrong placement as
-  readily as a right one — a five-wall bedroom landed 65° out, on top of the hallway, at
-  100% coverage and 18.9 cm median. `combine` says so rather than pretending otherwise, but
-  it cannot yet tell the right answer from the wrong one. Check those placements yourself.
+- **Nothing yet catches a scan placed on the wrong walls.** A small capture fits inside a
+  large one wherever you put it, so every point finds a nearby point — just the wrong one. A
+  five-wall bedroom landed 65° out on top of a hallway at 100% coverage and 18.9 cm median,
+  and no error figure or quantile can see that, because arithmetically nothing is wrong.
+  Today's bound discards it for being far out, and `combine` warns that a small capture's
+  coverage is unreadable, but neither is the real answer. The real answer is that every
+  capture of one building shares a wall grid, so only four rotations between two captures
+  are ever valid — that check is not built yet.
 - **Voids** — stairwell shafts, double-height spaces — have to be declared by hand, because
   a scanner maps rooms, not the empty space between them.
 - **Tuned to one house, one app.** Anything here that looks like a constant is a guess that
