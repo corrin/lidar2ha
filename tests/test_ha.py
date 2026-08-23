@@ -11,6 +11,7 @@ from __future__ import annotations
 from lidar2ha.ha import (
     LightEntity,
     classify,
+    coordinator_groups,
     duplicate_names,
     light_entities,
     redundant_groups,
@@ -151,6 +152,90 @@ def test_a_group_whose_members_are_absent_is_kept():
     """It may be the only handle on those bulbs."""
     entities = [LightEntity("light.group", "Group", "den", members=["light.a"])]
     assert redundant_groups(entities) == {}
+
+
+# --------------------------------------------------------------------------- #
+# ZHA groups — found by the device, where the name is only a guess
+# --------------------------------------------------------------------------- #
+
+# The real coordinator from the house this was built against, and one ordinary
+# bulb behind it. The four ZHA groups all hang off the first.
+COORDINATOR = {"id": "radio", "name": "Sonoff Zigbee Coordinator (EZSP)",
+               "model": "Generic Zigbee Coordinator (EZSP)", "area_id": "butcher_s_block"}
+BULB = {"id": "bulb", "name": "Nathan Bedroom - Wall Left", "model": "LWO003",
+        "area_id": "nathan_bedroom"}
+
+
+def on_coordinator(entity_id: str, name: str) -> LightEntity:
+    return LightEntity(entity_id, name, "den", device_id="radio",
+                       device_model=COORDINATOR["model"], device_name=COORDINATOR["name"])
+
+
+def test_the_device_is_read_off_the_registry_onto_the_entity():
+    """Without this the mechanical test has nothing to test against."""
+    reg = registry(entities=[entity("light.den_wall_lights", device_id="radio")],
+                   devices=[COORDINATOR, BULB])
+    found = light_entities(reg)[0]
+    assert found.device_model == "Generic Zigbee Coordinator (EZSP)"
+    assert found.device_name == "Sonoff Zigbee Coordinator (EZSP)"
+
+
+def test_a_user_renamed_device_wins_over_the_integrations_name():
+    """The same reason an entity's own area beats its device's: a name someone
+    typed is a decision, and the integration's is a default."""
+    devices = [{"id": "d", "name": "TS0505B", "name_by_user": "Kitchen Downlight"}]
+    reg = registry(entities=[entity("light.k", device_id="d")], devices=devices)
+    assert light_entities(reg)[0].device_name == "Kitchen Downlight"
+
+
+def test_every_zha_group_is_found_even_when_its_name_says_nothing():
+    """The four real ones. Only "Cabinets Group" looks like a group by name, so
+    a name heuristic finds one of four and leaves three double-counting bulbs —
+    which renders as a room that is simply too bright, with no error anywhere."""
+    entities = [
+        on_coordinator("light.master_bedroom_downlights", "Master Bedroom - Downlights"),
+        on_coordinator("light.den_wall_lights", "Den - Light - Walls And Ceiling"),
+        on_coordinator("light.den_cabinet_lights", "Den - Light - Cabinets Group"),
+        on_coordinator("light.nathan_bedroom_lights", "Nathan Bedroom - Lights"),
+    ]
+    found = coordinator_groups(entities)
+
+    assert set(found) == {e.entity_id for e in entities}
+    by_name = [e for e in entities if classify(e)[0] == "check"]
+    assert len(by_name) == 1, "if the name found them all this test proves nothing"
+
+
+def test_an_ordinary_bulb_is_not_a_group():
+    """A real fitting wrongly called a group vanishes from the render, and the
+    room goes dark with nothing to explain it."""
+    plain = LightEntity("light.nathan_wall_left", "Nathan Bedroom - Wall Left", "nathan",
+                        device_id="bulb", device_model=BULB["model"],
+                        device_name=BULB["name"])
+    assert coordinator_groups([plain]) == {}
+
+
+def test_an_entity_with_no_device_at_all_is_not_a_group():
+    """A helper or a template light has no device, and None must not match."""
+    assert coordinator_groups([LightEntity("light.x", "X", "den")]) == {}
+
+
+def test_matching_is_by_whole_word_not_by_substring():
+    """`_mentions` exists because "wall lights" contains "all lights". The same
+    trap here: "coordination" contains "coordinat", and a desk lamp on a device
+    somebody named after the room's function is not a Zigbee group."""
+    lamp = LightEntity("light.desk", "Desk", "office", device_id="d",
+                       device_model="TS0505B", device_name="Coordination Desk Lamp")
+    assert coordinator_groups([lamp]) == {}
+
+
+def test_the_reason_names_the_mechanism_that_found_it():
+    """Two mechanisms find groups and their coverage differs — this one cannot
+    check the members are present. A report that says only "group" hides which
+    kind of finding the reader is looking at."""
+    reason = coordinator_groups([on_coordinator("light.den_wall_lights", "Den")])[
+        "light.den_wall_lights"]
+    assert "coordinator" in reason.lower()
+    assert "ZHA" in reason
 
 
 # --------------------------------------------------------------------------- #

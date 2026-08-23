@@ -210,6 +210,40 @@ def test_a_redundant_group_is_skipped_but_its_members_are_placed():
     assert any("light group" in why for _, why in report.skipped)
 
 
+def on_coordinator(entity_id, area) -> LightEntity:
+    """A ZHA group: its entity hangs off the radio, not off a lamp."""
+    return LightEntity(entity_id, entity_id, area, device_id="radio",
+                       device_model="Generic Zigbee Coordinator (EZSP)",
+                       device_name="Sonoff Zigbee Coordinator (EZSP)")
+
+
+def test_a_zha_group_is_skipped_even_though_its_members_are_unknowable():
+    """A ZHA group publishes no member list, so unlike `redundant_groups` this
+    cannot check them — and placing it anyway is the same bulbs twice. The
+    plugin sums sources sharing a name, so the failure is a room that renders
+    quietly too bright, with no error at any stage."""
+    model = model_with(room("den"))
+    lights, report = build_lights(model, [
+        on_coordinator("light.den_wall_lights", "den"),
+        light("light.den_wall_left", "den"),
+    ])
+
+    assert {lt.entity_id for lt in lights} == {"light.den_wall_left"}
+    assert any("coordinator" in why for _, why in report.skipped)
+
+
+def test_including_a_zha_group_by_hand_places_it_anyway():
+    """The escape hatch, and the reason skipping is safe. If ZHA somehow does
+    not expose the members individually, the group is the only handle on those
+    bulbs and the human says so once, in project.yaml."""
+    model = model_with(room("den"))
+    config = LightsConfig(include={"light.den_wall_lights"})
+    lights, _report = build_lights(
+        model, [on_coordinator("light.den_wall_lights", "den")], config)
+
+    assert [lt.entity_id for lt in lights] == ["light.den_wall_lights"]
+
+
 def test_zero_power_is_refused_because_the_plugin_would_ignore_it():
     model = model_with(room("hall"))
     config = LightsConfig(power={"light.a": 0.0})
@@ -357,3 +391,4 @@ def test_load_fittings_accepts_a_flagged_near_miss(tmp_path):
     found = load_fittings(path)
     assert set(found) == {"pantry"}
     assert found["pantry"][0].elevation is None
+
