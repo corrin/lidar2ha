@@ -39,15 +39,16 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Write a real `.sh3d` | works (`Sh3dWriter.java`) |
 | Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`) |
 | Rename rooms to HA areas, merge open-plan splits | works (`rooms.py`), mapping written by hand |
-| `scan2ha doctor` and `scan2ha build` | works (`cli.py`) |
-| **Reading your HA area/entity registry** | **does not exist** |
-| **Placing lights automatically** | **does not exist** |
+| Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
+| Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
+| Find real fittings in the scan | investigation only (`ceilingmap.py`) |
+| `scan2ha doctor`, `build` and `lights` | works (`cli.py`) |
 | **Seam/seed open-plan splitting** | **does not exist** — `rooms.py` merges named rooms instead |
-| **`scan2ha add-capture` / `lights` / `render` / `deploy`** | **does not exist** (they exit saying so) |
+| **`scan2ha add-capture` / `render` / `deploy`** | **does not exist** (they exit saying so) |
 
-`pip install .` now gives you a working `scan2ha` with `doctor` and `build`; the other four
-subcommands are registered so `--help` matches this table, and each exits telling you what
-to run instead. The package is not on PyPI. The remaining stages are still scripts you run
+`pip install .` now gives you a working `scan2ha` with `doctor`, `lights` and `build`; the
+other three subcommands are registered so `--help` matches this table, and each exits
+telling you what to run instead. The package is not on PyPI. The remaining stages are still scripts you run
 by hand.
 
 Roughly: the geometry-and-rendering half is real, the Home-Assistant-integration half is
@@ -168,11 +169,18 @@ python -m scan2ha.textures_project registered.json mesh.obj -o walltex
 # 5. give rooms their HA area names, merging open-plan splits
 python -m scan2ha.rooms registered.json project.yaml -o named.json --capture upstairs
 
-# 6. scene file -> .sh3d: compiles and runs the Java for you, then reopens the
+# 6. read the HA registry and place every light.* entity in its room
+scan2ha lights named.json --refresh --project project.yaml -o lights.json
+
+# 7. scene file -> .sh3d: compiles and runs the Java for you, then reopens the
 #    result through Sweet Home 3D's own reader
 scan2ha build named.json -o house.sh3d \
     --walltex walltex/manifest.json --lights lights.json --elevation 'Upper=262'
 ```
+
+`lights` needs `HA_URL` and a long-lived access token in `HA_TOKEN` (environment or a
+`.env`, both already gitignored) the first time; after that it works from a cached
+`registry.json`, so the review loop runs offline.
 
 `build` names any level whose elevation the mesh could not recover instead of quietly
 defaulting it to zero, and refuses to report success on a `.sh3d` that will not reopen.
@@ -198,13 +206,29 @@ At this point `render_out/` holds the overlay images and a generated `floorplan.
 copy those to `/config/www/` yourself and paste the card in yourself. That's the missing
 `deploy`.
 
-### Lights, and why they aren't automatic yet
+### Lights: which room is solved, where in the room is not
 
 The plugin matches furniture **by `name == entity_id`** and sums multiple light sources
-sharing a name — so a switch driving six bulbs is six placements carrying one name. Right
-now you write those `light` lines into the scene file yourself (see `examples/minimal.tsv`)
-or place them in Sweet Home 3D. Reading them out of your HA area registry and positioning
-them automatically is the obvious next thing to build, and is not built.
+sharing a name — so a switch driving six bulbs is six placements carrying one name, and one
+entity spanning three floors is three placements. `lights` does that join.
+
+**Which room** it gets right, and the ordering matters: an entity's own area wins, and its
+device's area is only a fallback. A multi-gang switch is one device on one wall driving
+bulbs in different rooms, and an integration-native light group sits on whatever device its
+coordinator lives in — so device-first files half a house's lights in the cupboard with the
+USB stick.
+
+**Where in the room** is a guess: the pole of inaccessibility, the point furthest from any
+wall, with several lights in a room spread around it. Better than the centroid, which for
+an L-shaped room can lie outside the room entirely — but still not where your fittings
+actually are. The scan does know, because a fitting is a bright compact blob on the
+ceiling, and `ceilingmap.py` is the start of finding them. `lights --fittings` already
+accepts real positions; nothing writes that file yet.
+
+**Not every `light.*` entity is a light.** Status LEDs, indicator rings, and controllers
+exposing sound channels in the light domain all turn up. They are placed and flagged rather
+than dropped, and you exclude them in `project.yaml` — a real fitting that merely looks
+like an indicator would otherwise vanish and leave a room dark for no visible reason.
 
 Room identity is half-solved. Scanner room names are guesses and its splits are artefacts —
 mine confidently labelled an entrance hall "Living Room" and "Dining Room", and returned one
@@ -292,6 +316,10 @@ this repo, and why it compiles against your own installation.
 - **Ceiling height is a property of the room, not the level.** One capture has a 2.2 m
   laundry beside a 3.2–4.7 m double-height space; one number per level throws away exactly
   the geometry that makes cross-floor light spill worth rendering.
+- **An entity's area is not its device's area.** Home Assistant lets you set the area per
+  entity, and that override is how a user says "this gang lights the pantry, that one
+  lights the deck". Resolve device-first and every integration-native light group lands
+  wherever its coordinator happens to be plugged in.
 - **Units are centimetres.** Most scanning apps export millimetres or metres.
 - **The plugin's "use existing renders"** reprocesses without re-rendering, so iterating on
   layout and YAML after the first pass is free.
