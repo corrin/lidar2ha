@@ -102,6 +102,14 @@ CM2_TO_M2 = 1e-4
 MAX_MEDIAN_CM = 5.0
 MAX_P90_CM = 120.0
 
+# How far a rotation may sit from the building's wall grid. Measured, good
+# overlays land 0.28-0.57 deg off it and wrong-basin ones 14.5-39.4 deg, so this
+# sits in a very wide gap. Raise it for a building whose rooms are genuinely not
+# square to each other -- the bearing is length-weighted, so a house with one
+# dominant grid and a few skewed rooms is fine, but a radial or hexagonal plan
+# has no single grid and this check does not apply to it.
+MAX_OFF_GRID_DEG = 5.0
+
 # Below this coverage, say loudly that the capture covers ground the reference
 # does not. A signal to act on, never a reason to reject.
 NEW_GROUND_COVERAGE = 0.95
@@ -380,6 +388,59 @@ def one_level(model: Model, name: str | None) -> Level:
     return model.levels[0]
 
 
+def grid_bearing(level: Level) -> float | None:
+    """This capture's dominant wall direction, in degrees mod 90.
+
+    Length-weighted circular mean taken on FOUR TIMES the angle, because mod 90
+    means a wall and its perpendicular describe the same grid -- quadrupling
+    wraps them onto each other so they reinforce instead of cancelling.
+
+    None when the capture has no walls to average.
+    """
+    sx = sy = 0.0
+    for wall in level.walls:
+        dx, dy = wall.x_end - wall.x_start, wall.y_end - wall.y_start
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            continue
+        angle = 4 * math.atan2(dy, dx)
+        sx += length * math.cos(angle)
+        sy += length * math.sin(angle)
+    if sx == 0.0 and sy == 0.0:
+        return None
+    return (math.degrees(math.atan2(sy, sx)) / 4) % 90.0
+
+
+def off_grid_deg(theta_deg: float, source: Level, target: Level) -> float | None:
+    """How far this rotation sits from any valid one, in degrees.
+
+    EVERY CAPTURE OF ONE BUILDING SEES THE SAME WALL GRID, so the only rotations
+    that can relate two of them are `(g_target - g_source) mod 90`. Four
+    classes; anything outside them is in the wrong basin however good its error
+    looks.
+
+    This is the channel an error figure cannot provide, and the two are
+    complementary rather than redundant. Measured:
+
+        good overlays                    0.28 - 0.57 deg off grid
+        boy_bedroom (wrong basin)    14.46          <- only this catches it
+        scan3, scan5   (wrong basin)    32.93, 39.42   <- only this catches it
+        midlevel       (right basin)     0.41          <- only the error bound
+
+    A capture on the wrong walls is arithmetically indistinguishable from one on
+    the right walls -- every point finds a nearby point, just the wrong one --
+    so no median, mean or quantile can see those three. Equally, a capture
+    squarely on the grid can still be a bad scan, which the grid cannot see.
+
+    None when either capture has no walls to take a bearing from.
+    """
+    g_src, g_tgt = grid_bearing(source), grid_bearing(target)
+    if g_src is None or g_tgt is None:
+        return None
+    off = (theta_deg - (g_tgt - g_src)) % 90.0
+    return min(off, 90.0 - off)
+
+
 def spread_m2(points: np.ndarray) -> float:
     """Convex-hull area of a point cloud, in m2. How much ground it spans."""
     if len(points) < 3:
@@ -435,11 +496,20 @@ def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
             if other == name:
                 continue
             try:
-                errors.append(plan_fit(model, target)["median_error_m"])
+                error = plan_fit(model, target)["median_error_m"]
             except ValueError:
                 continue
+            if math.isfinite(error):
+                errors.append(error)
         if errors:
-            out[name] = float(sum(errors) / len(errors))
+            # The BEST pairing, not the mean of them. A capture is in the frame
+            # if it lands well on ANY other capture; it is the odd one out if it
+            # lands well on none. Averaging instead lets one meaningless pairing
+            # sink a good capture -- a large capture fitted onto a single-room
+            # one overlaps almost nothing, so that pair scores terribly and says
+            # nothing about the large capture. Measured, the mean made a 1-room
+            # bedroom out-rank a 10-room survey for the anchor.
+            out[name] = float(min(errors))
     return out
 
 
@@ -1497,6 +1567,7 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
 def combine(models: dict[str, Model], *, level_name: str | None = None,
             reference: str | None = None, max_median_cm: float = MAX_MEDIAN_CM,
             max_p90_cm: float = MAX_P90_CM, edge: float = EDGE_CONTAINMENT,
+            max_off_grid_deg: float = MAX_OFF_GRID_DEG,
             expected_areas: set[str] | None = None) -> Combined:
     """The five stages, with no printing. `main` reports what this returns."""
     if len(models) < 2:
@@ -1554,8 +1625,37 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                            common_points=fit["matched"], sampled_points=fit["sampled"],
                            agreement_m=agreement.get(name))
 
+        if not math.isfinite(fit["median_error_m"]):
+            # The fitter reports an infinite median when it could not land even a
+            # fifth of the plan. That is not a bad overlay, it is NOT THE SAME
+            # SPACE -- captures of adjacent rooms share no walls and will never
+            # overlay however good they both are. Discarding them as invalid
+            # would be wrong, so this says what to do instead.
+            record = Alignment(
+                capture=name, verdict="discarded", candidates=[fit],
+                common_points=fit["matched"], sampled_points=fit["sampled"],
+                agreement_m=agreement.get(name),
+                reason=(f"shares too little with {ref!r} to overlay at all -- only "
+                        f"{fit['matched']:,} of {fit['sampled']:,} sampled wall points "
+                        f"found anything. These are probably captures of ADJACENT "
+                        f"space rather than repeat captures of one space, which no "
+                        f"amount of fitting can merge. To integrate this capture, "
+                        f"scan it again including a room that is already covered"))
+            aligned[name] = record
+            rejected[name] = record.reason
+            continue
+
         p90_cm = None if fit["p90_m"] is None else fit["p90_m"] * M_TO_CM
         failures = []
+        # The grid first, because it answers a different question: not "how well
+        # did this land" but "could it possibly be here at all".
+        off = off_grid_deg(math.degrees(fit["theta_rad"]) % 360, level, levels[ref])
+        if off is not None and off > max_off_grid_deg:
+            failures.append(
+                f"sits {off:.1f} deg off the building's wall grid, which admits only "
+                f"rotations {max_off_grid_deg:.0f} deg either side of a multiple of 90. "
+                f"This is the wrong basin, not a poor fit -- every wall found a "
+                f"neighbour, they are simply the wrong walls")
         if fit["median_error_m"] * M_TO_CM > max_median_cm:
             failures.append(f"median {fit['median_error_m'] * M_TO_CM:.1f} cm over "
                             f"{fit['matched']:,} common points, against a limit of "
@@ -1872,6 +1972,12 @@ def main() -> None:
                          "small room is a large fraction of the room")
     ap.add_argument("--edge-containment", type=float, default=EDGE_CONTAINMENT,
                     help="intersection/min(area) at which two rooms are one room")
+    ap.add_argument("--max-off-grid-deg", type=float, default=MAX_OFF_GRID_DEG,
+                    help="how far a rotation may sit from the building's wall grid. "
+                         "Every capture of one building shares that grid, so only "
+                         "four rotations between two captures are ever valid -- this "
+                         "is what catches a capture placed on the wrong walls, which "
+                         "no error figure can see")
     args = ap.parse_args()
 
     models: dict[str, Model] = {}
@@ -1895,7 +2001,8 @@ def main() -> None:
     try:
         result = combine(models, level_name=args.storey, reference=args.reference,
                          max_median_cm=args.max_median_cm, max_p90_cm=args.max_p90_cm,
-                         edge=args.edge_containment)
+                         edge=args.edge_containment,
+                         max_off_grid_deg=args.max_off_grid_deg)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
