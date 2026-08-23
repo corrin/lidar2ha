@@ -11,6 +11,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Nothing here writes anything back.
+permissions:
+  contents: read
+
 jobs:
   check:
     strategy:
@@ -49,3 +53,39 @@ jobs:
       # test that quietly stopped covering anything.
       - name: pytest
         run: uv run pytest -q -rs
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Build the wheel
+        run: uv build
+
+      # The .java sources are compiled at runtime against the user's own Sweet
+      # Home 3D install, so they have to be inside the wheel. pyproject.toml says
+      # so with hatch's `artifacts`, and until now nothing checked it was true.
+      # A wheel missing them installs perfectly and fails at the first `build`,
+      # on someone else's machine, with a compiler error about a missing file.
+      - name: The wheel must carry the Java sources
+        run: |
+          python - <<'PY'
+          import glob, pathlib, sys, zipfile
+
+          wheel = sorted(glob.glob("dist/*.whl"))[0]
+          packaged = {
+              pathlib.PurePosixPath(n).name
+              for n in zipfile.ZipFile(wheel).namelist()
+              if n.endswith(".java")
+          }
+          on_disk = {p.name for p in pathlib.Path("src/lidar2ha/java").glob("*.java")}
+          assert on_disk, "no .java sources found on disk -- this check proves nothing"
+
+          missing = on_disk - packaged
+          if missing:
+              sys.exit(f"{wheel} is missing Java sources: {sorted(missing)}")
+          print(f"{wheel} carries all {len(on_disk)} Java sources")
+          PY

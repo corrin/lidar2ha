@@ -1,0 +1,39 @@
+version: 2
+
+updates:
+  # A lockfile that nothing ever moves just pins yesterday's bugs. Dependabot is
+  # what turns "reproducible" into "reproducible and current".
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+
+    # Wait a week before proposing any release. The numeric stack yanks and
+    # re-releases often enough that jumping on day-zero buys nothing here, and
+    # this project has no way to notice a bad wheel except by the geometry
+    # coming out wrong.
+    cooldown:
+      default-days: 7
+
+    groups:
+      # Eleven pull requests for eleven patch bumps is how a lockfile stops
+      # being read at all. Routine drift arrives as one reviewable change.
+      routine:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+    # Majors are deliberately left ungrouped, one PR each. The two worst silent
+    # changes this project has had -- trimesh 4->5 and numpy 1->2 -- were both
+    # majors that a lower bound let through, and neither announced itself in the
+    # test output. They deserve to be looked at alone.
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      actions:
+        patterns: ["*"]

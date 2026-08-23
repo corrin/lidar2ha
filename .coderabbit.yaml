@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-GB
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_filters:
+    # Generated, enormous, and reviewing it says nothing that the diff of
+    # pyproject.toml does not say better.
+    - "!uv.lock"
+
+  path_instructions:
+    - path: "src/lidar2ha/**/*.py"
+      instructions: |
+        CLAUDE.md at the repo root is the standard here. Read it before
+        commenting on style; most of what looks unusual is deliberate and
+        explained there.
+
+        NOTHING MAY BE DROPPED IN SILENCE. Almost every failure in this project
+        is invisible at runtime: a light in the wrong room still renders, a
+        group and its members just make a room brighter, a GLB with no object
+        names opens perfectly and binds nothing. When a change adds a filter, a
+        threshold or a skip, the question is not "is this right" but "if this is
+        wrong, what does the user see?". If the answer is "nothing", say so --
+        that is the most valuable comment you can leave on this repository.
+
+        Units are load-bearing. Plan geometry is centimetres (Sweet Home 3D's
+        internal unit); mesh and registration are metres. Field names carry the
+        unit where it is not obvious: floor_z_m, plan_x_cm, elevation_cm. Flag
+        any arithmetic that mixes the two frames, and any new field that drops
+        the suffix.
+
+        Each capture has its own coordinate frame and geometry never merges
+        across them. Flag anything that treats two captures' coordinates as
+        interchangeable without going through a Registration.
+
+        schema.py IS the specification for model.json. Code should pass Model,
+        Level, Room and Registration around and read their attributes. Flag
+        re-validation of what extra="forbid" and the field types already
+        guarantee, and flag dict.get chains on data that is already typed. Where
+        a field is genuinely optional (floor_z_m, elevation_cm, ha_area) a None
+        is information and needs an answer, not a silent default.
+
+        Do not suggest `# type: ignore`. mypy is clean on src/lidar2ha and stays
+        that way; the boundary to trimesh, scipy and ezdxf is annotated `Any` on
+        purpose because those ship no stubs worth the noise.
+
+        Duplicated maths is a real defect here, not a style nit. Two hand-written
+        copies of one transform is how a sign error survives, because both look
+        right. Flag a second derivation of something that already exists.
+
+        Comments in this codebase explain the failure they prevent, usually with
+        the symptom that was actually observed. Do not ask for comments that
+        restate the code.
+
+    - path: "tests/**/*.py"
+      instructions: |
+        One property per test. The docstring states the failure the test catches,
+        not what the code does.
+
+        The registry values, capture counts and thresholds come from a real house
+        and a real Home Assistant instance. Flag invented-looking test data: made
+        up numbers agree with whatever the code happens to do, so the test proves
+        nothing.
+
+        Watch for tests that can pass vacuously -- an assertion on an empty
+        collection, a mock that would satisfy any implementation. Where the repo
+        knows a test could pass vacuously it says so inline; suggest that where
+        it is missing.
+
+    - path: "src/lidar2ha/java/*.java"
+      instructions: |
+        Everything here targets Java 8 (`--release 8`) because Sweet Home 3D's
+        bundled render JVM refuses class files above version 52. Flag any API or
+        syntax newer than Java 8 -- the failure mode is class loading failing
+        before main(), which surfaces as a modal dialog on the user's screen
+        rather than in any log.
+
+    - path: ".github/workflows/*.yml"
+      instructions: |
+        CI installs with `uv sync --locked --all-extras`. Flag any change that
+        drops --locked (the lock stops being verified) or --all-extras (paramiko
+        and websockets are extras, and a bare sync removes them along with the
+        tests that cover deploy and the Home Assistant registry).
