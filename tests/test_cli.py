@@ -70,11 +70,12 @@ def test_a_missing_uv_warns_rather_than_claiming_success(tmp_path, monkeypatch):
     assert "uv" in detail
 
 
-def test_a_timeout_warns_rather_than_propagating(tmp_path, monkeypatch):
-    """`doctor` exists to be pasted into a bug report; it may not hang or crash.
+def test_a_timeout_is_not_reported_as_a_missing_uv(tmp_path, monkeypatch):
+    """A wedged uv and an absent uv need different answers.
 
-    A slow or wedged uv must degrade to a warning, not take the whole command out
-    on the machine that was trying to describe a different problem.
+    Both degrade to a warning rather than taking the command out, but telling
+    someone whose uv timed out to put it on their PATH sends them after the wrong
+    problem entirely.
     """
     (tmp_path / "uv.lock").write_text("")
 
@@ -83,8 +84,10 @@ def test_a_timeout_warns_rather_than_propagating(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    status, _ = _dep_status(tmp_path)
+    status, detail = _dep_status(tmp_path)
     assert status == WARN
+    assert "PATH" not in detail
+    assert "30s" in detail
 
 
 def test_a_stale_environment_says_what_to_run(tmp_path, monkeypatch):

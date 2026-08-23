@@ -8,7 +8,7 @@ This project is driven by **uv**. `uv.lock` and `.python-version` are part of th
 repo — do not delete them as build artefacts.
 
 ```bash
-uv run pytest -q                    # 305 tests, ~15 s
+uv run pytest -q                    # 313 tests, ~15 s
 uv run pytest tests/test_ha.py -q
 uv run pytest -q -k zha_group       # one test by name
 uv run pytest -q -m java            # needs Sweet Home 3D + a JDK
@@ -50,6 +50,13 @@ install.
   register. `# increment the counter` is noise; `# The plugin sums sources sharing a
   name, so placing a group and its members renders the room quietly too bright` is
   the point.
+- **A comment is permanent.** It explains the architecture, and what a decision
+  forces on everything downstream of it — the consequence, which stays true. Not
+  the deliberation that produced it: no alternatives weighed, no case argued, no
+  reader addressed. One or two lines, then stop.
+- **Config files get no prose.** `dependabot.yml`, `ci.yml`, `.coderabbit.yaml` are
+  settings. Comment only what the key itself cannot say, such as a flag that looks
+  removable but is not. Rationale belongs in the commit that made the change.
 - **Trust the data model.** `schema.py` has already validated the document — pass
   `Model`, `Level`, `Room`, `Registration` around and read their attributes. Do not
   re-check what `extra="forbid"` and the field types guarantee, and do not fall back

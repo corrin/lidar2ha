@@ -32,20 +32,10 @@ def _row(status: str, label: str, detail: str = "") -> None:
 def _dep_status(start: Path) -> tuple[str, str] | None:
     """Whether the environment still matches the uv.lock above `start`.
 
-    None when there is no lock to be found: someone running an installed wheel
-    has nothing to be out of step with, and an unexplained row would be noise in
-    the bug report this output exists to be pasted into.
-
-    The failure this catches is pulling a commit that moved uv.lock and carrying
-    on with the packages already installed. Nothing else here can see it, and
-    downstream a stale numpy or trimesh reads as a bug in this code rather than
-    as an environment that was never updated.
-
-    `--frozen` compares against the committed lock without re-resolving, so this
-    cannot reach the network and cannot hang on a slow index. A lock that has
-    itself drifted from pyproject.toml is CI's job, not doctor's. `--all-extras`
-    matters: without it uv counts paramiko and websockets as extraneous and
-    would report a perfectly good environment as outdated.
+    None outside a checkout: an installed wheel has no lock to be out of step
+    with. `--frozen` compares against the committed lock without resolving, so
+    this never reaches the network; `--all-extras` because without it uv counts
+    paramiko and websockets as extraneous and calls a good environment stale.
     """
     root = next((d for d in (start, *start.parents) if (d / "uv.lock").is_file()), None)
     if root is None:
@@ -56,9 +46,9 @@ def _dep_status(start: Path) -> tuple[str, str] | None:
             ["uv", "sync", "--check", "--frozen", "--all-extras"],
             cwd=root, capture_output=True, timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
-        # Not knowing is not the same as being in sync, and doctor may not report
-        # the second having only established the first.
+    except subprocess.TimeoutExpired:
+        return WARN, "uv did not answer within 30s, so this could not be checked"
+    except OSError:
         return WARN, "uv is not on PATH, so this could not be checked"
 
     if done.returncode != 0:
@@ -93,10 +83,8 @@ def doctor(sh3d_jar: str | None) -> None:
     problems = 0
     warnings = 0
 
-    # Before detect(), which exits outright on an incomplete toolchain. A stale
-    # environment is exactly the kind of thing the machine filing the bug report
-    # also has, and printing it afterwards would hide it on the machines that
-    # most need to see it.
+    # Before detect(), which exits outright on an incomplete toolchain and would
+    # take this row with it.
     deps = _dep_status(Path.cwd())
     if deps is not None:
         status, detail = deps
