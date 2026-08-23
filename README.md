@@ -43,8 +43,10 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
 | Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), **needs human review** |
-| Review sheet for the fittings found | works (`contactsheet.py`) |
-| `lidar2ha doctor`, `build`, `lights`, `render`, `deploy` | works (`cli.py`) |
+| Separate windows from fittings mechanically | works (`daylight.py`), differences two captures |
+| Review sheet for the fittings found | works (`contactsheet.py`), windows sorted last |
+| Export a named GLB for a real-time 3D card | works (`ObjExport.java`, `glb.py`) |
+| `lidar2ha doctor`, `build`, `lights`, `render`, `deploy`, `export-glb` | works (`cli.py`) |
 | **Seam/seed open-plan splitting** | **does not exist** — `rooms.py` merges named rooms instead |
 | **`lidar2ha add-capture`** | **does not exist** (exits saying so) |
 
@@ -82,6 +84,13 @@ phone-scan → Home Assistant workflow at all.
 `floor3d-card` and Floorplan 3D render in real time, which means no raytracing and **no
 cross-floor light spill**. If your house is a set of sealed boxes that may not matter. If
 it has a stairwell, a double-height space, or open-plan living, it's the whole point.
+
+That said, they are not mutually exclusive, and one model can drive both — a real-time card
+is clickable and instant where the raytraced one is a set of pre-rendered overlays. Both
+bind Home Assistant entities to objects **by name**, which is the only thing `export-glb`
+has to get right. It emits `.obj` (what `floor3d-card` loads) and `.glb` (what the
+better-maintained cards want) from the same `.sh3d`, with each object named after its
+entity id.
 
 ---
 
@@ -171,7 +180,9 @@ files by path fails on the relative import. Prefix them with `uv run` unless you
 activated `.venv` yourself. Paths below are illustrative; substitute your own.
 
 ```bash
-# 1. floor plan -> intermediate model
+# 1. floor plan -> intermediate model.  Add --role fixtures for a fixture pass:
+#    its geometry is bad on purpose, and marking it keeps its walls and floor
+#    heights out of the building.
 python -m lidar2ha.polycam floorplan.dxf --csv rooms.csv -o home.json
 
 # 2. what elevation is each floor at?
@@ -189,11 +200,17 @@ python -m lidar2ha.rooms registered.json project.yaml -o named.json --capture up
 # 5b. OPTIONAL, from a fixture pass: find the real fittings, put them in rooms,
 #     and build the sheet you approve them against before anything is placed
 python -m lidar2ha.fixtures fixture_mesh.obj -o fixtures.json --crops crops/
-python -m lidar2ha.placefixtures fixtures.json fixture_registered.json named.json \
-    -o fixtures_placed.json
+#     List every geometry capture the fixture pass walked through -- one pass
+#     routinely spans two.  --daylight-mesh is an ORDINARY capture of the same
+#     rooms: a window is bright in it too and a fitting is not, which separates
+#     them mechanically.
+python -m lidar2ha.placefixtures fixtures.json fixture_registered.json \
+    ground_named.json hall_named.json \
+    --daylight-mesh ground_mesh.obj -o fixtures_placed.json
 python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
-#     Look at sheet.png. Windows and candles look exactly like fittings to the
-#     detector; only you can tell. Then pass the approved file to lights below.
+#     Look at sheet.png. The likely windows are sorted to the bottom and
+#     outlined, but the cutoff is a guess until you have read a sheet against
+#     it -- and a candle or a mirror still looks exactly like a fitting.
 
 # 6. read the HA registry and place every light.* entity in its room
 lidar2ha lights named.json --refresh --project project.yaml -o lights.json \
@@ -212,6 +229,12 @@ lidar2ha render house.sh3d -o render_out --project project.yaml
 # 9. copy it to Home Assistant. Writes nothing without --push.
 lidar2ha deploy render_out --project project.yaml
 lidar2ha deploy render_out --project project.yaml --push
+
+# OPTIONAL. The same model as geometry, for a real-time 3D card rather than
+# raytraced overlays. Each object is named after its entity id, and the count
+# printed at the end is how many of those names survived the conversion --
+# which is the only thing that makes the file useful.
+lidar2ha export-glb house.sh3d -o house.glb
 ```
 
 `lights` needs `HA_URL` and a long-lived access token in `HA_TOKEN` (environment or a
@@ -221,16 +244,23 @@ lidar2ha deploy render_out --project project.yaml --push
 `build` names any level whose elevation the mesh could not recover instead of quietly
 defaulting it to zero, and refuses to report success on a `.sh3d` that will not reopen.
 
-Rendering has no subcommand yet, so drive it through `javabridge`, which locates Sweet Home
-3D, compiles into a per-user cache keyed by a hash over sources and jars, and knows which of
-the **two JVMs** each program needs:
+`render` and `export-glb` both go through `javabridge`, which locates Sweet Home 3D,
+compiles into a per-user cache keyed by a hash over sources and jars, and knows which of the
+**two JVMs** each program needs. Anything touching Java3D — the raytracer *and* the
+geometry-only OBJ export — has to run on Sweet Home 3D's bundled 32-bit runtime, which has
+no console, so both log to a file:
 
 ```python
 from lidar2ha import javabridge
 tc = javabridge.detect()
 classes = javabridge.compile_java(tc)
 javabridge.run_render(tc, classes, "render.log", "house.sh3d", "render_out")
+javabridge.run_render(tc, classes, "obj.log", "house.sh3d", "house.obj",
+                      main_class="ObjExport")
 ```
+
+`export-glb` needs [obj2gltf](https://github.com/CesiumGS/obj2gltf) (`npm install -g
+obj2gltf`); `doctor` reports whether it can find it.
 
 `examples/minimal.tsv` is a complete four-wall, one-light scene — the smallest thing that
 exercises the writer end to end, and the right place to start if you only care about
@@ -278,10 +308,25 @@ glass — obvious to a person, invisible to the detector. What it is genuinely b
 a person is the tedious part: it found exactly one fitting in each of two 1.6 m² wardrobes
 and placed each in the right cupboard.
 
-One discriminator would remove the windows mechanically and is not built: a window is
-bright in *every* capture, a fitting only when switched on, so differencing a fixture pass
-against an ordinary capture of the same rooms isolates the fittings. Until that exists,
-human review is the filter.
+**One discriminator removes the windows mechanically**, and it is not a cleverer threshold —
+it is a second capture. A window is bright in *every* capture, a fitting only when switched
+on, so differencing a fixture pass against an ordinary capture of the same rooms isolates
+the fittings. Pass `--daylight-mesh` to `placefixtures`; the ordinary capture is the one the
+geometry came from, so it already exists for every level with a fixture pass.
+
+There are **three** answers, not two, and that is the part worth knowing. An ordinary
+capture photographs ceilings badly — the camera meters for the room, and nobody points a
+phone at a dark ceiling — so "nothing there to compare with" is common and means the scan
+never looked. It is reported as `unseen`, and it is not evidence either way. Only a positive
+`window` is refused, and `lights` counts those in its report rather than dropping them
+quietly. The contact sheet sorts the likely windows to the bottom and outlines them, so
+review runs top-down and can stop early: that is the point, because a ground-level pass
+produced 38 candidates for perhaps 12–14 real fittings and reading all 38 costs more than
+the detection saves.
+
+Human review is still the filter. The cutoff is a guess like everything else here, and a
+candle or a mirror reflecting a lit fitting is bright in exactly one capture — which is what
+a real fitting looks like.
 
 Expect far more fittings than entities. The upstairs of the house this was built for has
 roughly 18 fittings and 5 `light.*` entities; the rest are dumb switches. Fittings with no
@@ -292,6 +337,17 @@ prettily and respond to nothing.
 exposing sound channels in the light domain all turn up. They are placed and flagged rather
 than dropped, and you exclude them in `project.yaml` — a real fitting that merely looks
 like an indicator would otherwise vanish and leave a room dark for no visible reason.
+
+**And not every `light.*` entity is one light.** A group and its members are the same bulbs
+counted twice, and because the plugin *sums* sources sharing a name the result is not an
+error — it is a room that renders quietly too bright. Groups are found three ways, and the
+report always says which found what, because the coverage differs. Home Assistant's own
+group helper lists its members, so those are exact. **ZHA hangs a Zigbee group's entity off
+the coordinator device** — the radio, not a lamp — and nothing else in the light domain
+lives there, which makes that a mechanical test: on this house it finds four groups where
+the name heuristic finds one of the same four. Hue rooms and deCONZ groups expose neither,
+and are still flagged by name for you to judge. Anything skipped is named, and
+`lights.include` puts it back.
 
 Room identity is half-solved. Scanner room names are guesses and its splits are artefacts —
 mine confidently labelled an entrance hall "Living Room" and "Dining Room", and returned one
@@ -314,7 +370,9 @@ which is what the seam/seed idea was for.
   saw.
 - **Windows are missing.** LiDAR passes through glass. Add them by hand in Sweet Home 3D.
 - **One capture per *region*.** Geometry does not merge across captures — see above.
-  Repeat captures of the same space do accumulate, for textures and for features.
+  Repeat captures of the same space do accumulate, for textures and for features. A single
+  fixture pass may still span several of them; `placefixtures` takes as many geometry
+  models as you give it and sends each fitting to whichever one contains it.
 - **Voids** — stairwell shafts, double-height spaces — have to be declared by hand, because
   a scanner maps rooms, not the empty space between them.
 - **Tuned to one house, one app.** Anything here that looks like a constant is a guess that
@@ -381,6 +439,22 @@ this repo, and why it compiles against your own installation.
   natives, and that runtime has only `javaw.exe` — no console — so the render step logs to
   a file. Writing a `.sh3d` runs fine on a normal JDK. Two JVMs; `javabridge.py` exists to
   keep that fact in one place.
+- **So does exporting geometry, which traces nothing.** `ObjExport` only walks the model
+  and writes OBJ, but building the scene graph goes through `Object3DBranchFactory`, which
+  loads Java3D's natives regardless. On a 64-bit JDK it dies with `Can't load IA 32-bit
+  .dll on a AMD 64-bit platform`. "It doesn't render, so it can use the normal JVM" is
+  wrong, and the error names a DLL rather than the reason.
+- **`-Djava.awt.headless=true` breaks the headless export.** It is the obvious flag for a
+  command-line tool with no window, and it is exactly backwards: `VirtualUniverse`'s static
+  initialiser wants a display, so setting it throws `HeadlessException` during class
+  loading — before `main()`, and so before any handler that would have logged it.
+- **Converting OBJ→glTF with trimesh silently discards every object name.** trimesh keys a
+  scene by *material*, so six lights that share the `white` material come back as one node
+  called `white`. `ObjExport` exists for one reason — to name each group after its entity
+  id, because a 3D card binds entities to objects by name — and the conversion that looks
+  free destroys precisely that. The resulting GLB is valid, opens fine, and binds nothing.
+  `obj2gltf` preserves the names; `glb.py` counts them going in and coming out, every time,
+  because the failure is invisible until the card does nothing.
 - **`javac` and `java` must come from the same JDK.** Resolving each off `PATH`
   independently gets you a modern compiler and whatever stale JRE is earlier in the path —
   on Windows, typically Oracle's `java8path` shim — and it fails at the point of use with
