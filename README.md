@@ -145,25 +145,30 @@ Floor-plan export is a paid Polycam tier. Also, don't open a capture URL carryin
 
 ## Running it today
 
-You need Python 3.11+, [Sweet Home 3D](https://www.sweethome3d.com/), the
-[floor-plan plugin][plugin], and a **JDK** 17+ ([Temurin](https://adoptium.net/) — Sweet
-Home 3D bundles a runtime but no compiler).
+You need [uv](https://docs.astral.sh/uv/), [Sweet Home 3D](https://www.sweethome3d.com/),
+the [floor-plan plugin][plugin], and a **JDK** 17+ ([Temurin](https://adoptium.net/) —
+Sweet Home 3D bundles a runtime but no compiler). uv fetches the Python itself; the version
+is pinned in `.python-version`.
 
 ```bash
-git clone https://github.com/<you>/lidar2ha && cd lidar2ha
-python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
-lidar2ha doctor
+git clone https://github.com/corrin/lidar2ha && cd lidar2ha
+uv sync --all-extras
+uv run lidar2ha doctor
 ```
+
+`--all-extras` is not optional. `paramiko` and `websockets` are extras, and a bare
+`uv sync` removes them again — taking `deploy` and the Home Assistant registry with it.
 
 `doctor` finds Sweet Home 3D, the plugin and your JDK, then **compiles the Java against
 your own installation** and reports the compiler's own errors. That last step is the point:
 a version check that only looked at paths passed happily while the sources would not build.
+It also says whether your installed packages still match `uv.lock`, which is the one way
+this project goes wrong without anything looking wrong.
 
 Each stage is a module you run by hand, inspecting the output before moving on. Run them
 with `python -m` — they import their shared model from `lidar2ha.schema`, so running the
-files by path fails on the relative import. Paths below are illustrative; substitute your
-own.
+files by path fails on the relative import. Prefix them with `uv run` unless you have
+activated `.venv` yourself. Paths below are illustrative; substitute your own.
 
 ```bash
 # 1. floor plan -> intermediate model
@@ -423,6 +428,22 @@ this repo, and why it compiles against your own installation.
 
 If you try this on a second house I'd genuinely like to hear what broke — that's the single
 most useful thing anyone could do with it, and I have no way to find out on my own.
+
+```bash
+uv run pytest -q                     # the java-marked tests skip without Sweet Home 3D
+uv run ruff check .
+uv run mypy                          # clean on src/lidar2ha, and it stays that way
+uv run lidar2ha doctor               # the only thing that compiles the Java
+```
+
+`uv.lock` and `.python-version` are committed, so everyone resolves the same packages.
+Change a dependency with `uv add` or `uv lock --upgrade-package <name>` and commit the
+lock in the same commit as the `pyproject.toml` change — CI installs with
+`uv sync --locked` and fails when the two have drifted apart.
+
+Contributor tooling lives in a `[dependency-groups]` entry rather than an extra, so it
+never reaches the published wheel. uv installs it by default; there is no `[dev]` to ask
+for.
 
 ## License
 
