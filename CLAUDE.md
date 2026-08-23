@@ -190,10 +190,27 @@ paid for once already:
   works alone -- per-room misses the strip, connected components fuse adjacent
   new rooms into an unnamed blob.
 
-`role` is a scoring prior and never a veto: a fixture pass is likely to be worse
-at geometry, not barred from it. `Room.provisional` is a disjunction of named
-reasons and never a threshold on `Room.score`, because the room that matters
-most scores well enough to pass any cutoff.
+- **Read the ROW of the pairwise matrix, not the column.** How well other
+  captures fit onto one is circular -- it partly measures how much that capture
+  is being used as the yardstick. How well it fits ONTO ground the others agree
+  about is not. On one level the capture with the most walls, which the first
+  reference rule chose and which the whole model was built from, turned out to
+  be the worst of three at 12.6 cm against 5.4 and 4.0.
+- **The anchor is the capture that resolves the most rooms**, with fit quality
+  as a guard rather than the ranking. A capture that fused three rooms into one,
+  used as the anchor, makes that fusion the baseline and turns every capture
+  that got it right into a disagreement.
+
+`role` is a prior for the unmeasurable case only, never a veto and no longer a
+blanket penalty. Measured across two levels the fixture pass is the
+BEST-registered capture on both -- it is precise about the walls it drew and
+wrong about which walls exist, which are two different things. Fusion is
+measured per room by `partitioning`; `role` stands in only where no other
+capture saw the room and there is nothing to measure.
+
+`Room.provisional` is a disjunction of named reasons and never a threshold on
+`Room.score`, because the room that matters most scores well enough to pass any
+cutoff.
 
 ### The one thing that makes lighting subtle
 

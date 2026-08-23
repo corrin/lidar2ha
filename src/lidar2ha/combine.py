@@ -180,11 +180,36 @@ CEIL_SLACK_CM = 25.0
 CEIL_MAX_CM = 700.0
 CEIL_RAMP_CM = 30.0
 
-# What a fixture pass costs itself. Measured: it fits at 7.4 cm where geometry
-# captures fit at 1.4-1.6 cm, and reads a 220 cm room as 185. Sized to decide
-# between near-equals and to be irrelevant when nothing opposes it -- raise it
-# if a fixture pass wins a room it should not, lower it if it loses one it
-# should. It is a prior; it must never reach a size that acts as a veto.
+# How much worse than the best a capture may be at landing on the others and
+# still be allowed to anchor the level. Two levels of evidence: the one bad
+# capture sits 3.2x off its level's best, and the widest spread among good ones
+# is 1.65x. The gap between those is where this sits, and it is a two-point
+# calibration -- widen it if a good capture is being refused the anchor.
+REFERENCE_TOLERANCE = 2.0
+# Above this multiple of the level's best, a capture is called out as the
+# outlier. Reported, never refused: two levels is not enough evidence to start
+# discarding captures automatically, and the one bad capture measured here still
+# supplies rooms nothing else has.
+OUTLIER_RATIO = 2.0
+
+# What a fixture pass costs a room WHEN NOTHING CAN BE MEASURED INSTEAD.
+#
+# This used to apply to every fixture-pass candidate, on the reasoning that such
+# a pass registers worse. That reasoning was wrong: measured across two levels,
+# the fixture pass is the BEST-registered capture on both -- 2.1 and 2.2 cm
+# against 2.4-4.7 for the geometry passes. Shot slowly at close range, pointing
+# carefully, it turns out to be good at exactly the thing it was being penalised
+# for.
+#
+# Where a fixture pass does lose is room COUNT: 5 rooms against 8-10 on both
+# levels, fusing a living room, a dining room and a kitchen into one 46 m2
+# polygon. It is precise about the walls it drew and wrong about which walls
+# exist, and those are two different things that one word was hiding.
+#
+# So fusion is now measured per room, by `partitioning`, and this prior applies
+# only where that measurement cannot be taken -- a room no other capture has
+# seen, which is precisely the bathroom. A prior for the unmeasurable case, and
+# never a veto.
 ROLE_PENALTY = 0.15
 
 # Below this the winning geometry is flagged for re-scanning. The measured band
@@ -217,6 +242,10 @@ WEIGHTS: dict[str, float] = {
     "wall": 0.10,
     "enclosure": 0.10,
     "consensus": 0.10,
+    # Does this candidate resolve the partitions the other captures resolve, or
+    # does it lay one polygon over several of their rooms? This is where a
+    # fixture pass actually loses, and unlike `role` it is measured.
+    "partitioning": 0.10,
 }
 
 Kind = Literal["one_to_one", "unopposed", "disagreement", "tangled"]
@@ -369,22 +398,71 @@ def coverage_is_uninformative(source: np.ndarray, reference: np.ndarray, *,
     return share if share < ratio else None
 
 
-def pick_reference(levels: dict[str, Level], roles: Mapping[str, str]) -> str:
+def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
+    """Median error of fitting each capture ONTO each of the others, averaged.
+
+    Read the rows of the pairwise matrix, never the columns. How well others fit
+    onto a capture is circular -- it partly measures how much that capture is
+    being used as the yardstick. How well a capture fits ONTO ground several
+    others independently agree about is not.
+
+    The difference is not academic. Measured on one level, the capture with the
+    most walls -- which the old reference rule chose, and which this house's
+    whole mid-level model was built from -- turns out to be the worst of the
+    three, at 12.6 cm against 5.4 and 4.0. Every per-capture error figure
+    reported against it was that capture's own error charged to everyone else.
+    """
+    out: dict[str, float] = {}
+    for name, model in models.items():
+        errors = []
+        for other, target in models.items():
+            if other == name:
+                continue
+            try:
+                errors.append(plan_fit(model, target)["median_error_m"])
+            except ValueError:
+                continue
+        if errors:
+            out[name] = float(sum(errors) / len(errors))
+    return out
+
+
+def pick_reference(levels: dict[str, Level], agreement: Mapping[str, float], *,
+                   tolerance: float = REFERENCE_TOLERANCE) -> str:
     """The capture every other one is moved onto.
 
-    Widest coverage first, because the anchor has to be able to see the others:
-    a small capture as reference leaves most of the level with nothing to fit
-    against. Wall count is the proxy, and its own registration error breaks
-    ties. `role` orders before both -- a fixture pass CAN anchor a level, but it
-    should be the last capture asked to.
-    """
-    def key(item: tuple[str, Level]) -> tuple[int, int, float]:
-        name, level = item
-        reg = level.registration
-        err = reg.median_error_m if reg is not None else 9.99
-        return (0 if roles[name] == "geometry" else 1, -len(level.walls), err)
+    THE REFERENCE IS THE ROOM SET EVERYTHING ELSE IS CORRESPONDED AGAINST, so
+    the capture that resolves the most partitions anchors the level. A capture
+    that fused three rooms into one, used as the anchor, makes that fusion the
+    baseline and turns every capture that got it right into a disagreement.
 
-    return sorted(levels.items(), key=key)[0][0]
+    Fit quality is a GUARD rather than the ranking: a capture more than
+    `tolerance` times worse than the best at landing on the others is not
+    allowed to anchor however many rooms it claims. Measured, that is the whole
+    of the difference -- on one level the worst capture sits 3.2x off the best
+    and is excluded, on another the spread is 1.65x and nothing is.
+
+    `role` does not appear. It used to order first, on the assumption that a
+    fixture pass registers worse; measured over two levels the fixture pass is
+    the BEST-registered capture on both. Where it actually loses is room count,
+    5 against 8-10, and that is counted here directly rather than guessed at
+    through what the scan was for.
+    """
+    if not agreement:
+        return sorted(levels, key=lambda n: (-len(levels[n].walls), n))[0]
+
+    allowed = list(levels)
+    if len(agreement) >= 3:
+        # The guard needs a consensus to be a consensus. With two captures the
+        # figure is one directed measurement against one other capture, and the
+        # asymmetry between the two directions is the very thing in doubt --
+        # excluding on it would let a five-room fixture pass anchor a level over
+        # an eight-room survey on a difference of a tenth of a centimetre.
+        best = min(agreement.values())
+        allowed = [n for n in levels
+                   if agreement.get(n, float("inf")) <= best * tolerance] or allowed
+    return sorted(allowed,
+                  key=lambda n: (-len(levels[n].rooms), agreement.get(n, 9.99), n))[0]
 
 
 def place_cm(points_cm: Any, fit: Fit | None) -> np.ndarray:
@@ -667,6 +745,39 @@ def capture_quality(capture: Capture) -> float | None:
     return float(sum(terms) / len(terms)) if terms else None
 
 
+def partitioning(cand: Candidate, group: Group, cands: list[Candidate], *,
+                 edge: float = EDGE_CONTAINMENT) -> float | None:
+    """Does this candidate resolve the partitions the other captures resolve?
+
+    A capture that lays one polygon over three rooms another capture keeps apart
+    is not slightly wrong about a boundary -- it is missing two walls. Measured,
+    that is where a fixture pass actually loses: 5 rooms against 8-10 on both
+    levels here, with one 46 m2 polygon covering a living room, a dining room, a
+    kitchen and an office. Its WALLS are the most accurate on the level; its
+    account of which walls exist is the worst.
+
+    Scored per capture and then taken at the worst, so swallowing four rooms of
+    one capture is not excused by agreeing with another that fused them too.
+
+    None when no other capture is in the group. That is the third answer and it
+    matters: a room nobody else has seen cannot be shown to fuse anything, which
+    is not the same as being known not to. `role` stands in only there.
+    """
+    others = [c for c in group.per_capture if c != cand.capture]
+    if not others:
+        return None
+    worst = 1.0
+    for other in others:
+        swallowed = sum(
+            1 for i in group.per_capture[other]
+            if containment(cands[i].poly, cand.poly)[0] >= edge
+            and cands[i].poly.area <= cand.poly.area)
+        # One room to one room is the ordinary case and costs nothing. Each
+        # extra partition this polygon covers is a wall it failed to find.
+        worst = min(worst, 1.0 / max(1, swallowed))
+    return float(worst)
+
+
 def consensus(cand: Candidate, group: Group, cands: list[Candidate]) -> float | None:
     """Mean IoU with the group's other candidates; None when nothing opposes it.
 
@@ -709,6 +820,7 @@ def score_room(cand: Candidate, group: Group, cands: list[Candidate], *,
         "wall": wall,
         "enclosure": enclosure,
         "consensus": consensus(cand, group, cands),
+        "partitioning": partitioning(cand, group, cands),
     }
     missing = sorted(k for k, v in signals.items() if v is None)
     live = sum(weights[k] for k, v in signals.items() if v is not None)
@@ -716,7 +828,11 @@ def score_room(cand: Candidate, group: Group, cands: list[Candidate], *,
         return Score(0.0, signals, missing)
 
     total = sum(weights[k] * v for k, v in signals.items() if v is not None) / live
-    if cand.role != "geometry":
+    # The role prior stands in ONLY where the thing it is a prior for could not
+    # be measured. Where another capture saw this floor, `partitioning` has
+    # already said whether this candidate fuses rooms, and charging the pass a
+    # second time for what it might have done is charging it for its name.
+    if cand.role != "geometry" and signals["partitioning"] is None:
         total -= role_penalty
     return Score(max(0.0, min(1.0, total)), signals, missing)
 
@@ -1093,6 +1209,7 @@ class Combined:
     sliver_m2: float
     slivers: int
     cautions: dict[str, str]
+    agreement: dict[str, float]
     naming: list[Naming]
     worklist: list[dict[str, Any]]
 
@@ -1165,6 +1282,46 @@ def capture_record(name: str, role: str, fit: Fit | None,
         tx_m=round(fit["tx"], 4), ty_m=round(fit["ty"], 4),
         is_reference=is_reference,
     )
+
+
+def alignment_record(result: Combined) -> list[dict[str, Any]]:
+    """What happened to each capture when it was aligned, machine-readable.
+
+    Every number here was already computed and then printed and dropped. It is
+    worth keeping because it is MEASURED, and the thing it replaces is not: a
+    hand-typed `quality: good` in project.yaml is an assertion nobody checked,
+    and on this house those assertions were stale in both directions -- one
+    capture marked suspect really was bad, and captures marked good had never
+    been measured at all.
+
+    `fits_onto_others_m` is the figure to read. The rest are measured against
+    the reference, so they partly describe the reference.
+    """
+    out = []
+    for name, fit in result.fits.items():
+        capture = next((c for c in result.model.captures if c.id == name), None)
+        out.append({
+            "capture": name,
+            "role": capture.role if capture else None,
+            "aligned": True,
+            "is_reference": fit is None,
+            "against": result.reference,
+            "theta_deg": None if fit is None
+            else round(math.degrees(fit["theta_rad"]) % 360, 2),
+            "tx_m": None if fit is None else round(fit["tx"], 4),
+            "ty_m": None if fit is None else round(fit["ty"], 4),
+            "median_cm": None if fit is None else round(fit["median_error_m"] * M_TO_CM, 1),
+            "p90_cm": None if fit is None or fit["p90_m"] is None
+            else round(fit["p90_m"] * M_TO_CM, 1),
+            "coverage": None if fit is None else round(fit["coverage"], 3),
+            "fits_onto_others_cm": (round(result.agreement[name] * M_TO_CM, 1)
+                                    if name in result.agreement else None),
+            "caution": result.cautions.get(name),
+        })
+    for name, why in result.rejected.items():
+        out.append({"capture": name, "aligned": False, "against": result.reference,
+                    "discarded_because": why})
+    return out
 
 
 def worklist(decisions: list[Decision], cands: list[Candidate],
@@ -1276,7 +1433,13 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         raise ValueError("no capture contributed a usable level")
 
     roles = {name: models[name].role for name in levels}
-    ref = reference or pick_reference(levels, roles)
+    # Every capture reduced to the one level it contributes, so the pairwise
+    # agreement below is between storeys of the same floor rather than between
+    # whole multi-storey models.
+    single = {name: models[name].model_copy(update={"levels": [level]})
+              for name, level in levels.items()}
+    agreement = fits_onto_others(single) if len(single) > 1 else {}
+    ref = reference or pick_reference(levels, agreement)
     if ref not in levels:
         raise ValueError(f"reference {ref!r} is not among {sorted(levels)}")
     if not levels[ref].walls:
@@ -1296,8 +1459,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                 f"{len(rooms)} room(s) ({area * CM2_TO_M2:.1f} m2: "
                 f"{', '.join(rooms) or 'none'}) cannot enter the shared frame")
             continue
-        fit = plan_fit(models[name].model_copy(update={"levels": [level]}),
-                       models[ref].model_copy(update={"levels": [levels[ref]]}))
+        fit = plan_fit(single[name], single[ref])
         p90_cm = None if fit["p90_m"] is None else fit["p90_m"] * M_TO_CM
         why = []
         if fit["median_error_m"] * M_TO_CM > max_median_cm:
@@ -1396,7 +1558,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         model=model, reference=ref, candidates=cands, groups=groups, scores=scores,
         decisions=decisions, fits=fits, rejected=rejected, malformed=malformed,
         dropped_walls=dropped, fragments=fragments, sliver_m2=sliver_m2,
-        slivers=slivers, cautions=cautions, naming=naming,
+        slivers=slivers, cautions=cautions, agreement=agreement, naming=naming,
         worklist=worklist(decisions, cands, scores, fragments, naming, expected_areas),
     )
 
@@ -1434,6 +1596,24 @@ def report(result: Combined) -> None:
 
     for name, why in result.cautions.items():
         print(f"    ** {name}: {why}")
+
+    if len(result.agreement) >= 3:
+        # The non-circular number. Every column above is measured against the
+        # reference, so it partly describes the reference; this asks how well
+        # each capture lands on ground the OTHERS independently agree about, and
+        # a capture cannot flatter itself in it.
+        print("\n  fits onto the OTHER captures (not onto the reference, so a bad")
+        print("  reference cannot charge its own error to everyone else):")
+        best = min(result.agreement.values())
+        for name, err in sorted(result.agreement.items(), key=lambda kv: kv[1]):
+            ratio = err / best if best > 0 else 1.0
+            mark = "   <- the outlier on this level" if ratio > OUTLIER_RATIO else ""
+            print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {ratio:4.1f}x best{mark}")
+        worst = max(result.agreement.values())
+        if best > 0 and worst / best > OUTLIER_RATIO:
+            print("  A capture several times worse than the rest at this drags every")
+            print("  correspondence it touches. It is reported, not refused: judge it")
+            print("  against the house, and exclude it with --max-p90-cm if it is bad.")
 
     for name, why in result.rejected.items():
         print(f"{name:22s} {'':9s} {'':>8s} {'':>8s} {'':>7s} {'':>8s}  REFUSED")
@@ -1594,8 +1774,12 @@ def main() -> None:
     work = Path(args.worklist) if args.worklist \
         else Path(args.out).with_name(Path(args.out).stem + "_worklist.json")
     work.write_text(json.dumps(result.worklist, indent=2), encoding="utf-8")
+    record = Path(args.out).with_name(Path(args.out).stem + "_alignment.json")
+    record.write_text(json.dumps(alignment_record(result), indent=2), encoding="utf-8")
     print(f"\nwrote {args.out}")
     print(f"wrote {work}  ({len(result.worklist)} thing(s) to do about the house)")
+    print(f"wrote {record}  (what each capture measured, rather than what it was "
+          f"asserted to be)")
 
 
 if __name__ == "__main__":

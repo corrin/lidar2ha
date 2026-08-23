@@ -387,6 +387,12 @@ which is what the seam/seed idea was for.
   captures, which is the case for rescanning that pays best. A single fixture pass may span
   several geometry captures; `placefixtures` takes as many models as you give it and sends
   each fitting to whichever one contains it.
+- **A capture is only as good as the one you compare it against.** Every per-capture
+  error figure is measured against a chosen reference, so a poor reference charges its
+  own error to everything else — on one level here the anchor turned out to be the worst
+  of three captures, and every number reported against it was wrong in the same
+  direction. `combine` also reports how well each capture fits onto *the others*, which
+  is the figure that cannot flatter itself, and names the outlier. Read that one.
 - **A small capture's numbers cannot be read.** One that spans a fraction of the level fits
   inside it wherever you put it, so it reports 100% coverage for a wrong placement as
   readily as a right one — a five-wall bedroom landed 65° out, on top of the hallway, at
