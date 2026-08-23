@@ -275,8 +275,78 @@ def test_compiled_classes_can_load_on_the_bundled_java_8_jvm(toolchain):
     from lidar2ha import javabridge
 
     classes = javabridge.compile_java(toolchain)
-    for name in ("HeadlessRender", "Sh3dWriter", "Sh3dVerify"):
+    for name in ("HeadlessRender", "ObjExport", "Sh3dWriter", "Sh3dVerify"):
         raw = (classes / f"{name}.class").read_bytes()
         version = int.from_bytes(raw[6:8], "big")
         assert version <= 52, f"{name} is class file {version}; the render JVM caps at 52"
 
+
+# --------------------------------------------------------------------------- #
+# the GLB export, whose whole value is the names
+# --------------------------------------------------------------------------- #
+
+
+def glb_bytes(document: dict) -> bytes:
+    """The smallest valid binary glTF carrying this JSON."""
+    import struct
+
+    body = json.dumps(document).encode("utf-8")
+    body += b" " * (-len(body) % 4)
+    chunk = struct.pack("<II", len(body), 0x4E4F534A) + body
+    return struct.pack("<4sII", b"glTF", 2, 12 + len(chunk)) + chunk
+
+
+def test_names_are_read_from_both_nodes_and_meshes(tmp_path):
+    """A converter may hang the name on either. Asking for only one is how a
+    file that kept its names gets reported as having lost them."""
+    path = tmp_path / "a.glb"
+    path.write_bytes(glb_bytes({"nodes": [{"name": "light.a"}, {}],
+                                "meshes": [{"name": "light.b"}]}))
+    from lidar2ha.glb import glb_node_names
+
+    assert set(glb_node_names(path)) == {"light.a", "light.b"}
+
+
+def test_a_conversion_that_lost_every_name_is_measurable(tmp_path):
+    """The failure this whole module exists for: trimesh keys geometry by
+    MATERIAL, so six lights sharing `white` come back as one node called
+    `white`. The file is valid, opens fine, and binds nothing."""
+    from lidar2ha.glb import check_names
+
+    obj = tmp_path / "a.obj"
+    obj.write_text("g light.hallway_ceiling\nv 0 0 0\ng wall_0\nv 1 1 1\n",
+                   encoding="utf-8")
+    glb = tmp_path / "a.glb"
+    glb.write_bytes(glb_bytes({"meshes": [{"name": "white"}, {"name": "wood"}]}))
+
+    before, survived, _splits = check_names(obj, glb)
+    assert before == {"light.hallway_ceiling"}, "wall_0 is scenery, not an entity"
+    assert survived == set()
+
+
+def test_a_suffixed_sibling_does_not_count_as_a_survivor(tmp_path):
+    """obj2gltf splits a group per material and suffixes the copies. Only the
+    un-suffixed one carries the entity id, so counting the siblings would turn
+    one bound lamp into a report of eight."""
+    from lidar2ha.glb import check_names
+
+    obj = tmp_path / "a.obj"
+    obj.write_text("g light.den_ceiling\nv 0 0 0\n", encoding="utf-8")
+    glb = tmp_path / "a.glb"
+    glb.write_bytes(glb_bytes({"meshes": [{"name": "light.den_ceiling"},
+                                          {"name": "light.den_ceiling_1"},
+                                          {"name": "light.den_ceiling_2"}]}))
+
+    before, survived, splits = check_names(obj, glb)
+    assert before == survived == {"light.den_ceiling"}
+    assert splits == {"light.den_ceiling": 2}
+
+
+def test_something_that_is_not_a_glb_is_refused_by_name(tmp_path):
+    """Reading the OBJ as a GLB would otherwise fail somewhere in struct."""
+    from lidar2ha.glb import glb_node_names
+
+    path = tmp_path / "a.glb"
+    path.write_bytes(b"not a gltf at all, but long enough to unpack")
+    with pytest.raises(SystemExit, match="binary glTF"):
+        glb_node_names(path)

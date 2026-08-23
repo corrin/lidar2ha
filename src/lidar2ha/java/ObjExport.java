@@ -25,26 +25,67 @@ import java.util.List;
  *
  * WHY THE NAMING MATTERS
  * ----------------------
- * floor3d-card binds Home Assistant entities to objects in the model *by object
- * name*. OBJWriter.writeNode(node, name) emits that name as the OBJ group. So
- * naming a light's group `light.hallway_ceiling` is the whole mapping -- the same
- * convention the home-assistant-floor-plan plugin already uses, which means one
- * generated model drives both the raytraced picture-elements view and the
- * interactive 3D card.
+ * A real-time 3D floor-plan card binds Home Assistant entities to objects in the
+ * model *by object name*. OBJWriter.writeNode(node, name) emits that name as the
+ * OBJ group. So naming a light's group `light.hallway_ceiling` is the whole
+ * mapping -- the same convention the home-assistant-floor-plan plugin already
+ * uses, which means one generated model drives both the raytraced
+ * picture-elements view and the interactive 3D card.
+ *
+ * Names are the ONLY thing this file exists to produce. floor3d-card loads OBJ
+ * directly; the better-maintained cards want GLB, and the obvious conversion
+ * (trimesh) keys geometry by material and replaces every name with a material
+ * name, silently. See lidar2ha/glb.py, which converts with obj2gltf and counts
+ * how many names survived.
  *
  * Walls and rooms get structural names; they are scenery, not entities.
  *
  * UNITS: Sweet Home 3D works in centimetres, and OBJ is unitless, so the model
  * arrives in the card at centimetre scale.
  *
- * Requires the same JVM setup as HeadlessRender: 64-bit java.exe, Sweet Home 3D
- * 7.5 jars, and -Djava.library.path pointing at java3d-1.6/windows/amd64.
+ * WHICH JVM
+ * ---------
+ * Sweet Home 3D's OWN 32-bit runtime, exactly as for HeadlessRender -- not the
+ * 64-bit JDK this file used to claim. Nothing here raytraces, and the export is
+ * pure geometry, but Object3DBranchFactory builds Java3D scene graphs and the
+ * 64-bit JDK dies loading their natives:
  *
- *   java -cp "<jars>;out" -Djava.library.path=<natives> ObjExport in.sh3d out.obj
+ *     Can't load IA 32-bit .dll on a AMD 64-bit platform
+ *
+ * And do NOT set -Djava.awt.headless=true. It is the obvious flag for a
+ * command-line export and it is precisely wrong: VirtualUniverse's static
+ * initialiser touches the display, so the run dies with HeadlessException
+ * before main() -- headless is what breaks it, not what fixes it.
+ *
+ * That runtime ships only javaw.exe, which has no console, so -DlogFile is how
+ * anything here is ever read. Without it this exports in total silence and the
+ * only evidence is whether a file appeared.
+ *
+ *   javaw -DlogFile=x.log -cp "<all sh3d jars>;out" \
+ *         -Djava.library.path=<sh3d lib> ObjExport in.sh3d out.obj
+ *
+ * lidar2ha.javabridge.render_command assembles all of that; `lidar2ha
+ * export-glb` is the front door.
  */
 public class ObjExport {
 
   public static void main(String[] args) throws Exception {
+    // See the class comment: this runs on a console-less javaw.exe, so stdout
+    // goes to a file or nowhere at all. Same bootstrap as HeadlessRender, and
+    // for the same reason -- including the uncaught-exception handler, without
+    // which a failure is an empty log and a missing file.
+    String logFile = System.getProperty("logFile");
+    if (logFile != null) {
+      java.io.PrintStream log = new java.io.PrintStream(
+          new java.io.FileOutputStream(logFile, true), true, "UTF-8");
+      System.setOut(log);
+      System.setErr(log);
+      Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+        e.printStackTrace(log);
+        log.flush();
+      });
+    }
+
     if (args.length < 2) {
       System.err.println("usage: ObjExport <model.sh3d> <out.obj>");
       System.exit(2);
