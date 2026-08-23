@@ -21,7 +21,7 @@ import pytest
 import trimesh
 
 from lidar2ha import ha, lights, preview, registration, rooms, seams
-from lidar2ha.schema import Level, Model, Room, Wall, load_model, save_model
+from lidar2ha.schema import Level, Model, Registration, Room, Wall, load_model, save_model
 
 # An L, in metres. Asymmetric on purpose: a rectangle reads the same mirrored,
 # so the fitter's handedness choice would be a coin toss and the test vacuous.
@@ -214,6 +214,55 @@ def test_ha_main_reads_a_cached_registry(monkeypatch, tmp_path, capsys):
     assert "light.a" in capsys.readouterr().out
 
 
+def test_placefixtures_and_contactsheet_mains_run(monkeypatch, tmp_path, capsys):
+    """The two stages that the `--daylight-mesh` and multi-capture work rewrote.
+
+    No mesh here on purpose: without an ordinary capture to difference against,
+    every record must simply carry no verdict and the pair must behave exactly
+    as they did before differencing existed.
+    """
+    from PIL import Image
+
+    from lidar2ha import contactsheet, placefixtures
+
+    corners = [(x * 100, y * 100) for x, y in OUTLINE_M]
+    walls = [
+        Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1], thickness=10, height=250)
+        for a, b in zip(corners, corners[1:] + corners[:1], strict=True)
+    ]
+    level = Level(name="Ground", ceiling_height_cm=250, elevation_cm=0, walls=walls,
+                  rooms=[Room(name="lounge", ha_area="lounge", points=corners)])
+    level.registration = Registration(theta_deg=0.0, tx_m=0.0, ty_m=0.0, mirror=False,
+                                      median_error_m=0.02, coverage=1.0, floor_z_m=0.0)
+
+    fixture_model = tmp_path / "fixture.json"
+    save_model(Model(source="fixture.dxf", role="fixtures", levels=[level]), fixture_model)
+    geometry_model = tmp_path / "named.json"
+    save_model(Model(source="house.dxf", levels=[level]), geometry_model)
+
+    found = [{"x": 3.0, "y": 1.0, "z": 2.3, "faces": 40, "extent_m": 0.2,
+              "luma": 240.0, "surface": "ceiling", "crop": "00.png"}]
+    fixtures_json = tmp_path / "fixtures.json"
+    fixtures_json.write_text(json.dumps(found), encoding="utf-8")
+
+    placed = tmp_path / "placed.json"
+    run(monkeypatch, placefixtures, fixtures_json, fixture_model, geometry_model,
+        "-o", placed)
+
+    record = json.loads(placed.read_text(encoding="utf-8"))[0]
+    assert record["room"] == "lounge"
+    assert record["capture"] == "house.dxf"
+    assert "verdict" not in record, "no ordinary capture was given, so nothing was judged"
+
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    Image.new("RGB", (16, 16)).save(crops / "00.png")
+    sheet = tmp_path / "sheet.png"
+    run(monkeypatch, contactsheet, crops, placed, "-o", sheet)
+    assert sheet.exists()
+    assert "PROBLEM" not in capsys.readouterr().out
+
+
 @pytest.mark.java
 def test_compiled_classes_can_load_on_the_bundled_java_8_jvm(toolchain):
     """Sweet Home 3D ships a Java 8 JRE, which refuses class file version 61.
@@ -230,3 +279,4 @@ def test_compiled_classes_can_load_on_the_bundled_java_8_jvm(toolchain):
         raw = (classes / f"{name}.class").read_bytes()
         version = int.from_bytes(raw[6:8], "big")
         assert version <= 52, f"{name} is class file {version}; the render JVM caps at 52"
+

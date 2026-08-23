@@ -392,3 +392,43 @@ def test_load_fittings_accepts_a_flagged_near_miss(tmp_path):
     assert set(found) == {"pantry"}
     assert found["pantry"][0].elevation is None
 
+
+def test_a_daylight_verdict_survives_the_load(tmp_path):
+    """The refusal happens in build_lights, where it can be counted, rather
+    than at load, where it would be a silent drop."""
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps([
+        {"room": "kitchen", "plan_x_cm": 10, "plan_y_cm": 20,
+         "verdict": "window", "crop": "03.png"},
+    ]), encoding="utf-8")
+
+    fitting = load_fittings(path)["kitchen"][0]
+    assert fitting.verdict == "window"
+    assert fitting.crop == "03.png"
+
+
+def test_a_fitting_that_reads_as_a_window_is_not_placed_and_is_counted():
+    """Differencing said it was bright in an ordinary capture too, so it is
+    glass. Placing it would hang a lamp in a window; dropping it in silence
+    would leave nobody able to say which step decided that."""
+    model = model_with(room("kitchen"))
+    fittings = {"kitchen": [Fitting(50.0, 50.0, 240.0, verdict="window"),
+                            Fitting(300.0, 300.0, 240.0, verdict="fitting")]}
+    lights, report = build_lights(
+        model, [light("light.kitchen", "kitchen")], fittings=fittings)
+
+    assert [(lt.x, lt.y) for lt in lights] == [(300.0, 300.0)]
+    assert report.daylight == [("kitchen", 1)]
+
+
+def test_an_unjudged_fitting_is_still_placed():
+    """"unseen" means the ordinary capture never photographed that spot, which
+    is not evidence about the fitting. Treating it as a window would discard
+    the ceiling fittings an ordinary capture covers worst."""
+    model = model_with(room("kitchen"))
+    fittings = {"kitchen": [Fitting(50.0, 50.0, 240.0, verdict="unseen")]}
+    lights, report = build_lights(
+        model, [light("light.kitchen", "kitchen")], fittings=fittings)
+
+    assert [(lt.x, lt.y) for lt in lights] == [(50.0, 50.0)]
+    assert report.daylight == []

@@ -100,6 +100,8 @@ class Report:
     measured: list[tuple[str, int, int]] = field(default_factory=list)
     # (area, fittings, entities) where several of each made the pairing a guess.
     ambiguous: list[tuple[str, int, int]] = field(default_factory=list)
+    # (area, count) of measured fittings the daylight difference called windows.
+    daylight: list[tuple[str, int]] = field(default_factory=list)
 
 
 def room_index(model: Model) -> dict[str, tuple[int, Level, Room]]:
@@ -243,7 +245,15 @@ def build_lights(
     for area, in_area in sorted(wanted.items()):
         level_index, level, room = rooms[area]
         poly = polygon_of(room)
-        measured = fittings.get(area) or []
+        # A window is bright in every capture and a fitting only when it is
+        # switched on, so `daylight` can say which is which -- see
+        # lidar2ha.daylight. "unseen" means the ordinary capture never
+        # photographed that spot, which is not evidence either way, so it is
+        # kept. Only a positive "window" is refused, and it is counted.
+        all_measured = fittings.get(area) or []
+        measured = [f for f in all_measured if f.verdict != "window"]
+        if len(measured) != len(all_measured):
+            report.daylight.append((area, len(all_measured) - len(measured)))
         default_elevation = elevation_for(room, level)
 
         # How measured fittings pair with entities. Most rooms in a real house
@@ -297,6 +307,13 @@ class Fitting:
     # Height above its level's floor. None when the fixture capture had no floor
     # to measure from, in which case the room's ceiling is used as before.
     elevation: float | None = None
+    # "fitting" | "window" | "unseen" from `daylight`, or None when the fixture
+    # pass was never differenced against an ordinary capture. Carried this far
+    # rather than filtered at load, so the refusal can be counted in the report
+    # instead of happening in silence.
+    verdict: str | None = None
+    # Which crop on the contact sheet this is, so a report line is answerable.
+    crop: str | None = None
 
 
 def load_fittings(path: str | Path) -> dict[str, list[Fitting]]:
@@ -321,7 +338,9 @@ def load_fittings(path: str | Path) -> dict[str, list[Fitting]]:
         elevation = entry.get("elevation_cm")
         out.setdefault(room, []).append(
             Fitting(float(x), float(y),
-                    float(elevation) if elevation is not None else None))
+                    float(elevation) if elevation is not None else None,
+                    verdict=entry.get("verdict"),
+                    crop=entry.get("crop")))
     return out
 
 
@@ -367,6 +386,13 @@ def print_report(report: Report, lights: list[Light]) -> None:
             print(f"    {area:<22} {found} fitting(s) and {entities} entities")
         print("    Which entity drives which fitting is not in the geometry. Split the")
         print("    room with `seams`, or name the pairing in project.yaml.")
+
+    if report.daylight:
+        print("\nIGNORED AS DAYLIGHT -- bright in an ordinary capture too, so a window:")
+        for area, count in report.daylight:
+            print(f"    {area:<22} {count} candidate(s)")
+        print("    Delete the \"verdict\" key from that record in fixtures_placed.json")
+        print("    to place it anyway; check the contact sheet crop first.")
 
     if report.duplicate_names:
         print("\n  SHARED FRIENDLY NAMES (often one fitting exposed several ways):")
