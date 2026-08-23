@@ -1542,6 +1542,31 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
                         "disagreeing rather than walls"],
         })
 
+    # Redundancy is the method, so a room the redundancy did not reach is a hole
+    # in it. Judged against the rest of THIS level rather than an absolute:
+    # scanning a level three times and having one room land on a single capture
+    # is a gap; a level only ever scanned twice is not.
+    depth = {len(d.group.per_capture) for d in decisions}
+    if depth and max(depth) > 1:
+        for decision in decisions:
+            if len(decision.group.per_capture) > 1:
+                continue
+            cand = cands[decision.winner_rooms[0]]
+            items.append({
+                "kind": "single_source_room",
+                "area": cand.room.ha_area,
+                "room": cand.label,
+                "capture": cand.capture,
+                "area_m2": round(cand.area_m2, 2),
+                "seen_by": 1,
+                "elsewhere_on_this_level": max(depth),
+                "reasons": [
+                    f"only {cand.capture} has ever seen this room, where the rest of "
+                    f"this level is covered by up to {max(depth)} captures. Nothing "
+                    f"can check it, and if that one capture is the wrong one nothing "
+                    f"will say so. Include this room next time you scan the level"],
+            })
+
     for suggestion in naming:
         items.append({
             "kind": f"name_{suggestion.verdict}",
@@ -1941,6 +1966,22 @@ def report(result: Combined) -> None:
             print(f"  {suggestion.verdict.upper():<11} {suggestion.capture}/"
                   f"{suggestion.room:<14} {suggestion.area_m2:5.1f} m2  "
                   f"{places or 'nothing named under it'}")
+
+    depth: dict[int, int] = {}
+    for decision in result.decisions:
+        seen = len(decision.group.per_capture)
+        depth[seen] = depth.get(seen, 0) + 1
+    if depth:
+        spread = "  ".join(f"{n} area(s) seen by {k}" for k, n in sorted(depth.items()))
+        print(f"\nredundancy: {spread}")
+        thin = [w for w in result.worklist if w["kind"] == "single_source_room"]
+        if thin:
+            print("  Nothing can check a room only one capture has seen, and if that")
+            print("  capture is the wrong one nothing will say so. Include these next")
+            print("  time you scan the level:")
+            for entry in thin:
+                print(f"    {entry['room']:<20} {entry['area_m2']:5.1f} m2   "
+                      f"only {entry['capture']}")
 
     built = result.model.levels[0]
     print(f"\nwalls: {len(built.walls)} kept, {len(result.dropped_walls)} dropped as "
