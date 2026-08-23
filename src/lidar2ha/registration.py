@@ -277,9 +277,18 @@ def main():
         print(f"  floor z       : {r.floor_z_m} m")
         print()
 
+    # A fixture pass still gets registered -- placefixtures needs exactly this
+    # transform to carry a fitting out of the fixture mesh. What it must not
+    # get is an elevation: the pass was walked pointing at ceilings with the
+    # geometry deliberately sacrificed, so its floor line is the one number
+    # here that is worth nothing, and `build` would use it as a level height.
     zs = [lv.registration.floor_z_m for lv in model.levels
           if lv.registration and lv.registration.floor_z_m is not None]
-    if len(zs) >= 2:
+    if model.role == "fixtures":
+        print("ELEVATIONS: not recorded -- this capture is a fixture pass.")
+        print("  The per-level registrations above are kept; they are what")
+        print("  placefixtures uses. The floor heights are not trustworthy.")
+    elif len(zs) >= 2:
         base = min(zs)
         print("ELEVATIONS (lowest floor as datum)")
         for lv in model.levels:
