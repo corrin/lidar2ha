@@ -194,6 +194,10 @@ def main():
     ap.add_argument("dxf")
     ap.add_argument("--csv")
     ap.add_argument("-o", "--out", default="home.json")
+    ap.add_argument("--role", choices=("geometry", "fixtures"), default="geometry",
+                    help="what this capture is for. A fixture pass is scanned with "
+                         "every light on and the geometry sacrificed, so marking it "
+                         "keeps its walls and floor heights out of the building")
     ap.add_argument("--default-height", type=float, default=2.4,
                     help="ceiling height in metres when the CSV has none")
     args = ap.parse_args()
@@ -355,10 +359,14 @@ def main():
             ],
         ))
 
-    model = Model(source=Path(args.dxf).name, units="cm", levels=levels)
+    model = Model(source=Path(args.dxf).name, role=args.role, units="cm", levels=levels)
     save_model(model, args.out)
 
-    print(f"wrote {args.out}")
+    print(f"wrote {args.out}  (role: {model.role})")
+    if model.role == "fixtures":
+        print("  A fixture pass. Its walls register onto its own mesh, which is what")
+        print("  placefixtures needs, but its geometry and floor heights are not")
+        print("  evidence about the building and later stages will refuse them.")
     for lv in model.levels:
         print(f"  {lv.name:<10} walls={len(lv.walls):>3} "
               f"rooms={len(lv.rooms)} doors={len(lv.doors)} "

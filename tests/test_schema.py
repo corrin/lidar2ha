@@ -104,3 +104,34 @@ def test_wall_texture_manifest_round_trips(tmp_path):
     entries = load_wall_textures(path)
     assert entries[0].right is None
     assert entries[0].left_coverage == 0.42
+
+
+# --------------------------------------------------------------------------- #
+# what a capture is FOR
+# --------------------------------------------------------------------------- #
+
+
+def test_a_model_is_a_survey_unless_it_says_otherwise():
+    """Every model.json already on disk predates this key, and `extra="forbid"`
+    means a required field would refuse the lot of them."""
+    assert Model(source="house.dxf").role == "geometry"
+    assert Model.model_validate_json('{"source": "house.dxf"}').role == "geometry"
+
+
+def test_a_fixture_pass_can_say_so_and_the_answer_survives_a_round_trip(tmp_path):
+    """A fixture pass is a deliberately bad scan: its walls and its floor
+    height are wrong on purpose. Nothing could previously tell it apart from a
+    survey, so it could be built into a house or contribute a level height with
+    no complaint anywhere."""
+    path = tmp_path / "m.json"
+    save_model(Model(source="fixture.dxf", role="fixtures"), path)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["role"] == "fixtures"
+    assert load_model(path).role == "fixtures"
+
+
+def test_a_role_nobody_defined_is_refused():
+    """The same reason every other key here is forbidden rather than ignored: a
+    typo that means "not geometry" would otherwise read as geometry."""
+    with pytest.raises(ValidationError):
+        Model(source="x.dxf", role="fixture")
