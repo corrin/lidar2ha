@@ -489,9 +489,18 @@ def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
     three, at 12.6 cm against 5.4 and 4.0. Every per-capture error figure
     reported against it was that capture's own error charged to everyone else.
     """
-    out: dict[str, float] = {}
+    return agreement_from(pairwise_medians(models), set(models))
+
+
+def pairwise_medians(models: Mapping[str, Model]) -> dict[tuple[str, str], float]:
+    """Median error of fitting every capture onto every other, both directions.
+
+    Computed once. The set of captures worth keeping is then worked out by
+    arithmetic over this matrix rather than by re-fitting, which matters because
+    each fit is seconds and the selection below iterates.
+    """
+    out: dict[tuple[str, str], float] = {}
     for name, model in models.items():
-        errors = []
         for other, target in models.items():
             if other == name:
                 continue
@@ -500,7 +509,17 @@ def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
             except ValueError:
                 continue
             if math.isfinite(error):
-                errors.append(error)
+                out[(name, other)] = error
+    return out
+
+
+def agreement_from(pairwise: Mapping[tuple[str, str], float],
+                   alive: set[str]) -> dict[str, float]:
+    """Each capture's best agreement with any OTHER capture still in the set."""
+    out: dict[str, float] = {}
+    for name in alive:
+        errors = [v for (src, tgt), v in pairwise.items()
+                  if src == name and tgt in alive and tgt != name]
         if errors:
             # The BEST pairing, not the mean of them. A capture is in the frame
             # if it lands well on ANY other capture; it is the odd one out if it
@@ -511,6 +530,42 @@ def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
             # bedroom out-rank a 10-room survey for the anchor.
             out[name] = float(min(errors))
     return out
+
+
+def consensus_set(pairwise: Mapping[tuple[str, str], float], everyone: set[str],
+                  limit_m: float) -> tuple[set[str], dict[str, float]]:
+    """Which captures belong in the union, decided WITHOUT a reference.
+
+    THE ANCHOR IS A COORDINATE FRAME, NOT A FILTER. Deciding membership by how
+    well each capture fits the anchor makes the union depend on which capture
+    happened to be chosen, and measured on one storey all three choices gave a
+    different answer -- 45, 40 and 43 walls, 9, 8 and 9 rooms, a different
+    capture discarded each time. One of those choices silently dropped a 1.5 m2
+    toilet that only the discarded capture resolves.
+
+    The cause is that the same pair straddles the limit in opposite directions:
+    scan8 onto scan4 lands at 4.5 cm and scan4 onto scan8 at 6.2 cm. Neither
+    number is more true than the other, so neither can be allowed to decide.
+
+    A capture is in the union if it lands well on at least one other capture
+    THAT IS ITSELF IN THE UNION. Iterated to a fixed point, because agreeing
+    only with a capture that turns out to be the odd one out is not agreement
+    with anything. On the data here it settles in one or two rounds.
+    """
+    # Reported for EVERY capture, including the ones about to be dropped: the
+    # figure that convicts the odd one out has to survive its conviction.
+    reported = agreement_from(pairwise, set(everyone))
+    alive = set(everyone)
+    while alive:
+        drop = {n for n in alive
+                if agreement_from(pairwise, alive).get(n, float("inf")) > limit_m}
+        if not drop:
+            break
+        # No floor at two. A pair that disagrees leaves nothing standing, and
+        # that is the correct answer -- one of them is invalid and two captures
+        # cannot say which, so the caller refuses rather than picking.
+        alive -= drop
+    return alive, reported
 
 
 def pick_reference(levels: dict[str, Level], agreement: Mapping[str, float], *,
@@ -1614,8 +1669,15 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     # whole multi-storey models.
     single = {name: models[name].model_copy(update={"levels": [level]})
               for name, level in levels.items()}
-    agreement = fits_onto_others(single) if len(single) > 1 else {}
-    ref = reference or pick_reference(levels, agreement)
+
+    # MEMBERSHIP IS DECIDED BEFORE THE ANCHOR IS, and without reference to it.
+    # Otherwise the union depends on which capture was chosen to hold the frame.
+    pairwise = pairwise_medians(single) if len(single) > 1 else {}
+    in_union, agreement = (consensus_set(pairwise, set(single),
+                                         max_median_cm * CM_TO_M)
+                           if pairwise else (set(single), {}))
+    ref = reference or pick_reference(
+        {n: lv for n, lv in levels.items() if n in in_union} or levels, agreement)
     if ref not in levels:
         raise ValueError(f"reference {ref!r} is not among {sorted(levels)}")
     if not levels[ref].walls:
@@ -1672,8 +1734,10 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
 
         p90_cm = None if fit["p90_m"] is None else fit["p90_m"] * M_TO_CM
         failures = []
-        # The grid first, because it answers a different question: not "how well
-        # did this land" but "could it possibly be here at all".
+        # The grid answers a different question from any error figure -- not
+        # "how well did this land" but "could it be here at all" -- and unlike
+        # the error it is not measured against the anchor's opinion of quality,
+        # so it stays a gate.
         off = off_grid_deg(math.degrees(fit["theta_rad"]) % 360, level, levels[ref])
         if off is not None and off > max_off_grid_deg:
             failures.append(
@@ -1681,20 +1745,35 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                 f"rotations {max_off_grid_deg:.0f} deg either side of a multiple of 90. "
                 f"This is the wrong basin, not a poor fit -- every wall found a "
                 f"neighbour, they are simply the wrong walls")
-        if fit["median_error_m"] * M_TO_CM > max_median_cm:
-            failures.append(f"median {fit['median_error_m'] * M_TO_CM:.1f} cm over "
-                            f"{fit['matched']:,} common points, against a limit of "
-                            f"{max_median_cm:.0f}")
-        if p90_cm is not None and p90_cm > max_p90_cm:
-            failures.append(f"p90 {p90_cm:.0f} cm, against a limit of {max_p90_cm:.0f}")
+        if name not in in_union:
+            best = agreement.get(name)
+            failures.append(
+                "agrees with no other capture on this level"
+                + (f" -- its closest is {best * M_TO_CM:.1f} cm, against a limit of "
+                   f"{max_median_cm:.0f}" if best is not None else "")
+                + ". This is the odd one out, and it is measured against the other "
+                  "captures rather than against the anchor, so the answer does not "
+                  "depend on which capture holds the frame")
         if failures:
             # Never on coverage: a capture that skipped a room still overlays
             # perfectly on the rooms it did see. See MAX_MEDIAN_CM.
             record.verdict = "discarded"
             record.fit = None
-            record.reason = ("the overlay does not land on the common area: "
-                             + "; ".join(failures))
+            record.reason = "; ".join(failures)
             rejected[name] = record.reason
+        elif (fit["median_error_m"] * M_TO_CM > max_median_cm
+              or (p90_cm is not None and p90_cm > max_p90_cm)):
+            # KEPT, and said out loud. This capture agrees with the level; it
+            # simply lands worse on THIS anchor than on another, and the same
+            # pair straddles the limit in opposite directions depending which
+            # way it is measured. Refusing it here is what made the union depend
+            # on the anchor and silently cost a toilet.
+            cautions[name] = (
+                f"lands at {fit['median_error_m'] * M_TO_CM:.1f} cm on {ref}, over the "
+                f"{max_median_cm:.0f} cm limit, but agrees with the level at "
+                f"{(agreement.get(name) or 0) * M_TO_CM:.1f} cm. It is kept, and its "
+                f"placement in this frame is the poorer for it -- anchoring on a "
+                f"different capture would place it better")
         aligned[name] = record
 
         share = coverage_is_uninformative(sample_along_walls(level.walls),
