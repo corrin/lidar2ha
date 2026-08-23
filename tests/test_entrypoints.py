@@ -211,3 +211,21 @@ def test_ha_main_reads_a_cached_registry(monkeypatch, tmp_path, capsys):
 
     run(monkeypatch, ha, "-o", registry)
     assert "light.a" in capsys.readouterr().out
+
+
+@pytest.mark.java
+def test_compiled_classes_can_load_on_the_bundled_java_8_jvm(toolchain):
+    """Sweet Home 3D ships a Java 8 JRE, which refuses class file version 61.
+
+    The failure mode is why this earns a test: class loading fails BEFORE
+    main(), so HeadlessRender's own uncaught-exception handler never installs,
+    and the bundled javaw.exe has no console -- the stack trace arrives as a
+    modal dialog on the user's screen rather than in any log.
+    """
+    from scan2ha import javabridge
+
+    classes = javabridge.compile_java(toolchain)
+    for name in ("HeadlessRender", "Sh3dWriter", "Sh3dVerify"):
+        raw = (classes / f"{name}.class").read_bytes()
+        version = int.from_bytes(raw[6:8], "big")
+        assert version <= 52, f"{name} is class file {version}; the render JVM caps at 52"

@@ -195,10 +195,24 @@ def _cache_dir() -> Path:
     return root / "scan2ha" / "jclasses"
 
 
+# Everything here targets Java 8, once, because everything here ultimately runs
+# on Sweet Home 3D. Its bundled runtime is a Java 8 JRE and refuses class files
+# above version 52, while a JDK 17 javac emits 61 -- and Java 8 bytecode runs
+# perfectly well on a modern JDK, so one target serves both JVMs and there is
+# nothing to be gained by compiling twice.
+#
+# Getting this wrong is unusually unpleasant to debug. The failure happens
+# during class loading, BEFORE main(), so HeadlessRender's own
+# uncaught-exception handler never installs -- and Sweet Home 3D ships only
+# javaw.exe, which has no console, so the stack trace arrives as a modal dialog
+# on the user's screen rather than in the log.
+JAVA_RELEASE = "8"
+
+
 def compile_java(tc: Toolchain, sources: list[str] | None = None) -> Path:
     """Compile our Java against the user's jars, cached by content hash.
 
-    The hash covers both our sources and the jars, so upgrading Sweet Home 3D
+    The hash covers our sources and the jars, so upgrading Sweet Home 3D
     rebuilds automatically instead of failing at runtime with a linkage error.
     """
     srcs = sorted(JAVA_SRC.glob("*.java")) if sources is None else [JAVA_SRC / s for s in sources]
@@ -214,14 +228,19 @@ def compile_java(tc: Toolchain, sources: list[str] | None = None) -> Path:
         if jar and jar.exists():
             h.update(str(jar).encode())
             h.update(str(jar.stat().st_mtime_ns).encode())
+    h.update(f"release={JAVA_RELEASE}".encode())
 
     out = _cache_dir() / h.hexdigest()[:16]
     if (out / ".ok").exists():
         return out
 
     out.mkdir(parents=True, exist_ok=True)
-    cp = tc.render_classpath(out)
-    cmd = [str(tc.javac), "-cp", cp, "-d", str(out), *(str(s) for s in srcs)]
+    # --release rather than -source/-target: it pins the platform API too, so a
+    # Java 8 target cannot reference a later method and fail only at runtime.
+    cmd = [str(tc.javac), "--release", JAVA_RELEASE, "-nowarn",
+           "-cp", tc.render_classpath(out), "-d", str(out),
+           *(str(s) for s in srcs)]
+
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise ToolchainError(
@@ -239,10 +258,24 @@ def run_writer(tc: Toolchain, classes: Path, main: str, *args: str) -> subproces
 
 
 def run_render(tc: Toolchain, classes: Path, log: Path, *args: str) -> subprocess.CompletedProcess:
-    """Run HeadlessRender on Sweet Home 3D's bundled 32-bit JVM.
+    """Run HeadlessRender the way Sweet Home 3D runs itself.
 
-    That JVM has no console, so `log` is where output goes; callers tail it for
-    progress. Falls back to the JDK only when no bundled runtime is found, which
+    The renderer is not pure Java. Java3D and YafaRay are native libraries, and
+    Sweet Home 3D ships them as DLLs beside its jars -- j3dcore-ogl, j3dcore-d3d
+    and a yafaray directory. A classpath alone gets you as far as loading the
+    scene and then:
+
+        Couldn't locate YafaRay library
+        no j3dcore-ogl-chk in java.library.path
+
+    So the native path matters as much as the classpath, and both must point at
+    the user's own installation. Assembling this environment piecemeal is the
+    recurring way to get it wrong; reproducing Sweet Home 3D's own is the way to
+    get it right.
+
+    That JVM has no console, so `log` is where output goes; callers should tail
+    it while the render runs, because a raytrace and a hang look identical from
+    outside. Falls back to the JDK only when no bundled runtime is found, which
     will fail on Java3D -- but failing with a clear log beats failing silently.
     """
     jvm = tc.render_java or tc.java
@@ -250,6 +283,9 @@ def run_render(tc: Toolchain, classes: Path, log: Path, *args: str) -> subproces
     cmd = [
         str(jvm),
         f"-DlogFile={log}",
+        f"-Djava.library.path={tc.sh3d_lib}",
+        # Sweet Home 3D finds YafaRay relative to this, not on the library path.
+        f"-Dcom.eteks.sweethome3d.j3d.yafarayPath={tc.sh3d_lib / 'yafaray'}",
         "-cp",
         tc.render_classpath(classes),
         "HeadlessRender",
