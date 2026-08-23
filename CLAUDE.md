@@ -8,9 +8,9 @@ This project is driven by **uv**. `uv.lock` and `.python-version` are part of th
 repo — do not delete them as build artefacts.
 
 ```bash
-uv run pytest -q                    # 313 tests, ~15 s
+uv run pytest -q                    # 263 tests, ~15 s
 uv run pytest tests/test_ha.py -q
-uv run pytest -q -k zha_group       # one test by name
+uv run pytest -q -k pole            # one test by name
 uv run pytest -q -m java            # needs Sweet Home 3D + a JDK
 uv run ruff check . --fix
 uv run mypy                         # src/lidar2ha only, and it stays clean
@@ -34,17 +34,22 @@ install.
 
 ## Working agreement
 
+- **Check what the branch is FOR before the first commit.** Read its log and any
+  open PR. If the work does not belong to that branch's purpose, start a new one.
+  Being on a branch other than `main` is not permission — this rule replaces one
+  that said "branch first if on `main`", which said nothing while seven commits of
+  unrelated feature work went onto a branch named `adopt-uv` and into its open PR.
 - **Commit at each logical milestone.** Do not accumulate a session's work into one
   uncommitted blob, and do not wait to be asked. One commit per self-contained
-  change, with a message that says why. Branch first if on `main`.
+  change, with a message that says why.
 - **Fail early.** Validate at the boundary and raise there. A stage that half-runs
   on bad input produces a plausible artefact that fails three stages later.
 - **Handle the unhappy cases first.** Guard clauses at the top of a function, the
   happy path unindented at the bottom.
 - **DRY, especially for maths.** Two hand-written copies of one transform is how a
-  sign error survives: both look right. `placefixtures.plan_cm_to_mesh_m` calls
-  `registration.transform` rather than re-deriving the rotation, and is tested as
-  the exact inverse of its own counterpart. Do the same.
+  sign error survives: both look right, and a reflected plan is still a plan.
+  `placefixtures.mesh_to_plan_cm` inverts `registration.transform` and is tested
+  against that forward transform rather than against its own algebra. Do the same.
 - **Comment the reasoning, not the code.** Every non-obvious block here explains the
   failure it prevents, usually with the real symptom that was observed. Match that
   register. `# increment the counter` is noise; `# The plugin sums sources sharing a
@@ -75,18 +80,17 @@ install.
 ## The rule this codebase is built around
 
 **Nothing is dropped in silence.** Almost every failure here is invisible: a light in
-the wrong room still renders, a group and its members just make a room brighter, a
-GLB with no object names opens perfectly and binds nothing. So every refusal is
+the wrong room still renders, an entity with no area simply never appears, a fitting
+detected in a window looks exactly like one detected in a lamp. So every refusal is
 counted and named in a report, and every guess says it is one.
 
 When adding a filter, a threshold or a skip, the question is not "is this right" but
 "if this is wrong, what does the user see?" If the answer is "nothing", the code is
 wrong however good the heuristic.
 
-Corollary: prefer three answers to two. `daylight.verdict_at` returns
-`fitting`/`window`/`unseen` because "the ordinary capture never photographed that
-spot" is not evidence either way, and folding it into either verdict would invent
-windows or place them.
+Corollary: prefer three answers to two. Where the evidence can be absent rather than
+positive or negative, "not known" is its own answer and must not be folded into
+either of the others.
 
 ## Architecture
 
@@ -118,11 +122,11 @@ coverage before believing anything downstream of it.
 
 - Writing a `.sh3d` needs only the model classes: an ordinary 64-bit **JDK** (not a
   JRE — Sweet Home 3D bundles a runtime with no compiler). `run_writer`.
-- **Anything touching Java3D** — the raytracer *and* the geometry-only OBJ export —
-  needs Sweet Home 3D's bundled 32-bit runtime. It ships only `javaw.exe`, so those
-  programs log to a file rather than stdout. `run_render(..., main_class=...)`.
+- **Anything touching Java3D** needs Sweet Home 3D's bundled 32-bit runtime, because
+  Java3D and YafaRay are 32-bit natives. It ships only `javaw.exe`, so those programs
+  log to a file rather than stdout. `run_render`.
 
-Do not inline a `java` invocation at a call site. Add a `main_class` instead.
+Do not inline a `java` invocation at a call site.
 
 Java sources compile on first use into a per-user cache keyed by a hash over the
 sources *and* the jars, so a Sweet Home 3D upgrade rebuilds automatically. Everything
@@ -146,21 +150,20 @@ Stages are argparse modules run as `python -m lidar2ha.<stage>`; the packaged
 subcommands live in `cli.py` (click). Some things exist in both — `lights` is a
 module *and* a subcommand — and both entry points must keep working.
 
-```
-polycam        DXF/CSV      -> model.json          (--role fixtures marks a fixture pass)
+```text
+polycam        DXF/CSV      -> model.json
 mesh           mesh.obj     -> floor elevations
 registration   model+mesh   -> per-level Registration
 textures_*     model+mesh   -> per-wall or tiled textures
 rooms          model+yaml   -> scanner names replaced by HA area ids, open plan merged
 seams                       -> split a room the scanner never split
 fixtures       fixture mesh -> bright compact clusters, with crops
-placefixtures  + geometry   -> those clusters in named rooms, optionally differenced
+placefixtures  + geometry   -> those clusters in named rooms
 contactsheet   + crops      -> the sheet a human approves
 ha / lights    + registry   -> every light.* entity placed in its room
 build (cli)    model.json   -> scene.tsv -> Sh3dWriter -> .sh3d -> Sh3dVerify
 render (cli)   .sh3d        -> raytraced overlays + floorplan.yaml
 deploy (cli)                -> sftp to /config/www/floorplan/
-export-glb     .sh3d        -> named .obj -> obj2gltf -> .glb
 ```
 
 `add-capture` is a deliberate stub that exits saying so (`_unbuilt` in `cli.py`).
@@ -198,6 +201,6 @@ nothing"`.
 ## Constants are guesses
 
 Everything here that looks like a threshold is tuned to one house, one scanning app,
-one capture. `MERGE_M`, `WINDOW_LUMA`, `CLUSTER_M`, `NEAR_MISS_CM` — expose them as
-flags, say in the docstring what evidence would change them, and do not present them
-as settled.
+one capture. `CLUSTER_M`, `LOW_COVERAGE`, `DROP_CM`, `SPREAD_FRACTION` — expose them
+as flags, say in the docstring what evidence would change them, and do not present
+them as settled.
