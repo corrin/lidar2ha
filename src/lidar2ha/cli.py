@@ -121,6 +121,14 @@ def doctor(sh3d_jar: str | None) -> None:
     _row(OK, "javac (JDK)", str(tc.javac))
     _row(OK, "java", str(tc.java))
 
+    try:
+        from .glb import find_obj2gltf
+        _row(OK, "obj2gltf", " ".join(find_obj2gltf()))
+    except ToolchainError:
+        warnings += 1
+        _row(WARN, "obj2gltf", "not installed -- needed only by `export-glb`. "
+                               "npm install -g obj2gltf")
+
     if tc.render_java:
         _row(OK, "render JVM", str(tc.render_java))
     else:
@@ -541,6 +549,91 @@ def render_cmd(sh3d: Path, out: Path, project: Path | None, list_only: bool, pre
     if not result["card"]:
         raise SystemExit(f"no floorplan.yaml in {out} -- see {log}")
     click.echo(f"Next:  lidar2ha deploy {out}")
+
+
+# --------------------------------------------------------------------------- #
+# export-glb
+# --------------------------------------------------------------------------- #
+
+
+@cli.command(name="export-glb")
+@click.argument("sh3d", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--out", type=click.Path(path_type=Path), default=Path("home.glb"),
+              show_default=True, help="the .glb to write")
+@click.option("--keep-obj/--no-keep-obj", default=True, show_default=True,
+              help="keep the intermediate .obj and .mtl beside the .glb")
+def export_glb(sh3d: Path, out: Path, keep_obj: bool) -> None:
+    """Export the model as a named GLB, for a real-time 3D floor-plan card.
+
+    This is the other consumer of the same model: `render` raytraces it into
+    overlay images, and a 3D card loads the geometry and lights it live. The
+    card binds entities to objects BY NAME, so the only thing that makes the
+    file useful is that each object is called after its entity id -- which is
+    the one property the obvious conversion silently destroys. It is therefore
+    counted, here, every time.
+    """
+    from . import glb
+
+    try:
+        tc = javabridge.detect()
+        classes = javabridge.compile_java(tc)
+    except ToolchainError as exc:
+        click.echo(f"\n{exc}\n")
+        raise SystemExit("run `lidar2ha doctor` for the full picture") from exc
+
+    # obj2gltf resolves the .mtl and its textures relative to the .obj, so the
+    # intermediate has to live beside the target rather than in a temp dir.
+    out.parent.mkdir(parents=True, exist_ok=True)
+    obj = out.with_suffix(".obj")
+    log = out.with_suffix(".log")
+    log.unlink(missing_ok=True)
+
+    # ObjExport builds Java3D scene graphs even though it traces nothing, so it
+    # needs Sweet Home 3D's own 32-bit runtime -- and that runtime has no
+    # console, which is why there is a log to read rather than output to print.
+    click.echo(f"  exporting {sh3d} -> {obj} ...")
+    javabridge.run_render(tc, classes, log, str(sh3d), str(obj),
+                          main_class="ObjExport")
+    output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    if not obj.exists():
+        click.echo(output, nl=False)
+        raise SystemExit(f"ObjExport wrote no {obj} -- see {log}")
+    for line in output.splitlines():
+        if line.startswith("wrote ") or "skipped" in line or "Exception" in line:
+            click.echo(f"      {line}")
+
+    click.echo(f"  converting -> {out} ...")
+    try:
+        glb.convert(obj, out)
+    except ToolchainError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    before, survived, splits = glb.check_names(obj, out)
+    click.echo(f"  entity names: {len(before)} in the OBJ, "
+               f"{len(survived)} survived into the GLB")
+    lost = sorted(before - survived)
+    if lost:
+        click.echo(f"  LOST {len(lost)}: {', '.join(lost[:8])}"
+                   f"{' ...' if len(lost) > 8 else ''}")
+    if splits:
+        worst = max(splits.values())
+        click.echo(f"  {len(splits)} of them are split by material into up to {worst + 1} "
+                   f"nodes. Only the un-suffixed one carries the entity id, so a card "
+                   f"matching by name lights that part and not the rest.")
+    if before and not survived:
+        raise SystemExit(
+            "Every entity name was lost in the conversion. The GLB is valid and "
+            "completely inert -- a card matching entities by name will bind "
+            "nothing. Check that obj2gltf, not something else, did the conversion.")
+    if not before:
+        click.echo("  No entity-shaped names in the OBJ at all. The .sh3d's furniture "
+                   "is named after entity ids by `build --lights`; without that there "
+                   "is nothing for a card to bind to.")
+
+    if not keep_obj:
+        obj.unlink(missing_ok=True)
+        obj.with_suffix(".mtl").unlink(missing_ok=True)
+    click.echo(f"wrote  {out}")
 
 
 # --------------------------------------------------------------------------- #
