@@ -87,17 +87,32 @@ def load_wall_points(mesh_path, vertical_tol=0.20):
     return np.vstack(pts)
 
 
+def sample_segments(segments, step_m=0.05, include_end=True):
+    """Dense points along a list of (a, b) segments, in whatever unit they are.
+
+    `include_end` is the only difference between sampling an open run of wall
+    centrelines and sampling a closed room outline. On a ring the last point of
+    each edge is the first point of the next, so including it doubles every
+    corner and quietly weights corners twice in any nearest-neighbour statistic
+    taken over the result.
+    """
+    out = []
+    for a, b in segments:
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        n = max(2, int(np.linalg.norm(b - a) / step_m))
+        for t in np.linspace(0, 1, n, endpoint=include_end):
+            out.append(a + (b - a) * t)
+    return np.array(out) if out else np.empty((0, 2))
+
+
 def sample_along_walls(walls, step_m=0.05):
     """Dense points along DXF wall centrelines, in metres."""
-    out = []
-    for w in walls:
-        a = np.array([w.x_start, w.y_start]) * CM_TO_M
-        b = np.array([w.x_end, w.y_end]) * CM_TO_M
-        length = np.linalg.norm(b - a)
-        n = max(2, int(length / step_m))
-        for t in np.linspace(0, 1, n):
-            out.append(a + (b - a) * t)
-    return np.array(out)
+    return sample_segments(
+        [((w.x_start * CM_TO_M, w.y_start * CM_TO_M),
+          (w.x_end * CM_TO_M, w.y_end * CM_TO_M)) for w in walls],
+        step_m,
+    )
 
 
 def transform(pts, theta, tx, ty, mirror):
