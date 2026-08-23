@@ -443,6 +443,84 @@ def test_a_malformed_polygon_is_named_rather_than_skipped(house):
 
 
 # --------------------------------------------------------------------------- #
+# a small capture, whose coverage means nothing
+# --------------------------------------------------------------------------- #
+
+
+def test_a_small_capture_is_told_its_coverage_proves_nothing(house):
+    """A capture spanning a fraction of the reference lands inside it wherever
+    it is put, so it reports 100% coverage for a wrong placement as readily as
+    for a right one. Measured, a five-wall single room fitted a ten-room
+    reference at 100% coverage and 18.9 cm median while sitting 65 degrees out
+    and on top of the wrong room. Nothing reported distinguished it."""
+    one_room = house["midlevel_fixtures"].levels[0]
+    small = house["midlevel_fixtures"].model_copy(update={
+        "levels": [one_room.model_copy(update={
+            "walls": one_room.walls[:5], "rooms": one_room.rooms[:1]})]})
+    result = combining.combine({"midlevel": house["midlevel"], "small": small})
+    assert "small" in result.cautions
+    assert "coverage says nothing" in result.cautions["small"]
+
+
+def test_a_full_size_capture_is_not_cautioned(combined):
+    """The caution has to stay rare enough to read. A capture that genuinely
+    covers the level constrains its own rotation, and coverage means what it
+    says."""
+    assert combined.cautions == {}
+
+
+# --------------------------------------------------------------------------- #
+# what an unnamed room is standing on
+# --------------------------------------------------------------------------- #
+
+
+def named_house(house) -> dict[str, Model]:
+    """The reference with Home Assistant areas on it, as `rooms` leaves it."""
+    areas = {"Laundry": "laundry", "Kitchen": "kitchen", "Living Room": "living_room",
+             "Dining Room": "dining", "Other 1": "hallway", "Other 2": "pantry",
+             "Office 1": "kitchen", "Office 2": "boy_alcove"}
+    level = house["midlevel"].levels[0]
+    return {"midlevel": house["midlevel"].model_copy(update={
+        "levels": [level.model_copy(update={"rooms": [
+            r.model_copy(update={"ha_area": areas.get(str(r.name)),
+                                 "scanner_name": r.name,
+                                 "name": areas.get(str(r.name), r.name)})
+            for r in level.rooms]})]}),
+        "midlevel_fixtures": house["midlevel_fixtures"]}
+
+
+def test_a_room_on_new_ground_is_asked_about_rather_than_guessed(house):
+    """Nothing named stands under the bathroom, so it needs a name -- once, for
+    the place. That is a different question from a room the project has already
+    named under a different scanner label, and lumping the two together is what
+    makes naming cost a line per room per capture."""
+    result = combining.combine(named_house(house))
+    bathroom = next(n for n in result.naming if n.room == "Bathroom")
+    assert bathroom.verdict == "ask"
+    assert bathroom.places == []
+
+
+def test_a_name_is_suggested_and_never_written(house):
+    """Identity is not inferred in this project. A room named by overlap and
+    then believed is how a light ends up in the wrong room -- so the suggestion
+    goes to the work list and `ha_area` stays empty."""
+    result = combining.combine(named_house(house))
+    assert result.naming, "if this fails the test proves nothing"
+    for suggestion in result.naming:
+        room = next(r for r in result.model.levels[0].rooms
+                    if r.source == suggestion.capture and r.name == suggestion.room)
+        assert room.ha_area is None, "a suggestion was written into the model"
+
+
+def test_the_suggestion_reaches_the_work_list_with_what_to_do(house):
+    """A verdict with no instruction is another thing to look up."""
+    result = combining.combine(named_house(house))
+    entries = [w for w in result.worklist if w["kind"].startswith("name_")]
+    assert entries
+    assert all(w["reasons"] and w["reasons"][0] for w in entries)
+
+
+# --------------------------------------------------------------------------- #
 # refusals at the boundary
 # --------------------------------------------------------------------------- #
 

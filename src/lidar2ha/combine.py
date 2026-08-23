@@ -118,6 +118,24 @@ TANGLE_SIZE = 6
 # contradicting itself, which `seams` or a `merge:` entry repairs.
 SELF_OVERLAP_M2 = 0.5
 
+# When one already-named place covers this much of an unnamed room, say what it
+# looks like. Measured on a fresh 10-room capture: 7 rooms sat above 71% inside
+# exactly one named place, and the 3 that did not were three genuinely different
+# questions. Nothing is ever named automatically -- see `name_suggestions`.
+NAME_CONFIDENT_FRAC = 0.70
+# ...and when named places cover this much of a room between them without any
+# one of them dominating, the capture fused rooms rather than found a new one.
+NAME_COVERED_FRAC = 0.90
+
+# Below this share of the reference's footprint, a capture is small enough that
+# it fits inside the reference wherever it is put, so coverage says nothing about
+# whether the placement is right. Measured: a 5-wall single room against a
+# 10-room reference reported 100% coverage and 18.9 cm median while sitting 65
+# degrees and one room away from the truth. The value is a guess -- the real
+# question is whether the rotation minimum is sharp, and nothing measures that
+# yet -- so this reports doubt rather than refusing anything.
+SMALL_CAPTURE_RATIO = 0.35
+
 # The smallest piece of unclaimed floor worth calling a discovery. Differencing
 # two polygons that nearly coincide leaves residue along every shared wall line:
 # of six fragments measured on one level, two were 0.3 and 0.6 m2 slivers of
@@ -315,6 +333,40 @@ def one_level(model: Model, name: str | None) -> Level:
             f"--level NAME to choose one -- flattening two storeys into a single "
             f"plan lets a mirrored fit explain as much of it as the correct one")
     return model.levels[0]
+
+
+def spread_m2(points: np.ndarray) -> float:
+    """Convex-hull area of a point cloud, in m2. How much ground it spans."""
+    if len(points) < 3:
+        return 0.0
+    from shapely.geometry import MultiPoint
+    return float(MultiPoint([tuple(p) for p in points]).convex_hull.area)
+
+
+def coverage_is_uninformative(source: np.ndarray, reference: np.ndarray, *,
+                              ratio: float = SMALL_CAPTURE_RATIO) -> float | None:
+    """How small this capture is against the reference, when that makes coverage
+    a number to ignore. None when the capture is big enough for it to mean
+    something.
+
+    A SMALL CAPTURE LANDS ENTIRELY INSIDE A LARGE ONE WHEREVER YOU PUT IT, so it
+    reports 100% coverage for every wrong answer as readily as for the right
+    one. Worse, a handful of wall segments in a mostly-rectangular room is
+    nearly rotationally symmetric against a big floorplan: there are several
+    near-equal minima and the fitter picks one. Measured, a five-wall 9.8 m2
+    bedroom fitted a ten-room reference at 100% coverage and 18.9 cm median --
+    every number the pipeline reports looked fine -- while sitting 88% on top of
+    the hallway, 65 degrees from where it belongs.
+
+    Nothing currently measured separates that from a correct fit, so this does
+    not try to. It says the numbers cannot be read, which is the honest answer
+    and stops a confidently wrong placement being a silent one.
+    """
+    ref = spread_m2(reference)
+    if ref <= 0:
+        return None
+    share = spread_m2(source) / ref
+    return share if share < ratio else None
 
 
 def pick_reference(levels: dict[str, Level], roles: Mapping[str, str]) -> str:
@@ -936,6 +988,93 @@ def uncovered_floor(cands: list[Candidate], chosen: list[int],
 # --------------------------------------------------------------------------- #
 
 
+# Four different questions, and lumping them together as "unmapped" is what
+# makes naming cost one hand-written line per room per capture.
+NAMING_ADVICE = {
+    "looks_like": "this room stands almost entirely on one place the project has "
+                  "already named. Confirm it and add it to `rooms.<capture>` in "
+                  "project.yaml -- it is not named for you, because a room named by "
+                  "overlap and then believed is how a light ends up in the wrong room",
+    "split": "this room is covered by several already-named places at once, so the "
+             "capture fused rooms the project keeps apart. The question is which of "
+             "them it is, not what it is -- see `python -m lidar2ha.seams`",
+    "ambiguous": "half of this room stands on a named place and half on ground "
+                 "nothing has named. Neither a confirmation nor a fresh name will "
+                 "cover it; look at where the boundary actually falls",
+    "ask": "nothing named stands under this room, so it needs a name -- once, for "
+           "the place. Every later capture that sees it can then inherit that name "
+           "by overlap instead of being mapped again by hand",
+}
+
+
+@dataclass
+class Naming:
+    """What an unnamed room looks like it is, and how sure that is.
+
+    Four answers, not two, because they are four different questions to a
+    person. `ask` is the only one that needs a name invented.
+    """
+
+    capture: str
+    room: str
+    area_m2: float
+    verdict: Literal["looks_like", "split", "ambiguous", "ask"]
+    places: list[tuple[str, float]]
+
+
+def name_suggestions(cands: list[Candidate], chosen: list[int], *,
+                     confident: float = NAME_CONFIDENT_FRAC,
+                     covered: float = NAME_COVERED_FRAC) -> list[Naming]:
+    """For each unnamed room, which named place it is sitting on.
+
+    A SUGGESTION AND NEVER A DECISION. Nothing here writes `ha_area`: identity
+    is not inferred in this project, and a room named by overlap and then
+    believed is how a light ends up in the wrong room. What this removes is the
+    other failure -- being asked to name a room from a scanner label, when the
+    project already has a name for the place it stands on.
+
+    Scanner names cannot do this. They are assigned per capture and carry no
+    identity across them: in this house "Office" means the kitchen, an alcove,
+    or the actual office depending on which capture said it. Once captures share
+    a frame, PLACE is the thing that persists, and the mapping keyed on place
+    survives every capture that arrives afterwards.
+    """
+    named = [c for c in cands if c.named]
+    if not named:
+        return []
+
+    out = []
+    for index in chosen:
+        cand = cands[index]
+        if cand.named or cand.poly.area <= 0:
+            continue
+        places = []
+        for other in named:
+            if other.capture == cand.capture:
+                continue
+            share = cand.poly.intersection(other.poly).area / cand.poly.area
+            if share >= REPORT_CONTAINMENT:
+                places.append((str(other.room.ha_area), float(share)))
+        places.sort(key=lambda t: -t[1])
+        total = sum(share for _, share in places)
+
+        if places and places[0][1] >= confident:
+            verdict: Literal["looks_like", "split", "ambiguous", "ask"] = "looks_like"
+        elif total >= covered:
+            # Covered, but by several places at once: the capture fused rooms,
+            # so the question is WHICH of these it is, not what it is.
+            verdict = "split"
+        elif total < REPORT_CONTAINMENT:
+            # Genuinely new ground. This needs a name once ever, for the place,
+            # not once for every capture that later sees it.
+            verdict = "ask"
+        else:
+            # Half on a named place and half on ground nobody has named.
+            verdict = "ambiguous"
+        out.append(Naming(cand.capture, cand.label, cand.area_m2, verdict, places[:4]))
+    return sorted(out, key=lambda n: -n.area_m2)
+
+
 @dataclass
 class Combined:
     """Everything `combine` worked out, so the report and the tests share it."""
@@ -953,6 +1092,8 @@ class Combined:
     fragments: list[Fragment]
     sliver_m2: float
     slivers: int
+    cautions: dict[str, str]
+    naming: list[Naming]
     worklist: list[dict[str, Any]]
 
 
@@ -1028,6 +1169,7 @@ def capture_record(name: str, role: str, fit: Fit | None,
 
 def worklist(decisions: list[Decision], cands: list[Candidate],
              scores: dict[int, Score], fragments: list[Fragment],
+             naming: list[Naming],
              expected_areas: set[str] | None) -> list[dict[str, Any]]:
     """What to go and do about the house, which is the point of the exercise.
 
@@ -1093,6 +1235,17 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
                         "disagreeing rather than walls"],
         })
 
+    for suggestion in naming:
+        items.append({
+            "kind": f"name_{suggestion.verdict}",
+            "capture": suggestion.capture,
+            "room": suggestion.room,
+            "area_m2": round(suggestion.area_m2, 2),
+            "sits_on": [{"area": a, "fraction": round(f, 3)}
+                        for a, f in suggestion.places],
+            "reasons": [NAMING_ADVICE[suggestion.verdict]],
+        })
+
     for area in sorted((expected_areas or set()) - won_areas):
         items.append({
             "kind": "area_with_no_source",
@@ -1131,6 +1284,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
 
     # --- stage 1: one frame ------------------------------------------------
     fits: dict[str, Fit | None] = {ref: None}
+    cautions: dict[str, str] = {}
     for name, level in levels.items():
         if name == ref:
             continue
@@ -1156,6 +1310,14 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                               + ", ".join(why))
             continue
         fits[name] = fit
+        share = coverage_is_uninformative(sample_along_walls(level.walls),
+                                          sample_along_walls(levels[ref].walls))
+        if share is not None:
+            cautions[name] = (
+                f"spans {share * 100:.0f}% of the reference's footprint, so it fits "
+                f"inside it wherever it is placed and its {fit['coverage'] * 100:.0f}% "
+                f"coverage says nothing about whether the placement is right. Check "
+                f"this one against the house before believing the rooms below it")
 
     accepted = [n for n in levels if n in fits]
 
@@ -1211,6 +1373,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     walls_out, dropped = select_walls(offered)
 
     fragments, sliver_m2, slivers = uncovered_floor(cands, chosen, scores)
+    naming = name_suggestions(cands, chosen)
 
     # --- the model ----------------------------------------------------------
     base = levels[ref]
@@ -1233,8 +1396,8 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         model=model, reference=ref, candidates=cands, groups=groups, scores=scores,
         decisions=decisions, fits=fits, rejected=rejected, malformed=malformed,
         dropped_walls=dropped, fragments=fragments, sliver_m2=sliver_m2,
-        slivers=slivers,
-        worklist=worklist(decisions, cands, scores, fragments, expected_areas),
+        slivers=slivers, cautions=cautions, naming=naming,
+        worklist=worklist(decisions, cands, scores, fragments, naming, expected_areas),
     )
 
 
@@ -1268,6 +1431,9 @@ def report(result: Combined) -> None:
               f"{math.degrees(fit['theta_rad']) % 360:7.2f}° "
               f"{fit['median_error_m'] * M_TO_CM:7.1f}cm "
               f"{fit['coverage'] * 100:6.0f}% {p90:>8s}  {verdict}")
+
+    for name, why in result.cautions.items():
+        print(f"    ** {name}: {why}")
 
     for name, why in result.rejected.items():
         print(f"{name:22s} {'':9s} {'':>8s} {'':>8s} {'':>7s} {'':>8s}  REFUSED")
@@ -1348,13 +1514,23 @@ def report(result: Combined) -> None:
                       for d in result.decisions for i in d.winner_rooms
                       if not cands[i].named})
     if unnamed:
-        print("\nSTILL CARRYING SCANNER NAMES, so every label above for them is a "
-              "guess:")
+        print("\nSTILL CARRYING SCANNER NAMES, so every label above for them is a guess")
         print(f"  {', '.join(unnamed)}")
-        print("  A scanner name is not identity. Run `python -m lidar2ha.rooms` on each")
-        print("  capture BEFORE combining, and add them to `rooms.<capture>` in")
-        print("  project.yaml -- otherwise the work list asks you to identify rooms the")
-        print("  project has already named.")
+        print("  A scanner name is not identity, and it is not even stable across")
+        print("  captures: in this house \"Office\" has meant the kitchen, an alcove and")
+        print("  the actual office depending on which capture said it. Run")
+        print("  `python -m lidar2ha.rooms` per capture BEFORE combining.")
+
+    if result.naming:
+        print("\nWHAT THE UNNAMED ROOMS ARE STANDING ON")
+        print("  Suggestions, never decisions -- nothing below is written into the")
+        print("  model. Once captures share a frame, identity belongs to the PLACE, so")
+        print("  a room can be recognised by what it overlaps rather than by its label.")
+        for suggestion in result.naming:
+            places = "  ".join(f"{a} {f * 100:.0f}%" for a, f in suggestion.places)
+            print(f"  {suggestion.verdict.upper():<11} {suggestion.capture}/"
+                  f"{suggestion.room:<14} {suggestion.area_m2:5.1f} m2  "
+                  f"{places or 'nothing named under it'}")
 
     built = result.model.levels[0]
     print(f"\nwalls: {len(built.walls)} kept, {len(result.dropped_walls)} dropped as "
