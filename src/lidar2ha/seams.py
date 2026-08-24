@@ -38,12 +38,15 @@ import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import yaml
 from shapely.geometry import LineString, Polygon
 from shapely.ops import split as shapely_split
 from shapely.ops import unary_union
 
-from .schema import Level, Model, Room, load_model, save_model
+from .placefixtures import plan_cm_to_mesh_m
+from .schema import Level, Model, Registration, Room, load_model, save_model
+from .thresholds import FloorSample, Support, boundary_support
 
 MIN_PIECE_CM2 = 1_000     # 0.1 m2; below this it is a sliver, not a room
 EXTEND_CM = 10_000        # push the seam well past the polygon so it cuts clean
@@ -230,6 +233,20 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
     return tiling
 
 
+@dataclass(frozen=True)
+class Edge:
+    """A boundary between two pieces, and what the floor said about it.
+
+    `support` is None when nothing measured it, and `unmeasured` says why. That
+    is deliberately not the same answer as a measured boundary the floor does
+    not corroborate: an unbroken floor is evidence, and no mesh is not.
+    """
+
+    between: tuple[str, str]
+    support: Support | None = None
+    unmeasured: str = ""
+
+
 @dataclass
 class Cut:
     """One declaration, carried out."""
@@ -237,6 +254,50 @@ class Cut:
     level: str
     room: str
     tiling: Tiling
+    edges: list[Edge] = field(default_factory=list)
+
+
+def shared_edge(a: Polygon, b: Polygon) -> tuple[tuple[float, float],
+                                                 tuple[float, float]] | None:
+    """The ends of the line two pieces have in common, in plan cm."""
+    common = a.intersection(b)
+    if common.is_empty or "Line" not in common.geom_type:
+        return None
+    if common.geom_type == "MultiLineString":
+        common = max(common.geoms, key=lambda g: g.length)
+    if common.length < 1:
+        return None
+    ends = list(common.coords)
+    return (ends[0][0], ends[0][1]), (ends[-1][0], ends[-1][1])
+
+
+def boundaries_of(pieces: list[Piece], reg: Registration | None,
+                  floor: FloorSample | None, **kw) -> list[Edge]:
+    """Ask the mesh about every boundary the declaration invented.
+
+    Corroboration is all this can offer. An open plan's boundaries are as often
+    a matter of use as of construction -- the table end against the sofa end --
+    and the floor beneath one of those does not change at all. So a boundary the
+    floor cannot see is not a wrong boundary, and nothing here refuses one.
+    """
+    edges: list[Edge] = []
+    for i, one in enumerate(pieces):
+        for other in pieces[i + 1:]:
+            ends = shared_edge(one.poly, other.poly)
+            if ends is None:
+                continue
+            between = (one.name, other.name)
+            if floor is None:
+                edges.append(Edge(between, unmeasured="no mesh given"))
+                continue
+            if reg is None:
+                edges.append(Edge(between, unmeasured="level is unregistered"))
+                continue
+            a_m, b_m = plan_cm_to_mesh_m(np.array(ends), reg)
+            support = boundary_support(tuple(a_m), tuple(b_m), floor, **kw)
+            edges.append(Edge(between, support) if support is not None
+                         else Edge(between, unmeasured="floor never photographed"))
+    return edges
 
 
 def outline_of(section: dict, where: str) -> Polygon:
@@ -318,12 +379,20 @@ def tile(target: Room, declaration: dict, where: str, **limits) -> Tiling:
 
 
 def apply(model: Model, declarations: list[dict], *,
-          level_name: str | None = None, **limits) -> list[Cut]:
+          level_name: str | None = None, floor: FloorSample | None = None,
+          **limits) -> list[Cut]:
     """Carry out every declaration, in place. Returns what to report.
 
     Ceilings are left unmeasured on purpose. The fused room's height is one
     number standing for two spaces -- inheriting it would carry the very error
     the split exists to remove, and it would look like a measurement.
+
+    A boundary the floor does not corroborate is reported and NOT marked
+    provisional. That flag means "the best geometry available is still not good
+    enough, go and re-scan", and no rescan will ever reveal the edge of a sofa
+    end. Setting it on every open-plan room forever would fire on everything and
+    so mean nothing, which is the same reason the redundancy report judges a
+    level against itself rather than an absolute.
     """
     levels = [lv for lv in model.levels
               if level_name is None or lv.name == level_name]
@@ -374,7 +443,8 @@ def apply(model: Model, declarations: list[dict], *,
                 ))
 
             lv.rooms = [r for r in lv.rooms if r is not target] + new_rooms
-            cuts.append(Cut(lv.name, wanted, tiling))
+            cuts.append(Cut(lv.name, wanted, tiling,
+                            boundaries_of(tiling.pieces, lv.registration, floor)))
 
     return cuts
 
@@ -389,6 +459,19 @@ def report(cuts: list[Cut]) -> None:
                   f"   {len(piece.poly.exterior.coords) - 1:>2} pts")
             for reason in piece.reasons:
                 print(f"     provisional: {reason}")
+
+        for edge in cut.edges:
+            pair_of = " | ".join(edge.between)
+            if edge.support is None:
+                print(f"  {pair_of:<24} NOT LOOKED AT   {edge.unmeasured}")
+            elif edge.support.corroborated:
+                print(f"  {pair_of:<24} CORROBORATED    "
+                      f"{edge.support.step_cm:.0f} cm step, colour shift "
+                      f"{edge.support.colour:.0f}, "
+                      f"{abs(edge.support.offset_cm):.0f} cm off the line")
+            else:
+                print(f"  {pair_of:<24} DECLARED        "
+                      "the floor does not change here")
 
         t = cut.tiling
         for name, m2 in sorted(t.spill_m2.items()):

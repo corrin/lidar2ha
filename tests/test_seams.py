@@ -17,7 +17,8 @@ from __future__ import annotations
 import pytest
 from shapely.geometry import Polygon
 
-from lidar2ha.schema import Level, Model, Room
+from conftest import synthetic_floor
+from lidar2ha.schema import Level, Model, Registration, Room
 from lidar2ha.seams import apply, sections_of, split_room
 
 
@@ -298,3 +299,82 @@ def test_the_declared_level_is_the_only_one_cut():
     apply(model, [DECLARATION], level_name="Mid Level")
 
     assert [r.name for r in model.levels[1].rooms] == ["open_living"]
+
+
+# --- asking the floor whether the declared boundary is really there --------
+#
+# The room is 400 x 300 cm and the registration is the identity, so plan
+# centimetres divided by 100 are mesh metres and the synthetic floor's feature
+# at y = 2 m sits under a boundary declared at y = 200 cm.
+
+ACROSS = {
+    "room": "open_living",
+    "sections": [{"name": "kitchen", "box": [[0, 0], [400, 200]]},
+                 {"name": "lounge", "box": [[0, 200], [400, 300]]}],
+}
+
+
+def registered(**over) -> Model:
+    model = fused(**over)
+    model.levels[0].registration = Registration(
+        theta_deg=0, tx_m=0, ty_m=0, mirror=False,
+        median_error_m=0.01, coverage=1.0)
+    return model
+
+
+def test_a_step_under_the_boundary_corroborates_the_declaration():
+    model = registered()
+    cuts = apply(model, [ACROSS], level_name="Mid Level",
+                 floor=synthetic_floor(step_at=0.19))
+
+    assert len(cuts[0].edges) == 1
+    assert cuts[0].edges[0].support.corroborated
+
+
+def test_an_unbroken_floor_leaves_the_declaration_standing():
+    """The sofa-end boundary. It is real, and the mesh cannot see it.
+
+    Refusing here, or moving the line, would make the one kind of boundary an
+    open plan is actually made of impossible to state.
+    """
+    model = registered()
+    cuts = apply(model, [ACROSS], level_name="Mid Level",
+                 floor=synthetic_floor())
+
+    assert [r.name for r in model.levels[0].rooms] == ["kitchen", "lounge"]
+    assert not cuts[0].edges[0].support.corroborated
+
+
+def test_an_uncorroborated_boundary_is_not_marked_provisional():
+    """`provisional` means "go and re-scan", and no rescan finds a sofa end.
+
+    Setting it on every open-plan room forever would fire on everything and so
+    mean nothing -- the reason the redundancy report judges a level against
+    itself rather than against an absolute.
+    """
+    model = registered()
+    apply(model, [ACROSS], level_name="Mid Level", floor=synthetic_floor())
+
+    for room in model.levels[0].rooms:
+        assert not room.provisional
+        assert room.provisional_reason == []
+
+
+def test_no_mesh_is_not_looked_at_rather_than_unsupported():
+    cuts = apply(registered(), [ACROSS], level_name="Mid Level")
+
+    edge = cuts[0].edges[0]
+    assert edge.support is None
+    assert edge.unmeasured == "no mesh given"
+
+
+def test_an_unregistered_level_cannot_be_asked():
+    """Without a registration the plan frame and the mesh frame are unrelated.
+
+    Measuring anyway would sample the floor somewhere else entirely and report
+    whatever it happened to find there as evidence about this boundary.
+    """
+    cuts = apply(fused(), [ACROSS], level_name="Mid Level",
+                 floor=synthetic_floor(step_at=0.19))
+
+    assert cuts[0].edges[0].unmeasured == "level is unregistered"
