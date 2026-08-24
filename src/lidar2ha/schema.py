@@ -94,6 +94,11 @@ class Room(_Base):
     # Scanner rooms fused into this one where its split was an artefact -- an
     # open kitchen came back as "Kitchen" plus "Office 1".
     merged_from: list[str] = Field(default_factory=list)
+    # The room this one was cut out of, where the fusion was the architecture
+    # rather than the scanner: an open plan has no wall to segment on, so every
+    # capture fuses it and no amount of rescanning separates the kitchen end
+    # from the dining end. Set by `seams`, and the counterpart to `merged_from`.
+    split_from: str | None = None
 
     # --- provenance --------------------------------------------------------
     # Which capture this geometry came from. Several scans of the same space
