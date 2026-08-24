@@ -6,10 +6,20 @@ the numbers in this module -- 270.84 degrees, 88% coverage, 3% overlap, 23
 duplicate walls -- came off real scans, and invented geometry would agree with
 whatever the code happened to do.
 
-`scan7.json` is the third, and it earns its place by being the capture that
-showed `midlevel` was the worst of the three rather than the yardstick. Two
-captures cannot show that: it takes a third for "fits onto the others" to mean
-anything.
+`scan7.json` is the third, and it earns its place by making "fits onto the
+others" mean anything at all: two captures cannot say which of them is wrong.
+
+THE BAD CAPTURE HERE IS SYNTHETIC, AND THAT IS DELIBERATE. `midlevel` used to
+play the part -- it read 10.5 cm against its friendliest partner and 27.4 cm
+against the other two, and half this module was written around it being the
+outlier. It was not a bad scan. The fitter could not place it: coarse search
+translated by centroid alignment, which is metres wrong whenever two captures
+cover different parts of a storey, so the correct basin never reached
+refinement. Placed properly it reads 5.2 cm and all three real captures agree.
+
+So a module about telling a bad capture from a good one now makes its own, with
+`degraded()`. Its badness is arithmetic and cannot quietly evaporate the next
+time the fitter improves.
 
 The mid-level bathroom is the case the whole module exists for: it is in the
 fixture pass, absent from the geometry pass, and before `combine` it vanished
@@ -39,29 +49,78 @@ from lidar2ha.schema import Capture, Level, Model, Room, Wall, load_model
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-@pytest.fixture(scope="module")
-def house() -> dict[str, Model]:
-    """Two real mid-level captures -- a pair that does NOT overlay.
+def degraded(model: Model, scale: float = 1.06) -> Model:
+    """One capture with a scanner's drift baked in: the plan stretched about
+    its own centre.
 
-    They fit each other at 7.4 cm, over the 5 cm bound, and with only two
-    captures nothing can say which of them is at fault. Kept as a fixture
-    because that refusal is itself a behaviour worth testing.
+    A RIGID FIT CANNOT ABSORB A SCALE ERROR, so the misfit this leaves is
+    irreducible and grows with distance from the centre -- which is what drift
+    accumulated over a walk around a storey actually looks like. It also leaves
+    the wall grid exactly where it was, so this capture is bad in the way the
+    error bound catches and NOT in the way the grid catches, which is the pair
+    of failures the module needs to keep apart.
+
+    1.06 is chosen to land where this house's real bad capture was once
+    measured: 29.6 cm from the walls the others agree about, against 27.4 cm.
     """
-    return {name: load_model(FIXTURES / f"{name}.json")
-            for name in ("midlevel", "midlevel_fixtures")}
+    lv = model.levels[0]
+    xs = [w.x_start for w in lv.walls] + [w.x_end for w in lv.walls]
+    ys = [w.y_start for w in lv.walls] + [w.y_end for w in lv.walls]
+    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+
+    def fx(v: float) -> float:
+        return cx + (v - cx) * scale
+
+    def fy(v: float) -> float:
+        return cy + (v - cy) * scale
+
+    walls = [w.model_copy(update={"x_start": fx(w.x_start), "y_start": fy(w.y_start),
+                                  "x_end": fx(w.x_end), "y_end": fy(w.y_end)})
+             for w in lv.walls]
+    rooms = [r.model_copy(update={"points": [(fx(x), fy(y)) for x, y in r.points]})
+             for r in lv.rooms]
+    return model.model_copy(update={
+        "levels": [lv.model_copy(update={"walls": walls, "rooms": rooms})]})
 
 
 @pytest.fixture(scope="module")
-def trio() -> dict[str, Model]:
-    """All three real captures of the mid level, including the bad one."""
+def real() -> dict[str, Model]:
+    """The three real captures of the mid level, all of which are good.
+
+    Measured against the walls the others agree about: 5.5, 4.0 and 4.3 cm.
+    """
     return {name: load_model(FIXTURES / f"{name}.json")
             for name in ("midlevel", "midlevel_fixtures", "scan7")}
 
 
 @pytest.fixture(scope="module")
+def house(real) -> dict[str, Model]:
+    """Two captures that do NOT overlay, and no third to break the tie.
+
+    They fit each other at 10.1 cm, over the 5 cm bound, and with only two
+    captures nothing can say which of them is at fault. Kept as a fixture
+    because that refusal is itself a behaviour worth testing.
+    """
+    return {"midlevel_fixtures": real["midlevel_fixtures"],
+            "drifted": degraded(real["midlevel"])}
+
+
+@pytest.fixture(scope="module")
+def trio(real) -> dict[str, Model]:
+    """Two good real captures and one that has been given a scanner's drift.
+
+    The set most of this module runs on, because most of it is about telling
+    those apart. `drifted` lands 29.6 cm from the walls the other two agree
+    about, 10.4x the best of them.
+    """
+    return {"midlevel_fixtures": real["midlevel_fixtures"],
+            "scan7": real["scan7"], "drifted": degraded(real["midlevel"])}
+
+
+@pytest.fixture(scope="module")
 def combined(trio):
-    """The mid level as it actually resolves: `midlevel` discarded, `scan7`
-    anchoring, `midlevel_fixtures` accepted at 3.5 cm."""
+    """The mid level as it resolves: `drifted` discarded, `scan7` anchoring,
+    `midlevel_fixtures` accepted at 2.9 cm."""
     return combining.combine(trio)
 
 
@@ -75,8 +134,8 @@ def room_named(model: Model, name: str) -> Room:
 
 
 def test_the_bathroom_survives_combining(combined):
-    """The room the whole module exists for. It is absent from `midlevel`, and
-    before this stage it disappeared from the model with nothing saying so."""
+    """The room the whole module exists for. Before this stage it disappeared
+    from the model with nothing saying so."""
     bathroom = room_named(combined.model, "Bathroom")
     assert bathroom.source is not None
 
@@ -124,7 +183,7 @@ def test_the_fixture_pass_lands_where_it_was_measured_to(combined):
     rewritten wrong, however plausible the rooms look afterwards."""
     fit = combined.fits["midlevel_fixtures"]
     assert math.degrees(fit["theta_rad"]) % 360 == pytest.approx(179.71, abs=0.1)
-    assert fit["median_error_m"] * 100 == pytest.approx(3.5, abs=0.3)
+    assert fit["median_error_m"] * 100 == pytest.approx(2.9, abs=0.3)
 
 
 def test_coverage_never_decides_whether_a_capture_is_kept(combined):
@@ -136,7 +195,7 @@ def test_coverage_never_decides_whether_a_capture_is_kept(combined):
     The discarded capture here has HIGHER coverage than an accepted one, which
     is the cleanest possible demonstration that coverage is not the signal."""
     kept = combined.aligned["midlevel_fixtures"]
-    dropped = combined.aligned["midlevel"]
+    dropped = combined.aligned["drifted"]
     assert kept.verdict == "accepted" and dropped.verdict == "discarded"
     assert "coverage" not in dropped.reason
     assert dropped.candidates[0]["coverage"] > 0.8, "a well-covered capture was dropped"
@@ -146,7 +205,7 @@ def test_a_multi_level_capture_is_refused_by_name(trio):
     """Flattening two storeys into one point cloud lets a mirrored fit explain
     as much of it as the correct one. The prototype folded such a capture in
     without a word."""
-    base = trio["midlevel"]
+    base = trio["scan7"]
     two_storey = base.model_copy(update={
         "levels": [base.levels[0],
                    base.levels[0].model_copy(update={"name": "Floor 2"})]})
@@ -353,7 +412,7 @@ def test_a_duplicate_wall_is_dropped_and_a_new_one_kept(combined):
     assert by_source["scan7"] == 32, "the anchor keeps every wall it drew"
     assert 0 < by_source["midlevel_fixtures"] < 29, (
         "the fixture pass contributed only the walls nothing else had")
-    assert "midlevel" not in by_source, "a discarded capture supplied walls"
+    assert "drifted" not in by_source, "a discarded capture supplied walls"
 
 
 def test_a_capture_is_never_deduplicated_against_itself():
@@ -407,7 +466,7 @@ def test_a_refused_capture_stays_on_the_record(combined):
     photographed a ceiling -- on this level the discarded capture is exactly
     that. Dropping it from `Model.captures` makes "never offered" and "offered
     and refused" indistinguishable to everything downstream."""
-    refused = next(c for c in combined.model.captures if c.id == "midlevel")
+    refused = next(c for c in combined.model.captures if c.id == "drifted")
     assert refused.verdict == "discarded"
     assert refused.refused_because
     assert refused.median_error_m is not None, "the measurement that refused it"
@@ -593,14 +652,15 @@ def test_a_quarter_turn_is_always_a_valid_rotation(trio):
 def test_the_grid_and_the_error_bound_catch_different_things(trio):
     """Neither channel subsumes the other, which is why both exist.
 
-    `midlevel` is squarely on the grid and still a bad scan -- only the error
-    bound sees that. A capture in the wrong basin lands within the bound on the
-    matched points it found -- only the grid sees that."""
+    `drifted` is stretched about its own centre, which leaves its wall grid
+    exactly where it was -- squarely on the grid and still a bad scan, which
+    only the error bound sees. A capture in the wrong basin lands within the
+    bound on the matched points it found -- only the grid sees that."""
     result = combining.combine(trio)
-    dropped = result.aligned["midlevel"]
+    dropped = result.aligned["drifted"]
     assert dropped.verdict == "discarded"
     assert "off the building's wall grid" not in dropped.reason, \
-        "midlevel is in the right basin; it is simply a poor scan"
+        "a scale error leaves the grid alone; this is a poor scan, not a basin"
     assert "agrees with no other capture" in dropped.reason
 
 
@@ -750,7 +810,7 @@ def test_a_capture_that_votes_on_the_walls_flatters_itself(trio):
     """Why the ballot leaves one out. Measured on all three fixtures in one
     frame, letting a capture vote on the average it is then measured against
     moves it from 8.1 cm to 2.5 cm -- and the same flattery, 4.7 cm of it, lands
-    on `midlevel`, the capture the measurement exists to catch."""
+    on `drifted`, the capture the measurement exists to catch."""
     models = dict(trio)
     poses = combining.global_poses(combining.pairwise_fits(models), set(models))
     clouds = {n: combining.place_in_frame(models[n].levels[0], poses[n])
@@ -791,15 +851,15 @@ def test_the_averaged_walls_are_no_denser_than_one_capture(trio):
 
 
 def test_the_averaged_walls_put_more_air_around_the_bad_capture(trio):
-    """The whole point of the change. `midlevel` is the capture this house's
-    mid-level model was wrongly built from.
+    """The whole point of the change.
 
-    Against its friendliest single partner it reads 10.5 cm, 3.0x the best.
-    Against the walls the other two agree about it reads 27.4 cm, 8.0x."""
+    Against its friendliest single partner `drifted` reads 10.5 cm, 3.6x the
+    best. Against the walls the other two agree about it reads 29.6 cm, 10.4x
+    -- the averaged figure is what puts real air around it."""
     onto = combining.fits_onto_others(trio)
     best = min(onto.values())
-    assert onto["midlevel"] / best > 5.0, (
-        f"midlevel only {onto['midlevel'] / best:.1f}x the best")
+    assert onto["drifted"] / best > 5.0, (
+        f"drifted only {onto['drifted'] / best:.1f}x the best")
 
 
 def test_two_agreeing_captures_say_so_rather_than_claim_a_consensus(combined):
@@ -811,7 +871,7 @@ def test_two_agreeing_captures_say_so_rather_than_claim_a_consensus(combined):
     assert "not a consensus" in basis["midlevel_fixtures"]
     # ...and the discarded capture, which had no vote to remove, is measured
     # against the average the other two actually made.
-    assert basis["midlevel"].startswith("the averaged walls")
+    assert basis["drifted"].startswith("the averaged walls")
 
 
 # --------------------------------------------------------------------------- #
@@ -824,11 +884,11 @@ def test_agreement_is_read_across_captures_not_against_the_anchor(trio):
     a capture partly measures how much it is being used as the yardstick; how
     well it fits onto ground others agree about does not.
 
-    On this level the two differ completely: `midlevel` receives good fits and
+    On this level the two differ completely: `drifted` receives good fits and
     lands badly, which is what a bad anchor looks like from the inside."""
     onto = combining.fits_onto_others(trio)
-    assert onto["midlevel"] > 2 * onto["scan7"]
-    assert onto["midlevel"] > 2 * onto["midlevel_fixtures"]
+    assert onto["drifted"] > 2 * onto["scan7"]
+    assert onto["drifted"] > 2 * onto["midlevel_fixtures"]
 
 
 def test_the_anchor_is_the_capture_that_resolves_the_most_rooms(trio):
@@ -836,25 +896,25 @@ def test_the_anchor_is_the_capture_that_resolves_the_most_rooms(trio):
     a capture that fused three rooms into one makes that fusion the baseline and
     turns every capture that got it right into a disagreement.
 
-    Wall count, which used to choose, cannot see this: `midlevel` and `scan7`
+    Wall count, which used to choose, cannot see this: `drifted` and `scan7`
     have 32 walls each and 8 rooms against 10."""
     result = combining.combine(trio)
     assert result.reference == "scan7"
-    assert len(trio["midlevel"].levels[0].walls) == len(trio["scan7"].levels[0].walls), \
+    assert len(trio["drifted"].levels[0].walls) == len(trio["scan7"].levels[0].walls), \
         "if these differ the test proves nothing about wall count"
 
 
 def test_a_capture_far_worse_than_the_rest_may_not_anchor(trio):
-    """`midlevel` has more rooms than the fixture pass and would out-rank it on
-    room count alone, but it lands 3.2x worse than the best on ground the others
-    agree about. An anchor charges its own error to everything else."""
+    """`drifted` has more rooms than the fixture pass and would out-rank it on
+    room count alone, but it lands 10.4x worse than the best on ground the
+    others agree about. An anchor charges its own error to everything else."""
     onto = combining.fits_onto_others(trio)
     levels = {n: m.levels[0] for n, m in trio.items()}
     assert combining.pick_reference(levels, onto) == "scan7"
     # ...and with the outlier gone, room count decides between the rest.
-    rest = {n: onto[n] for n in ("midlevel", "midlevel_fixtures")}
+    rest = {n: onto[n] for n in ("drifted", "midlevel_fixtures")}
     assert combining.pick_reference(
-        {n: levels[n] for n in rest}, rest) == "midlevel"
+        {n: levels[n] for n in rest}, rest) == "drifted"
 
 
 def test_two_captures_that_disagree_refuse_and_name_both(house):
@@ -878,7 +938,7 @@ def test_the_poor_capture_is_named_as_the_outlier(trio):
     but it must not be silent, because every other number moves when it is in."""
     result = combining.combine(trio)
     best = min(result.agreement.values())
-    assert result.agreement["midlevel"] / best > combining.OUTLIER_RATIO
+    assert result.agreement["drifted"] / best > combining.OUTLIER_RATIO
 
 
 # --------------------------------------------------------------------------- #
@@ -944,7 +1004,7 @@ def test_one_capture_is_refused_rather_than_combined_with_itself(house):
     """Combining needs something to combine. Returning the single capture
     unchanged would make `combine` look like it had done something."""
     with pytest.raises(ValueError, match="at least two"):
-        combining.combine({"midlevel": house["midlevel"]})
+        combining.combine({"drifted": house["drifted"]})
 
 
 def test_a_named_reference_that_is_not_there_is_refused(house):
