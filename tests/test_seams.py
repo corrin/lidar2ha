@@ -14,11 +14,13 @@ quite fit the scanned polygon it is cutting.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from shapely.geometry import Polygon
 
 from conftest import synthetic_floor
-from lidar2ha.schema import Level, Model, Registration, Room
+from lidar2ha.schema import Level, Model, Registration, Room, load_model
 from lidar2ha.seams import apply, sections_of, split_room
 
 
@@ -317,6 +319,63 @@ def test_the_declared_level_is_the_only_one_cut():
     apply(model, [DECLARATION], level_name="Mid Level")
 
     assert [r.name for r in model.levels[1].rooms] == ["open_living"]
+
+
+# --- on the real house ------------------------------------------------------
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_the_real_fused_room_tiles_exactly():
+    """The mid level's fixture pass returned ONE 46 m2 polygon for four rooms.
+
+    Sixteen points and concave, which a synthetic rectangle is not: the cut
+    lines cross real re-entrant corners, and a clip there is what produced the
+    GeometryCollection that broke the first version of this.
+
+    Deliberately NOT compared against `midlevel.json`'s own four-way
+    segmentation of the same ground. The two captures are in different frames —
+    measured here, the fixture pass's fused room contains 67% of one geometry
+    room and 0% of three others — so an area comparison across them would be
+    measuring the missing plan-to-plan fit, not the split.
+    """
+    model = load_model(FIXTURES / "midlevel_fixtures.json")
+    fused = next(r for r in model.levels[0].rooms if r.name == "Living Room")
+    assert (fused.ceiling_high_cm - fused.ceiling_low_cm) == 70, \
+        "the 180-250 cm range is the evidence one polygon covers two spaces"
+
+    cuts = apply(model, [{
+        "room": "Living Room",
+        "sections": [
+            {"name": "kitchen", "box": [[-800, -400], [-500, 400]]},
+            {"name": "dining", "box": [[-500, -400], [-200, 400]]},
+            {"name": "lounge", "box": [[-200, -400], [400, 400]]},
+        ]}])
+
+    pieces = {p.name: p.poly.area / 10_000 for p in cuts[0].tiling.pieces}
+    assert pieces == pytest.approx(
+        {"kitchen": 10.45, "dining": 16.90, "lounge": 18.68}, abs=0.02)
+    assert sum(pieces.values()) == pytest.approx(46.02, abs=0.02)
+
+
+def test_the_real_fused_ceiling_range_does_not_survive():
+    """180-250 cm is not a sloped ceiling, it is two rooms averaged.
+
+    Carrying `sloped` forward would mark all three pieces as candidates for a
+    void through the slab above, on the strength of a number that was never a
+    measurement of any one of them.
+    """
+    model = load_model(FIXTURES / "midlevel_fixtures.json")
+    apply(model, [{
+        "room": "Living Room",
+        "sections": [{"name": "kitchen", "box": [[-800, -400], [-300, 400]]},
+                     {"name": "lounge", "box": [[-300, -400], [400, 400]]}]}])
+
+    cut = [r for r in model.levels[0].rooms if r.split_from == "Living Room"]
+    assert len(cut) == 2
+    for room in cut:
+        assert room.ceiling_low_cm is None and room.ceiling_high_cm is None
+        assert not room.sloped
 
 
 # --- asking the floor whether the declared boundary is really there --------
