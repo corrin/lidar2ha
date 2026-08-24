@@ -15,6 +15,7 @@ a stage that cannot start.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -105,6 +106,53 @@ def test_seams_main_runs(monkeypatch, tmp_path, model_path):
 
     split = load_model(out)
     assert {r.name for r in split.levels[0].rooms} == {"west", "east"}
+
+
+def test_seams_main_runs_from_a_project(monkeypatch, tmp_path, model_path):
+    """The declarative path, which is the one a pipeline re-run goes through."""
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        'split:\n'
+        '  Ground:\n'
+        '    - room: "Living Room"\n'
+        '      sections:\n'
+        '        - name: kitchen\n'
+        '          box: [[0, 0], [200, 400]]\n'
+        '        - name: lounge\n'
+        '          box: [[200, 0], [600, 400]]\n', encoding="utf-8")
+    out = tmp_path / "split.json"
+    run(monkeypatch, seams, model_path, "-o", out,
+        "--project", project, "--level", "Ground")
+
+    assert {r.name for r in load_model(out).levels[0].rooms} == {"kitchen", "lounge"}
+
+
+def test_split_command_runs(tmp_path, model_path):
+    """The click subcommand, whose path resolution is its own code."""
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+
+    (tmp_path / "project.yaml").write_text(
+        'split:\n'
+        '  "Mid Level":\n'
+        '    - room: "Living Room"\n'
+        '      seam: [[300, -50], [300, 450]]\n'
+        '      names: [west, east]\n', encoding="utf-8")
+    combined = tmp_path / "mid_level_combined.json"
+    combined.write_bytes(model_path.read_bytes())
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as work:
+        result = runner.invoke(cli, [
+            "split", "Mid Level",
+            "--project", str(tmp_path / "project.yaml"),
+            "--model", str(combined),
+            "-o", str(Path(work) / "split.json")])
+
+        assert result.exit_code == 0, result.output
+        rooms_out = load_model(Path(work) / "split.json").levels[0].rooms
+        assert {r.name for r in rooms_out} == {"west", "east"}
 
 
 def test_preview_main_runs(monkeypatch, tmp_path, model_path):

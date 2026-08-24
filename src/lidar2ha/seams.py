@@ -135,11 +135,23 @@ def _repair(poly: Polygon) -> Polygon:
     return poly if poly.is_valid else poly.buffer(0)
 
 
-def _largest(geom):
+def _polygons(geom) -> list[Polygon]:
+    """Only the parts with area.
+
+    Clipping or differencing polygons that share an edge -- which is every
+    interesting case here, since the sections are meant to abut -- returns a
+    GeometryCollection with the shared edges in it as dangling lines. A line is
+    not a thin room; it is the seam itself, and it has no floor.
+    """
+    parts = getattr(geom, "geoms", [geom])
+    return [g for g in parts if g.geom_type == "Polygon" and not g.is_empty]
+
+
+def _largest(geom) -> tuple[Polygon, float]:
     """The real polygon out of a clip that came back in several pieces."""
-    if geom.geom_type != "MultiPolygon":
-        return geom, 0.0
-    parts = sorted(geom.geoms, key=lambda g: g.area, reverse=True)
+    parts = sorted(_polygons(geom), key=lambda g: g.area, reverse=True)
+    if not parts:
+        return Polygon(), 0.0
     return parts[0], sum(g.area for g in parts[1:])
 
 
@@ -174,14 +186,14 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
     clipped: list[tuple[str, Polygon]] = []
     for name, traced in sections:
         traced = _repair(traced)
-        part = traced.intersection(poly)
+        inside = traced.intersection(poly)
+        if traced.area - inside.area > 0:
+            tiling.spill_m2[name] = (traced.area - inside.area) / CM2_PER_M2
+        part, offcut = _largest(inside)
         if part.is_empty:
             raise ValueError(
                 f"section {name!r} lies entirely outside {parent_name!r} -- "
                 "read off the wrong preview, or the wrong room named?")
-        if traced.area - part.area > 0:
-            tiling.spill_m2[name] = (traced.area - part.area) / CM2_PER_M2
-        part, offcut = _largest(part)
         if offcut:
             tiling.offcut_m2[name] = offcut / CM2_PER_M2
         clipped.append((name, part))
@@ -210,11 +222,8 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
     # --- and give the floor nobody traced somewhere to go --------------------
     tiling.pieces = [Piece(name, part) for name, part in kept]
     left = poly.difference(unary_union([p for _, p in kept]))
-    bits = list(left.geoms) if left.geom_type == "MultiPolygon" else [left]
     remainders = []
-    for bit in bits:
-        if bit.is_empty:
-            continue
+    for bit in _polygons(left):
         if bit.area / CM2_PER_M2 >= min_remainder_m2:
             # Kept under the parent's name: it is a real part of the house, and
             # folding it into a neighbour would hide the trace that needs fixing.
@@ -272,7 +281,7 @@ def shared_edge(a: Polygon, b: Polygon) -> tuple[tuple[float, float],
 
 
 def boundaries_of(pieces: list[Piece], reg: Registration | None,
-                  floor: FloorSample | None, **kw) -> list[Edge]:
+                  floor: FloorSample | None) -> list[Edge]:
     """Ask the mesh about every boundary the declaration invented.
 
     Corroboration is all this can offer. An open plan's boundaries are as often
@@ -294,7 +303,7 @@ def boundaries_of(pieces: list[Piece], reg: Registration | None,
                 edges.append(Edge(between, unmeasured="level is unregistered"))
                 continue
             a_m, b_m = plan_cm_to_mesh_m(np.array(ends), reg)
-            support = boundary_support(tuple(a_m), tuple(b_m), floor, **kw)
+            support = boundary_support(tuple(a_m), tuple(b_m), floor)
             edges.append(Edge(between, support) if support is not None
                          else Edge(between, unmeasured="floor never photographed"))
     return edges
@@ -345,7 +354,9 @@ def find_room(level: Level, wanted: str) -> Room | None:
     return None
 
 
-def tile(target: Room, declaration: dict, where: str, **limits) -> Tiling:
+def tile(target: Room, declaration: dict, where: str, *,
+         overlap_slop_m2: float = OVERLAP_SLOP_M2,
+         min_remainder_m2: float = MIN_REMAINDER_M2) -> Tiling:
     """Whichever form the declaration took, as pieces.
 
     Both forms come back through here so the report, the provenance and the
@@ -363,7 +374,9 @@ def tile(target: Room, declaration: dict, where: str, **limits) -> Tiling:
     if has_sections:
         sections = [(s["name"], outline_of(s, where))
                     for s in declaration["sections"]]
-        return sections_of(poly, sections, parent_name=label, **limits)
+        return sections_of(poly, sections, parent_name=label,
+                           overlap_slop_m2=overlap_slop_m2,
+                           min_remainder_m2=min_remainder_m2)
 
     names = declaration.get("names")
     if not names or len(names) != 2:
@@ -380,7 +393,8 @@ def tile(target: Room, declaration: dict, where: str, **limits) -> Tiling:
 
 def apply(model: Model, declarations: list[dict], *,
           level_name: str | None = None, floor: FloorSample | None = None,
-          **limits) -> list[Cut]:
+          overlap_slop_m2: float = OVERLAP_SLOP_M2,
+          min_remainder_m2: float = MIN_REMAINDER_M2) -> list[Cut]:
     """Carry out every declaration, in place. Returns what to report.
 
     Ceilings are left unmeasured on purpose. The fused room's height is one
@@ -418,7 +432,9 @@ def apply(model: Model, declarations: list[dict], *,
 
         for lv, target in hits:
             where = f"{lv.name}/{wanted}"
-            tiling = tile(target, declaration, where, **limits)
+            tiling = tile(target, declaration, where,
+                          overlap_slop_m2=overlap_slop_m2,
+                          min_remainder_m2=min_remainder_m2)
             ceilings = declaration.get("ceilings")
 
             new_rooms = []
