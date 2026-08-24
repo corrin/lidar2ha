@@ -159,8 +159,8 @@ mesh           mesh.obj     -> floor elevations
 registration   model+mesh   -> per-level Registration
 textures_*     model+mesh   -> per-wall or tiled textures
 rooms          model+yaml   -> scanner names replaced by HA area ids, open plan merged
-seams                       -> split a room the scanner never split
 combine        many models  -> one level, geometry selected per room + a work list
+seams / split  model+yaml   -> a fused room cut into the rooms it is used as
 fixtures       fixture mesh -> bright compact clusters, with crops
 placefixtures  + geometry   -> those clusters in named rooms, optionally differenced
 contactsheet   + crops      -> the sheet a human approves
@@ -173,6 +173,37 @@ export-glb     .sh3d        -> named .obj -> obj2gltf -> .glb
 
 `add-capture` is a deliberate stub that exits saying so (`_unbuilt` in `cli.py`).
 An honest `--help` matching the documented workflow beats a short one hiding gaps.
+
+### `merge:` is keyed by capture and `split:` by level, and that is the point
+
+Both live in `project.yaml` and they are not symmetric, because the things they
+repair are not. A scanner's over-segmentation belongs to the capture that made
+it -- another scan of the same room splits it somewhere else, or not at all --
+so `merge:` is per capture. An open plan's fusion belongs to the building: there
+is no wall to segment on, every capture fuses the kitchen end and the dining end
+identically, and no rescanning separates them. So `split:` is per level, runs
+after `combine`, and its coordinates are plan centimetres in the combined
+model's own frame -- which `combine` writes with the anchor's registration, so
+there is exactly one frame and one mesh to measure against.
+
+The boundary is a DECLARATION, and mesh evidence corroborates it rather than
+authorising it. `thresholds.boundary_support` returns three answers -- a step or
+flooring change found, a floor measured and continuous, or a strip never
+photographed -- and none of them refuses or moves the line. An open-plan
+boundary is as often a matter of use as of construction, and the floor beneath a
+sofa end is the same floor as under the table.
+
+Consequently an uncorroborated boundary does NOT set `Room.provisional`. That
+flag means "the best geometry available is still not good enough, go and
+re-scan", and no rescan reveals a sofa end -- setting it would fire on every
+open-plan room forever and so mean nothing.
+
+The pieces tile the parent EXACTLY. Hand-traced outlines never match a scanned
+polygon, so a trace that overshoots is clipped, one that collides is resolved in
+declaration order up to a slop and refused above it, and floor nobody claimed
+becomes its own flagged piece rather than a quietly smaller room. Ceilings are
+inherited by neither form: one number standing for two spaces is the error the
+split exists to remove.
 
 ### Combining captures: align or discard
 
