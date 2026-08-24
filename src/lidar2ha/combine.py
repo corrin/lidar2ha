@@ -52,7 +52,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -60,7 +60,14 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 from .compare import MATCH_LIMIT_M, Fit, plan_fit
-from .registration import register, sample_along_walls, sample_segments, transform
+from .registration import grid_bearing as _wall_grid_bearing
+from .registration import (
+    grid_concentration,
+    register,
+    sample_along_walls,
+    sample_segments,
+    transform,
+)
 from .rooms import polygon_of
 from .schema import Capture, Level, Model, Room, Wall, load_model, save_model
 
@@ -109,6 +116,20 @@ MAX_P90_CM = 120.0
 # dominant grid and a few skewed rooms is fine, but a radial or hexagonal plan
 # has no single grid and this check does not apply to it.
 MAX_OFF_GRID_DEG = 5.0
+
+# Below this, `grid_bearing` is averaging directions that agree on nothing and
+# the angle it returns carries no information, so the off-grid check abstains
+# rather than refusing. Measured over twelve captures of this house: eleven
+# score 0.59 to 1.00, and the twelfth scores 0.341 and reports a bearing 4 deg
+# from what every other capture of its own storey reports. That capture then
+# reads ~5 deg off grid against all of them and was discarded for it, while
+# overlaying at 3.0 cm across 100% of its walls.
+#
+# One house, one gap, so this is a guess sitting in it. What would move it: a
+# capture scoring under 0.5 whose bearing IS corroborated by another capture of
+# the same storey, or a genuinely non-rectilinear building, where no capture
+# scores above it and the check should be off entirely.
+MIN_GRID_CONCENTRATION = 0.5
 
 # Below this coverage, say loudly that the capture covers ground the reference
 # does not. A signal to act on, never a reason to reject.
@@ -412,24 +433,11 @@ def one_level(model: Model, name: str | None) -> Level:
 def grid_bearing(level: Level) -> float | None:
     """This capture's dominant wall direction, in degrees mod 90.
 
-    Length-weighted circular mean taken on FOUR TIMES the angle, because mod 90
-    means a wall and its perpendicular describe the same grid -- quadrupling
-    wraps them onto each other so they reinforce instead of cancelling.
-
-    None when the capture has no walls to average.
+    None when the capture has no walls to average. The bearing alone does not
+    say whether it means anything -- `registration.grid_concentration` does,
+    and every gate on this number has to ask it first.
     """
-    sx = sy = 0.0
-    for wall in level.walls:
-        dx, dy = wall.x_end - wall.x_start, wall.y_end - wall.y_start
-        length = math.hypot(dx, dy)
-        if length < 1e-9:
-            continue
-        angle = 4 * math.atan2(dy, dx)
-        sx += length * math.cos(angle)
-        sy += length * math.sin(angle)
-    if sx == 0.0 and sy == 0.0:
-        return None
-    return (math.degrees(math.atan2(sy, sx)) / 4) % 90.0
+    return _wall_grid_bearing(level.walls)
 
 
 def off_grid_deg(theta_deg: float, source: Level, target: Level) -> float | None:
@@ -454,12 +462,53 @@ def off_grid_deg(theta_deg: float, source: Level, target: Level) -> float | None
     squarely on the grid can still be a bad scan, which the grid cannot see.
 
     None when either capture has no walls to take a bearing from.
+
+    This describes the TRANSFORM and says nothing about the capture. A rotation
+    outside the four classes means the search returned something inadmissible,
+    which is a different claim from the capture being unplaceable -- four of
+    this house's captures were refused on this number and every one of them has
+    a correct fit squarely on the grid. Ask `grid_verdict` before refusing.
     """
     g_src, g_tgt = grid_bearing(source), grid_bearing(target)
     if g_src is None or g_tgt is None:
         return None
     off = (theta_deg - (g_tgt - g_src)) % 90.0
     return min(off, 90.0 - off)
+
+
+class GridCheck(NamedTuple):
+    """What the wall grid has to say about one rotation. Three answers."""
+
+    verdict: Literal["on_grid", "off_grid", "no_grid"]
+    off_deg: float | None
+    concentration: float
+
+
+def grid_verdict(theta_deg: float, source: Level, target: Level, *,
+                 max_off_grid_deg: float = MAX_OFF_GRID_DEG,
+                 min_concentration: float = MIN_GRID_CONCENTRATION) -> GridCheck:
+    """Whether this rotation is admissible, or whether there is no grid to ask.
+
+    THREE ANSWERS, because the two-answer version refuses captures it cannot
+    read. A bearing is a mean over wall directions and returns an angle for any
+    walls whatever, including ones agreeing on nothing -- so `off_grid` and
+    `on_grid` do not exhaust the question, and calling an unreadable grid
+    `off_grid` discarded a capture overlaying at 3.0 cm across 100% of its
+    walls.
+
+    `no_grid` is not a pass. It says this channel abstained and the rotation
+    stands uncorroborated, which is a thing to report and hand to a human, not
+    a thing to act on.
+    """
+    off = off_grid_deg(theta_deg, source, target)
+    weakest = min(grid_concentration(source.walls), grid_concentration(target.walls))
+    if off is None:
+        return GridCheck("no_grid", None, weakest)
+    if off <= max_off_grid_deg:
+        return GridCheck("on_grid", off, weakest)
+    if weakest < min_concentration:
+        return GridCheck("no_grid", off, weakest)
+    return GridCheck("off_grid", off, weakest)
 
 
 def spread_m2(points: np.ndarray) -> float:
@@ -1895,6 +1944,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
             reference: str | None = None, max_median_cm: float = MAX_MEDIAN_CM,
             max_p90_cm: float = MAX_P90_CM, edge: float = EDGE_CONTAINMENT,
             max_off_grid_deg: float = MAX_OFF_GRID_DEG,
+            min_grid_concentration: float = MIN_GRID_CONCENTRATION,
             expected_areas: set[str] | None = None) -> Combined:
     """The five stages, with no printing. `main` reports what this returns."""
     if len(models) < 2:
@@ -1996,13 +2046,26 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         # "how well did this land" but "could it be here at all" -- and unlike
         # the error it is not measured against the anchor's opinion of quality,
         # so it stays a gate.
-        off = off_grid_deg(math.degrees(fit["theta_rad"]) % 360, level, levels[ref])
-        if off is not None and off > max_off_grid_deg:
+        grid = grid_verdict(math.degrees(fit["theta_rad"]) % 360, level, levels[ref],
+                            max_off_grid_deg=max_off_grid_deg,
+                            min_concentration=min_grid_concentration)
+        if grid.verdict == "off_grid":
+            assert grid.off_deg is not None
             failures.append(
-                f"sits {off:.1f} deg off the building's wall grid, which admits only "
-                f"rotations {max_off_grid_deg:.0f} deg either side of a multiple of 90. "
-                f"This is the wrong basin, not a poor fit -- every wall found a "
-                f"neighbour, they are simply the wrong walls")
+                f"sits {grid.off_deg:.1f} deg off the building's wall grid, which "
+                f"admits only rotations {max_off_grid_deg:.0f} deg either side of a "
+                f"multiple of 90. No rotation outside those classes can relate two "
+                f"captures of one building, so the SEARCH has returned something "
+                f"inadmissible -- which is not the same as this capture being bad, "
+                f"and says nothing about whether it can be placed")
+        elif grid.verdict == "no_grid" and grid.off_deg is not None:
+            cautions[name] = (
+                f"sits {grid.off_deg:.1f} deg off the wall grid, and IS NOT REFUSED "
+                f"FOR IT: the walls here agree on a grid only to "
+                f"{grid.concentration:.2f} against the {min_grid_concentration:.2f} "
+                f"this check needs, so the bearing it is measured against is scatter "
+                f"rather than a direction. Nothing corroborates the rotation -- check "
+                f"this one against the house")
         if name not in in_union:
             # MEMBERSHIP IS DECIDED ON THE PAIRWISE FIGURE, so that is the one
             # quoted against the limit. The averaged-wall figure is reported
