@@ -1,9 +1,15 @@
-"""Cutting an over-merged room in two.
+"""Cutting an over-merged room into the rooms a person actually uses.
 
 The counterpart to rooms.merge. A scanner sometimes fuses spaces a person keeps
 separate, and reports one ceiling height for both — so the split has to be
 geometric, and the pieces have to come back in a predictable order or the
 caller's names and measured ceilings attach to the wrong halves.
+
+An open plan fuses them for a better reason: there is no wall to segment on, so
+every capture agrees and no rescanning separates the kitchen end from the dining
+end. The boundary is then a declaration rather than a measurement, and the tests
+below are mostly about what happens when a hand-traced declaration does not
+quite fit the scanned polygon it is cutting.
 """
 
 from __future__ import annotations
@@ -11,7 +17,8 @@ from __future__ import annotations
 import pytest
 from shapely.geometry import Polygon
 
-from lidar2ha.seams import split_room
+from lidar2ha.schema import Level, Model, Room
+from lidar2ha.seams import apply, sections_of, split_room
 
 
 def rect(x0, y0, x1, y1) -> Polygon:
@@ -63,3 +70,231 @@ def test_slivers_are_discarded_rather_than_becoming_rooms():
     """Cutting along the very edge should not yield a zero-width second room."""
     pieces = split_room(rect(0, 0, 400, 300), (0, -50), (0, 350))
     assert len(pieces) == 1
+
+
+# --- traced sections ------------------------------------------------------
+#
+# A line cannot say "the kitchen is the L-shaped corner", so a declaration may
+# instead trace each section. Hand-traced outlines do not tile a scanned polygon
+# exactly, and every way they fail to has to end up in the report.
+
+ROOM = rect(0, 0, 400, 300)          # 12 m2
+
+
+def sections_of_boxes(*named) -> list[tuple[str, Polygon]]:
+    return [(name, rect(*box)) for name, box in named]
+
+
+def test_the_pieces_tile_the_room_exactly():
+    """The one invariant the whole tiling exists to keep.
+
+    Every square centimetre of the fused room ends up in exactly one piece.
+    A gap here is floor that silently stops existing, which is the failure this
+    codebase is built around -- and it renders as a room that is simply smaller
+    than the house.
+    """
+    tiling = sections_of(
+        ROOM,
+        sections_of_boxes(("kitchen", (0, 0, 180, 300)),
+                          ("lounge", (220, 0, 400, 300))),
+        parent_name="open_living")
+    assert sum(p.poly.area for p in tiling.pieces) == pytest.approx(ROOM.area)
+
+
+def test_a_section_traced_past_the_wall_does_not_grow_the_room():
+    """A trace read off a preview overshoots; annexing the neighbour is silent."""
+    tiling = sections_of(
+        ROOM,
+        sections_of_boxes(("kitchen", (-100, 0, 200, 300)),
+                          ("lounge", (200, 0, 400, 300))),
+        parent_name="open_living")
+
+    kitchen = next(p for p in tiling.pieces if p.name == "kitchen")
+    assert kitchen.poly.area == pytest.approx(200 * 300)
+    assert tiling.spill_m2["kitchen"] == pytest.approx(3.0)
+
+
+def test_overlapping_sections_beyond_the_slop_are_refused():
+    """Two traces claiming the same real floor cannot be resolved by guessing.
+
+    Whichever way it went, the wrong half of the room gets the light -- forever,
+    and with nothing on screen to say so.
+    """
+    with pytest.raises(ValueError, match="overlap"):
+        sections_of(
+            ROOM,
+            sections_of_boxes(("kitchen", (0, 0, 200, 300)),
+                              ("lounge", (100, 0, 400, 300))),
+            parent_name="open_living")
+
+
+def test_tracing_slop_is_resolved_and_the_area_moved_is_reported():
+    tiling = sections_of(
+        ROOM,
+        sections_of_boxes(("kitchen", (0, 0, 200, 300)),
+                          ("lounge", (195, 0, 400, 300))),
+        parent_name="open_living")
+
+    assert sum(p.poly.area for p in tiling.pieces) == pytest.approx(ROOM.area)
+    assert tiling.moved_m2 == pytest.approx(0.15)
+
+
+def test_unclaimed_floor_becomes_a_flagged_piece_rather_than_vanishing():
+    """`uncovered_floor`'s lesson at room scale: the strip nobody traced.
+
+    Kept under the parent's name so it is visible on the preview and can be
+    traced properly next time round, not folded into whichever neighbour
+    happened to be nearest.
+    """
+    tiling = sections_of(
+        ROOM,
+        sections_of_boxes(("kitchen", (0, 0, 180, 300)),
+                          ("lounge", (220, 0, 400, 300))),
+        parent_name="open_living")
+
+    remainder = [p for p in tiling.pieces if "unclaimed_remainder" in p.reasons]
+    assert len(remainder) == 1
+    assert remainder[0].name == "open_living"
+    assert remainder[0].poly.area == pytest.approx(40 * 300)
+    assert tiling.remainder_m2 == pytest.approx(1.2)
+
+
+def test_a_sliver_of_unclaimed_floor_is_absorbed_and_counted():
+    """Below the threshold it is tracing slop, not a room -- but still counted."""
+    tiling = sections_of(
+        ROOM,
+        sections_of_boxes(("kitchen", (0, 0, 190, 300)),
+                          ("lounge", (210, 0, 400, 300))),
+        parent_name="open_living")
+
+    assert not [p for p in tiling.pieces if "unclaimed_remainder" in p.reasons]
+    assert tiling.absorbed_m2 == pytest.approx(0.6)
+    assert sum(p.poly.area for p in tiling.pieces) == pytest.approx(ROOM.area)
+
+
+def test_one_section_is_not_a_split():
+    with pytest.raises(ValueError, match="two sections"):
+        sections_of(ROOM, sections_of_boxes(("kitchen", (0, 0, 200, 300))),
+                    parent_name="open_living")
+
+
+def test_a_section_wholly_outside_the_room_is_refused():
+    """Coordinates read off the wrong preview, or the wrong room named."""
+    with pytest.raises(ValueError, match="outside"):
+        sections_of(
+            ROOM,
+            sections_of_boxes(("kitchen", (900, 0, 1000, 300)),
+                              ("lounge", (0, 0, 400, 300))),
+            parent_name="open_living")
+
+
+def test_a_seam_and_the_equivalent_sections_agree():
+    """Two ways to say one thing is how a sign error survives in this repo.
+
+    If these ever disagree, one of the two paths has drifted.
+    """
+    by_line = split_room(ROOM, (200, -50), (200, 350))
+    by_trace = sections_of(
+        ROOM,
+        sections_of_boxes(("west", (0, 0, 200, 300)),
+                          ("east", (200, 0, 400, 300))),
+        parent_name="open_living")
+
+    assert ([round(p.area) for p in by_line]
+            == [round(p.poly.area) for p in by_trace.pieces])
+
+
+# --- carrying a declaration onto the model --------------------------------
+
+
+def fused(**over) -> Model:
+    """One 12 m2 room standing in for an open plan, already through `combine`."""
+    room = Room(name="open_living", ha_area="open_living",
+                scanner_name="Living Room",
+                points=[(0, 0), (400, 0), (400, 300), (0, 300)],
+                ceiling_low_cm=180, ceiling_high_cm=250,
+                source="scan7", score=0.81, **over)
+    return Model(source="synthetic.dxf", levels=[
+        Level(name="Mid Level", ceiling_height_cm=250, rooms=[room])])
+
+
+DECLARATION = {
+    "room": "open_living",
+    "sections": [{"name": "kitchen", "box": [[0, 0], [200, 300]]},
+                 {"name": "lounge", "box": [[200, 0], [400, 300]]}],
+}
+
+
+def test_pieces_do_not_inherit_the_fused_ceiling():
+    """The fused 180-250 cm range is one number standing for two spaces.
+
+    Inheriting it would carry forward the very error the split exists to remove,
+    and would do it looking exactly like a measurement.
+    """
+    model = fused()
+    apply(model, [DECLARATION], level_name="Mid Level")
+
+    assert [r.name for r in model.levels[0].rooms] == ["kitchen", "lounge"]
+    for room in model.levels[0].rooms:
+        assert room.ceiling_high_cm is None
+        assert room.ceiling_low_cm is None
+
+
+def test_provenance_survives_the_cut():
+    """The geometry is still the capture's, still won the same way.
+
+    Losing `source` here would make a split room indistinguishable from one no
+    capture ever saw.
+    """
+    model = fused()
+    apply(model, [DECLARATION], level_name="Mid Level")
+
+    kitchen = model.levels[0].rooms[0]
+    assert kitchen.split_from == "open_living"
+    assert kitchen.source == "scan7"
+    assert kitchen.score == 0.81
+    assert kitchen.scanner_name == "Living Room"
+    assert kitchen.ha_area == "kitchen"
+
+
+def test_a_provisional_parent_makes_provisional_pieces():
+    """Cutting a room up does not improve the scan it came from."""
+    model = fused(provisional=True, provisional_reason=["won by a fixture pass"])
+    apply(model, [DECLARATION], level_name="Mid Level")
+
+    for room in model.levels[0].rooms:
+        assert room.provisional
+        assert "won by a fixture pass" in room.provisional_reason
+
+
+def test_a_declaration_naming_no_room_is_refused():
+    """Silently doing nothing leaves an open plan looking correctly split."""
+    with pytest.raises(ValueError, match="no room"):
+        apply(fused(), [{"room": "conservatory", "sections": []}],
+              level_name="Mid Level")
+
+
+def test_a_declaration_cannot_be_both_forms():
+    with pytest.raises(ValueError, match="exactly one"):
+        apply(fused(), [dict(DECLARATION, seam=[[200, -50], [200, 350]],
+                             names=["a", "b"])], level_name="Mid Level")
+
+
+def test_a_box_is_two_corners_not_a_traced_ring():
+    with pytest.raises(ValueError, match="two opposite corners"):
+        apply(fused(), [{"room": "open_living", "sections": [
+            {"name": "kitchen", "box": [[0, 0], [200, 300], [0, 300]]},
+            {"name": "lounge", "box": [[200, 0], [400, 300]]}]}],
+            level_name="Mid Level")
+
+
+def test_the_declared_level_is_the_only_one_cut():
+    """A room name repeats across storeys; a declaration is about one of them."""
+    model = fused()
+    model.levels.append(Level(name="Upper", ceiling_height_cm=240, rooms=[
+        Room(name="open_living", ha_area="open_living",
+             points=[(0, 0), (400, 0), (400, 300), (0, 300)])]))
+
+    apply(model, [DECLARATION], level_name="Mid Level")
+
+    assert [r.name for r in model.levels[1].rooms] == ["open_living"]
