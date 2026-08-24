@@ -173,6 +173,24 @@ def test_a_sliver_of_unclaimed_floor_is_absorbed_and_counted():
     assert sum(p.poly.area for p in tiling.pieces) == pytest.approx(ROOM.area)
 
 
+def test_sections_that_abut_an_l_shaped_room_stay_polygons():
+    """Differencing polygons that share an edge yields dangling lines too.
+
+    Shapely returns a GeometryCollection there, and a room built from one dies
+    on `.exterior`. Sections are MEANT to abut, so this is the ordinary case
+    rather than a corner one — it fired on the first real L-shaped room.
+    """
+    ell = Polygon([(0, 0), (600, 0), (600, 400), (200, 400), (200, 200), (0, 200)])
+    tiling = sections_of(
+        ell,
+        sections_of_boxes(("kitchen", (0, 0, 200, 400)),
+                          ("lounge", (200, 0, 600, 400))),
+        parent_name="open_living")
+
+    assert [p.poly.geom_type for p in tiling.pieces] == ["Polygon", "Polygon"]
+    assert sum(p.poly.area for p in tiling.pieces) == pytest.approx(ell.area)
+
+
 def test_one_section_is_not_a_split():
     with pytest.raises(ValueError, match="two sections"):
         sections_of(ROOM, sections_of_boxes(("kitchen", (0, 0, 200, 300))),

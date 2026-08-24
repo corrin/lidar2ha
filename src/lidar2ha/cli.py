@@ -183,6 +183,42 @@ elevations: {{}}
 # Key by the names in `homeassistant.floors`; the values are ids from `captures`.
 levels: {{}}
 
+# Scanner room name -> Home Assistant area id, per capture. A scanner names
+# rooms by guessing, so this is the mapping you confirm once. `rooms` fails
+# without an entry for the capture it is given.
+#   rooms:
+#     midlevel:
+#       "Living Room": lounge
+#       "Office 1": kitchen        # many scanner rooms may share one area
+rooms: {{}}
+
+# Scanner rooms to union, per capture -- the scanner split one open volume in
+# two and its boundary is an artefact of that capture alone.
+#   merge:
+#     midlevel:
+#       - ["Kitchen", "Office 1"]
+merge: {{}}
+
+# Rooms to CUT, per LEVEL rather than per capture, because an open plan's
+# fusion is the architecture: there is no wall to segment on, so every capture
+# fuses it and no rescanning separates the kitchen end from the dining end. The
+# boundary is your declaration. Coordinates are plan centimetres, read off
+# `python -m lidar2ha.preview <level>_combined.json`.
+#   split:
+#     "Mid Level":
+#       - room: lounge                       # a line: two pieces
+#         seam: [[-240, -160], [20, -170]]
+#         names: [stairwell, den]
+#       - room: open_living                  # or a traced outline per room
+#         sections:
+#           - name: kitchen
+#             box: [[80, -420], [310, -140]]
+#           - name: dining
+#             outline: [[310, -420], [560, -420], [560, -140], [310, -140]]
+#           - name: lounge
+#             box: [[310, -140], [700, 260]]
+split: {{}}
+
 # Where to look from. The tool solves HOW FAR back to stand so the whole house
 # fits; these are the choices it cannot make for you.
 camera:
@@ -322,6 +358,20 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
         click.echo("  note: project.yaml maps no areas for these captures, so the "
                    "work list cannot say which areas ended up with no source.")
 
+    # Areas that only exist after `split` has run. Combining happens first, so
+    # the work list is right to say nothing sourced them -- but saying so
+    # without this note reads as a missing room rather than a pending step.
+    later = {s.get("name") for d in (settings.get("split") or {}).get(level) or []
+             for s in (d.get("sections") or [])} | {
+        n for d in (settings.get("split") or {}).get(level) or []
+        for n in (d.get("names") or [])}
+    later &= areas
+    if later:
+        click.echo(f"  note: {', '.join(sorted(later))} are declared under "
+                   f"`split:` and only exist once `lidar2ha split \"{level}\"` "
+                   f"has run, so\n        the work list will list them as areas "
+                   f"with no source.")
+
     multi = [c for c in ids if (captures.get(c) or {}).get("multi_floor")]
     if multi and storey is None:
         click.echo(f"  note: {', '.join(multi)} declared multi_floor. Combining is "
@@ -346,6 +396,106 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     click.echo(f"\nwrote  {out}")
     click.echo(f"wrote  {work}  ({len(result.worklist)} thing(s) to do about the house)")
     click.echo(f"\nNext:  lidar2ha lights {out} --project {project} -o lights.json")
+
+
+# --------------------------------------------------------------------------- #
+# split
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("level")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("project.yaml"), show_default=True,
+              help="project.yaml, whose `split:` section says where the rooms are")
+@click.option("-i", "--model", "model_json",
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="the model to cut  [default: <level>_combined.json]")
+@click.option("-o", "--out", type=click.Path(path_type=Path), default=None,
+              help="split model json  [default: <level>_split.json]")
+@click.option("--mesh", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="mesh of the ANCHOR capture, to ask the floor whether each "
+                   "declared boundary is a real one. Optional, and the answer is "
+                   "never a veto: an open plan's boundaries are as often a matter "
+                   "of use as of construction, and the floor beneath one of those "
+                   "does not change at all")
+@click.option("--overlap-slop-m2", type=float, default=None,
+              help="two traces claiming the same floor, below which it is the "
+                   "hand rather than a disagreement")
+@click.option("--min-remainder-m2", type=float, default=None,
+              help="floor no section claimed, above which it is kept as its own "
+                   "piece rather than absorbed into the nearest")
+def split(level: str, project: Path, model_json: Path | None, out: Path | None,
+          mesh: Path | None, overlap_slop_m2: float | None,
+          min_remainder_m2: float | None) -> None:
+    """Cut this LEVEL's fused rooms into the rooms the house is actually used as.
+
+    An open plan has no wall for a scanner to segment on, so every capture fuses
+    the kitchen end and the dining end and no amount of rescanning separates
+    them. The boundary is a declaration about the house, and it lives in
+    `project.yaml` under `split:`, keyed by level -- unlike `merge:`, which
+    repairs one particular scanner's arbitrary segmentation and so is keyed by
+    capture.
+
+    Coordinates are plan centimetres in the combined model's own frame. Read
+    them off `python -m lidar2ha.preview`, which draws a metre grid labelled in
+    centimetres for exactly this.
+    """
+    from . import seams
+    from .schema import load_model, save_model
+
+    settings = _project_settings(project)
+    declared = (settings.get("split") or {}).get(level)
+    if not declared:
+        have = ", ".join(sorted(settings.get("split") or {})) or "none"
+        raise SystemExit(
+            f"{project} has no `split:` entry for level {level!r} (it has: {have}).\n"
+            f"Add one, keyed by level and naming the room to cut:\n\n"
+            f"split:\n"
+            f'  "{level}":\n'
+            f"    - room: open_living\n"
+            f"      sections:\n"
+            f"        - name: kitchen\n"
+            f"          box: [[80, -420], [310, -140]]\n"
+            f"        - name: lounge\n"
+            f"          box: [[310, -140], [700, 260]]\n")
+
+    slug = level.lower().replace(" ", "_")
+    model_json = model_json or Path(f"{slug}_combined.json")
+    if not model_json.exists():
+        raise SystemExit(
+            f"no model at {model_json}. Run `lidar2ha combine {level!r}` first, "
+            f"or pass --model.")
+
+    model = load_model(model_json)
+    floor = None
+    if mesh:
+        from . import thresholds
+        floor = thresholds.floor_samples(str(mesh))
+        click.echo(f"  {len(floor.points):,} floor faces from {mesh.name}")
+
+    try:
+        cuts = seams.apply(
+            model, declared, floor=floor,
+            overlap_slop_m2=(seams.OVERLAP_SLOP_M2 if overlap_slop_m2 is None
+                             else overlap_slop_m2),
+            min_remainder_m2=(seams.MIN_REMAINDER_M2 if min_remainder_m2 is None
+                              else min_remainder_m2))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    seams.report(cuts)
+    out = out or Path(f"{slug}_split.json")
+    save_model(model, out)
+    click.echo(f"\nwrote  {out}")
+    if not mesh:
+        click.echo("  no --mesh given, so no boundary was looked at. That is not "
+                   "the same\n  as one the floor does not support.")
+    click.echo(f"\nNext:  python -m lidar2ha.ceilings {out} <mesh>.obj"
+               f"\n       python -m lidar2ha.preview {out} -o plan.png"
+               f"\n       lidar2ha lights {out} --project {project} -o lights.json")
 
 
 # --------------------------------------------------------------------------- #
