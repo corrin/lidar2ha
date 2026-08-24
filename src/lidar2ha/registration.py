@@ -52,6 +52,19 @@ CM_TO_M = 0.01
 # Below this, a fit is not trustworthy however good its median error looks.
 LOW_COVERAGE = 0.90
 
+# How many starting points to refine. Refinement is the expensive half -- 375
+# scorings against one for ranking a seed -- and `plan_fit` is called on every
+# pair of captures, so this trades directly against combining a dozen captures
+# in reasonable time.
+#
+# Measured over this house's captures, the best seed is the one that wins: 2
+# and 8 return the same transform on every pair tried, and 3 is one spare
+# against a seed ranked well on its unrefined score and beaten after
+# refinement. What would raise it: a capture that is demonstrably placeable --
+# a hand-checked overlay -- still being missed, with its correct transform
+# appearing among the seeds but outside the top few.
+REFINE_TOP = 3
+
 
 def load_wall_points(mesh_path, vertical_tol=0.20):
     """Centroids of near-vertical mesh faces: the wall surfaces.
@@ -115,13 +128,69 @@ def sample_along_walls(walls, step_m=0.05):
     )
 
 
-def transform(pts, theta, tx, ty, mirror):
-    p = pts.copy()
+def handed(pts, mirror):
+    """`pts` in the chosen handedness. Reflection is applied before rotation."""
+    p = np.asarray(pts, dtype=float).copy()
     if mirror:
         p[:, 1] = -p[:, 1]
+    return p
+
+
+def rotation(theta):
     c, s = math.cos(theta), math.sin(theta)
-    r = np.array([[c, -s], [s, c]])
-    return p @ r.T + np.array([tx, ty])
+    return np.array([[c, -s], [s, c]])
+
+
+def transform(pts, theta, tx, ty, mirror):
+    return handed(pts, mirror) @ rotation(theta).T + np.array([tx, ty])
+
+
+def _grid_resultant(walls) -> tuple[float, float, float]:
+    """Length-weighted sum over FOUR TIMES each wall angle, and the total length.
+
+    Quadrupling is what makes this a statement about a grid rather than a
+    direction: mod 90 a wall and its perpendicular describe the same grid, and
+    at 4x they land on each other and reinforce instead of cancelling.
+    """
+    sx = sy = total = 0.0
+    for wall in walls:
+        dx, dy = wall.x_end - wall.x_start, wall.y_end - wall.y_start
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            continue
+        angle = 4 * math.atan2(dy, dx)
+        sx += length * math.cos(angle)
+        sy += length * math.sin(angle)
+        total += length
+    return sx, sy, total
+
+
+def grid_bearing(walls) -> float | None:
+    """The dominant direction of these walls, in degrees mod 90.
+
+    None when there are no walls to average. Ask `grid_concentration` whether
+    the answer means anything before acting on it: this returns an angle for
+    any set of walls whatever, including ones that agree on nothing.
+    """
+    sx, sy, _ = _grid_resultant(walls)
+    if sx == 0.0 and sy == 0.0:
+        return None
+    return (math.degrees(math.atan2(sy, sx)) / 4) % 90.0
+
+
+def grid_concentration(walls) -> float:
+    """How much these walls agree on one grid: 0 scattered, 1 perfectly square.
+
+    `grid_bearing` is a mean, and a mean of scattered directions is a number
+    with no content. Measured on this house, a capture reading 0.341 here
+    returned a bearing 4 degrees away from what every other capture of the same
+    storey reported, purely from scatter -- and that phantom 4 degrees then
+    read as a wrong basin on every pairing it appeared in.
+    """
+    sx, sy, total = _grid_resultant(walls)
+    if total == 0.0:
+        return 0.0
+    return math.hypot(sx, sy) / total
 
 
 def score(pts, tree, cap=1.0):
@@ -148,24 +217,68 @@ def score(pts, tree, cap=1.0):
     return float(np.median(matched)), len(matched) / len(pts), capped_mean
 
 
-def _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg):
-    """Best rotation for one handedness, at coarse resolution."""
-    base = plan_pts.copy()
-    if mirror:
-        base[:, 1] = -base[:, 1]
-    base_c = base.mean(axis=0)
+def _candidate(base, tree, theta, c_src, c_tgt):
+    """Score the placement that carries `c_src` onto `c_tgt` at rotation `theta`.
 
-    best = None
-    for deg in np.arange(0, 360, coarse_step_deg):
-        theta = math.radians(deg)
-        c, s = math.cos(theta), math.sin(theta)
-        r = np.array([[c, -s], [s, c]])
-        tx, ty = target_c - r @ base_c
-        med, cover, cost = score(base @ r.T + np.array([tx, ty]), tree)
-        if best is None or cost < best["fit_cost_m"]:
-            best = {"median_error_m": med, "coverage": cover, "fit_cost_m": cost,
-                    "theta_rad": theta, "tx": tx, "ty": ty}
-    return best
+    THE TRANSLATION IS A FUNCTION OF THE ROTATION. Rotation is about the origin,
+    so t = c_tgt - R(theta) @ c_src must be re-derived at every angle tried.
+    Holding one translation while sweeping theta swings the far end of a 6.5 m
+    plan by about 9 cm per degree: on one real pair that is the whole difference
+    between a 10.3 cm reading and the 5.9 cm the same correspondence gives when
+    t moves with the angle.
+    """
+    r = rotation(theta)
+    tx, ty = c_tgt - r @ c_src
+    med, cover, cost = score(base @ r.T + np.array([tx, ty]), tree)
+    return {"median_error_m": med, "coverage": cover, "fit_cost_m": cost,
+            "theta_rad": float(theta), "tx": float(tx), "ty": float(ty)}
+
+
+def _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg):
+    """Best rotation for one handedness, translating by centroid alignment.
+
+    Centroid alignment assumes the two clouds cover the same ground. Where they
+    do not -- one bedroom against a ten-room survey -- it is the wrong
+    translation at EVERY rotation including the correct one, so the correct
+    basin scores worse than the noise and never reaches `_refine`, which
+    travels 0.30 m in total and could not walk back to it anyway. `anchors`
+    exists to supply the correspondences this cannot guess.
+    """
+    base = handed(plan_pts, mirror)
+    base_c = base.mean(axis=0)
+    return min((_candidate(base, tree, math.radians(deg), base_c, target_c)
+                for deg in np.arange(0, 360, coarse_step_deg)),
+               key=lambda f: f["fit_cost_m"])
+
+
+def _seeded(plan_pts, tree, mirror, rotations, anchors):
+    """Every (rotation, correspondence) pair, scored once and deduplicated.
+
+    A correspondence is a pair of points believed to be the same place in the
+    two captures -- room centroids, mostly. It is a CANDIDATE GENERATOR and not
+    an optimiser: the pairing that maximises room overlap is measurably not the
+    one that minimises wall error, by 0.3 to 1.2 degrees, and on the worst real
+    pair that gap is 10.0 cm against 5.9. So these are starting points for
+    `_refine` to argue with, never answers.
+    """
+    base = handed(plan_pts, mirror)
+    seen: set[tuple[int, int, int]] = set()
+    out = []
+    for c_src, c_tgt in anchors:
+        m_src = handed(np.asarray([c_src], dtype=float), mirror)[0]
+        for theta in rotations:
+            cand = _candidate(base, tree, theta, m_src, c_tgt)
+            if not math.isfinite(cand["fit_cost_m"]):
+                continue
+            # Distinct rooms of one capture often sit a few centimetres apart
+            # once placed; refining the same transform five times buys nothing.
+            key = (round(cand["theta_rad"], 3), round(cand["tx"], 2),
+                   round(cand["ty"], 2))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cand)
+    return out
 
 
 def _refine(plan_pts, tree, start, mirror):
@@ -188,7 +301,8 @@ def _refine(plan_pts, tree, start, mirror):
             "theta_rad": theta, "tx": tx, "ty": ty, "mirror": mirror}
 
 
-def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None):
+def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None,
+             rotations=None, anchors=None, refine_top=REFINE_TOP):
     """Fit a 2D rigid transform placing the plan points onto the mesh walls.
 
     Each handedness is refined and only then compared. Choosing between them on
@@ -202,14 +316,32 @@ def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None):
     as a whole, so once the best-constrained floor has chosen, every other floor
     must agree -- otherwise a floor with only a couple of walls can 'fit' a
     mirrored corner anywhere in the mesh and win on score while being nonsense.
+
+    `rotations` and `anchors` are optional prior knowledge the caller has and
+    this function cannot: the rotations a shared wall grid admits, and points
+    believed to be the same place in both. Supplying them adds starting points;
+    it never removes the blind sweep, which is always refined alongside them, so
+    a caller that guesses badly can only spend time, not lose a fit it had.
+    Plan-to-mesh passes neither -- a mesh point cloud has no walls to take a
+    bearing from and no rooms to pair -- which is why this is a parameter rather
+    than something computed here.
     """
     target_c = target_xy.mean(axis=0)
     mirrors = (False, True) if force_mirror is None else (force_mirror,)
 
     fits = []
     for mirror in mirrors:
+        # The blind sweep's winner is refined unconditionally. Seeds are ranked
+        # on one unrefined scoring, which is a weak ranking -- a candidate that
+        # would refine well can sit outside the top few -- so this is what makes
+        # the seeded search unable to return a worse answer than not seeding.
         coarse = _coarse(plan_pts, target_c, tree, mirror, coarse_step_deg)
-        fits.append(_refine(plan_pts, tree, coarse, mirror))
+        starts = [coarse]
+        if rotations is not None and anchors is not None:
+            seeded = _seeded(plan_pts, tree, mirror, rotations, anchors)
+            seeded.sort(key=lambda f: f["fit_cost_m"])
+            starts += seeded[: max(0, refine_top - 1)]
+        fits += [_refine(plan_pts, tree, s, mirror) for s in starts]
 
     return min(fits, key=lambda f: f["fit_cost_m"])
 
