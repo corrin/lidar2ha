@@ -47,8 +47,9 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Separate windows from fittings mechanically | works (`daylight.py`), differences two captures |
 | Review sheet for the fittings found | works (`contactsheet.py`), windows sorted last |
 | Export a named GLB for a real-time 3D card | works (`ObjExport.java`, `glb.py`) |
-| `lidar2ha doctor`, `build`, `combine`, `lights`, `render`, `deploy`, `export-glb` | works (`cli.py`) |
-| **Seam/seed open-plan splitting** | **does not exist** — `rooms.py` merges named rooms instead |
+| Cut an open-plan room into the rooms it is used as | works (`seams.py`), boundary declared by you |
+| Corroborate a declared boundary against the floor | works (`thresholds.py`), reports, never decides |
+| `lidar2ha doctor`, `build`, `combine`, `split`, `lights`, `render`, `deploy`, `export-glb` | works (`cli.py`) |
 | **`lidar2ha add-capture`** | **does not exist** (exits saying so) |
 
 `pip install .` now gives you a working `lidar2ha`: `doctor`, `build`, `lights`, `render`
@@ -223,6 +224,20 @@ python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 python -m lidar2ha.combine midlevel_named.json midlevel_fixtures_named.json     -o midlevel_combined.json
 lidar2ha combine "Mid Level" --project project.yaml   # same, via project.yaml
 
+# 5d. OPTIONAL, and the one step no scan can do for you: cut the rooms an open
+#     plan fuses.  There is no wall to segment on, so EVERY capture returns the
+#     kitchen end and the dining end as one polygon and rescanning never
+#     separates them -- the boundary is yours to declare.  Read coordinates off
+#     the preview, which draws a metre grid labelled in centimetres for exactly
+#     this, and write them into project.yaml under `split:`.
+#     The pieces come back with NO ceiling: a fused room reports one height for
+#     two spaces, which is the whole reason to split, so measure them after.
+python -m lidar2ha.preview midlevel_combined.json -o plan.png     # where are the rooms?
+python -m lidar2ha.floormap  scan7.obj -o floor                   # optional: the floor,
+python -m lidar2ha.thresholds scan7.obj --axis y                  # photographed and swept
+lidar2ha split "Mid Level" --project project.yaml --mesh scan7.obj
+python -m lidar2ha.ceilings midlevel_split.json scan7.obj
+
 # 6. read the HA registry and place every light.* entity in its room
 lidar2ha lights named.json --refresh --project project.yaml -o lights.json \
     --fittings fixtures_placed.json   # omit to place at the pole instead
@@ -360,13 +375,22 @@ the name heuristic finds one of the same four. Hue rooms and deCONZ groups expos
 and are still flagged by name for you to judge. Anything skipped is named, and
 `lights.include` puts it back.
 
-Room identity is half-solved. Scanner room names are guesses and its splits are artefacts —
-mine confidently labelled an entrance hall "Living Room" and "Dining Room", and returned one
-open kitchen as "Kitchen" plus "Office 1". `rooms.py` fixes both: it renames scanner rooms
-to HA `area_id`s and unions named groups into one polygon, dissolving the shared edge rather
-than taking a bounding box. What it does *not* do is read the area registry — you write the
-mapping into `project.yaml` yourself — nor cut a room the scanner failed to split at all,
-which is what the seam/seed idea was for.
+Room identity is solved in three pieces, and only the first is automatic. Scanner room names
+are guesses and its splits are artefacts — mine confidently labelled an entrance hall "Living
+Room" and "Dining Room", and returned one open kitchen as "Kitchen" plus "Office 1".
+`rooms.py` renames scanner rooms to HA `area_id`s and unions named groups into one polygon,
+dissolving the shared edge rather than taking a bounding box. `seams.py` does the opposite
+where the fusion is real: an open plan has no wall to segment on, so **every** capture fuses
+the kitchen end and the dining end and no amount of rescanning separates them. That boundary
+is a declaration about how you use the house, and it lives in `project.yaml` under `split:` —
+either a `seam:` of two points, or a traced `sections:` outline per room when a straight line
+will not do. What none of it does is read the area registry: you write the mapping yourself.
+
+Where a boundary *is* built rather than used — a step, a change from wood to carpet — the mesh
+can corroborate it, and `split --mesh` says so per boundary. It never moves the line and never
+refuses one. The boundary between a sofa end and a table end is real and the floor beneath it
+is continuous, so an unsupported boundary is not a wrong boundary. Three answers, not two:
+corroborated, declared, or never photographed.
 
 ---
 
