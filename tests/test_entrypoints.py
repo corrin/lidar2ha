@@ -155,6 +155,38 @@ def test_split_command_runs(tmp_path, model_path):
         assert {r.name for r in rooms_out} == {"west", "east"}
 
 
+def test_split_with_an_untextured_mesh_says_it_saw_nothing(tmp_path, model_path,
+                                                           mesh_path):
+    """A mesh with no atlas carries no floor colour, so it can say nothing.
+
+    The failure this catches is the stage dying inside numpy on an empty sample
+    instead — and the one after that, reporting "the floor does not change here"
+    about a mesh that was never photographed at all.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+
+    (tmp_path / "project.yaml").write_text(
+        'split:\n'
+        '  "Mid Level":\n'
+        '    - room: "Living Room"\n'
+        '      seam: [[300, -50], [300, 450]]\n'
+        '      names: [west, east]\n', encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "split", "Mid Level",
+        "--project", str(tmp_path / "project.yaml"),
+        "--model", str(model_path),
+        "--mesh", str(mesh_path),
+        "-o", str(tmp_path / "split.json")])
+
+    assert result.exit_code == 0, result.output
+    assert "NOT LOOKED AT" in result.output
+    assert "the floor does not change here" not in result.output
+
+
 def test_preview_main_runs(monkeypatch, tmp_path, model_path):
     out = tmp_path / "plan.png"
     run(monkeypatch, preview, model_path, "-o", out)
