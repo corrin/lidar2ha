@@ -476,6 +476,33 @@ def test_whichlevel_runs_end_to_end(tmp_path, model_path):
     assert "IDENTIFIED" in done.stdout, done.stdout
 
 
+def test_whichlevel_offers_the_same_flags_from_both_entry_points():
+    """`--write` is the whole point of the storey declaration -- it prints the
+    block you paste into project.yaml -- and it shipped on `python -m
+    lidar2ha.whichlevel` alone. `lidar2ha whichlevel` is the one the README
+    tells people to run, so the documented workflow named a flag that command
+    did not have.
+
+    The two are written by hand in different files and nothing connects them
+    but this. Compared through `--help`, which is what a reader sees.
+    """
+    import re
+    import subprocess
+    import sys
+
+    def flags(argv):
+        done = subprocess.run(argv, capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+        return set(re.findall(r"--[a-z][a-z0-9-]*", done.stdout)) - {"--help"}
+
+    module = flags([sys.executable, "-m", "lidar2ha.whichlevel", "--help"])
+    packaged = flags([sys.executable, "-m", "lidar2ha.cli", "whichlevel", "--help"])
+
+    assert "--write" in module, "if this fails the test proves nothing"
+    assert not module - packaged, (
+        f"`lidar2ha whichlevel` is missing {sorted(module - packaged)}")
+
+
 def test_whichlevel_with_nothing_to_compare_against_says_so(tmp_path, model_path):
     """A stage that exits non-zero with a usable sentence beats one that raises
     somewhere deep -- see this module's docstring."""

@@ -272,7 +272,27 @@ def init(directory: Path) -> None:
               help="a combined model per storey; its file name is the label")
 @click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="project.yaml, to find them by level name")
-def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -> None:
+@click.option("--write", is_flag=True,
+              help="also print the project.yaml `levels:` block to paste. "
+                   "Refusals are left out")
+@click.option("--capture-id", default=None,
+              help="the capture id as project.yaml spells it, when the model "
+                   "file name is not it")
+@click.option("--same-level-cm", type=float, default=None)
+@click.option("--margin", type=float, default=None,
+              help="how many times better the best storey must be than the "
+                   "next before it counts as identified")
+@click.option("--min-gap-cm", type=float, default=None,
+              help="and how many centimetres better, which is what stops an "
+                   "exact fit against two identical storeys picking one "
+                   "arbitrarily")
+@click.option("--low-coverage", type=float, default=None,
+              help="below this, coverage is reported as thin -- it is never a "
+                   "reason to refuse")
+def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
+               write: bool, capture_id: str | None, same_level_cm: float | None,
+               margin: float | None, min_gap_cm: float | None,
+               low_coverage: float | None) -> None:
     """Say which storey a capture is of, per level inside it.
 
     Every other stage needs the answer first -- `combine` will not look at a
@@ -285,6 +305,13 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -
     from . import whichlevel as stage
     from .schema import load_model
 
+    if write and not project:
+        raise SystemExit(
+            "--write needs --project. The block it prints names LEVELS, and "
+            "only project.yaml says what they are called -- from --against the "
+            "labels are file names, and a block naming those would paste in "
+            "looking right and match no level at all.")
+
     levels = {}
     if project:
         levels.update(stage.levels_from_project(project))
@@ -295,11 +322,21 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -
             "Nothing to compare against. Pass --against with a combined model "
             "per storey, or --project to find them by level name.")
 
+    # Defaulted to None and dropped rather than repeated here, so the numbers
+    # live in the stage alone -- a second copy of a tuned constant drifts, and
+    # a stale one in the packaged command would be the one most people run.
+    tuned = {k: v for k, v in (("same_level_cm", same_level_cm),
+                               ("margin", margin),
+                               ("min_gap_cm", min_gap_cm),
+                               ("low_coverage", low_coverage)) if v is not None}
+
     model = load_model(capture)
     click.echo(f"{capture.name}  ({len(model.levels)} level(s))\n")
+    answers = []
     for level in model.levels:
         one = model.model_copy(update={"levels": [level]})
-        answer = stage.rank(one, levels)
+        answer = stage.rank(one, levels, **tuned)
+        answers.append((level.name, answer))
         click.echo(f"  {level.name}  ({len(level.walls)} walls, "
                    f"{len(level.rooms)} rooms)")
         for c in answer.ranked:
@@ -307,6 +344,10 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -
             click.echo(f"      {c.level:<28}{c.median_cm:7.1f} cm  "
                        f"{c.coverage * 100:3.0f}% of {c.sampled:,} points{mark}")
         click.echo(f"      {answer.verdict.upper()}: {answer.reason}\n")
+
+    if write:
+        click.echo(stage.declaration(
+            capture_id or stage.capture_id_of(capture), answers))
 
 
 # --------------------------------------------------------------------------- #

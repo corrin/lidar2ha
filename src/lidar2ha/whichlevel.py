@@ -194,8 +194,12 @@ def declaration(capture_id: str,
         else:
             refused.append((storey, answer.verdict))
 
-    lines = [f"# {capture_id}: {len(by_level)} level(s) identified, "
-             f"{len(refused)} storey(s) not placed.",
+    # STOREYS placed and LEVELS placed into are different counts, and one walk
+    # routinely puts two storeys into one level. Reporting only the levels read
+    # as though a storey had been dropped.
+    placed = sum(len(v) for v in by_level.values())
+    lines = [f"# {capture_id}: {placed} storey(s) into {len(by_level)} "
+             f"level(s), {len(refused)} not placed.",
              "# Merge into project.yaml at the TOP level, into the `levels:`",
              "# section that is already there -- this block carries its own",
              "# `levels:` key, so pasting it underneath one nests it and the",
