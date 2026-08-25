@@ -22,19 +22,28 @@ than quietly returning a plausible height.
 Assumes plan and mesh share a frame up to cm-vs-m scaling, which holds when
 registration is near-identity; the reported face counts show if it does not.
 
+Measuring is not writing. Without `-o` this reports and changes nothing; with
+it, the rooms it could measure get a `ceiling_high_cm` and the rooms it could
+not are named and left alone. A room with no height is one `lights` falls back
+to the LEVEL's ceiling for, which on a level containing a void hangs a lounge
+lamp four and a half metres up -- so the absences are as much the output as the
+numbers.
+
 Usage:
     python -m lidar2ha.ceilings model.json mesh.obj
+    python -m lidar2ha.ceilings model.json mesh.obj -o measured.json
 """
 
 from __future__ import annotations
 
 import argparse
+from typing import Literal, NamedTuple
 
 import numpy as np
 import trimesh
 from shapely.geometry import Point, Polygon
 
-from .schema import load_model
+from .schema import Level, Model, Room, load_model, save_model
 
 CM_TO_M = 0.01
 DOWN_FACING = -0.85
@@ -61,6 +70,118 @@ def _classified_faces(mesh_path: str):
     return np.vstack(down), np.vstack(up)
 
 
+class Measured(NamedTuple):
+    """One room's ceiling, and whether the mesh could actually say.
+
+    THREE ANSWERS. `measured` is a height; `truncated` is a LOWER BOUND, from a
+    scan that stopped before the room did; `unseen` is the mesh having too
+    little above that footprint to answer at all -- a room photographed mostly
+    from above, or a plan and mesh in different frames.
+
+    Only `measured` may be written to a model. A truncated p95 is known to be
+    short and an unseen room has nothing behind it, and either written as a
+    height is a fabrication that every stage downstream treats as a
+    measurement: `build` puts furniture at it and `render` raytraces from it.
+    """
+
+    verdict: Literal["measured", "truncated", "unseen"]
+    floor_z_m: float | None
+    p50_cm: float | None
+    p95_cm: float | None
+    ceiling_faces: int
+    floor_faces: int
+
+    @property
+    def writable(self) -> bool:
+        return self.verdict == "measured"
+
+
+def measure_room(room: Room, down: np.ndarray, up: np.ndarray, mesh_top: float, *,
+                 min_faces: int = MIN_FACES,
+                 truncation_margin_m: float = TRUNCATION_MARGIN_M) -> Measured:
+    """This room's ceiling height above its own floor, or why not."""
+    poly = Polygon([(x * CM_TO_M, y * CM_TO_M) for x, y in room.points])
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+
+    c_in, f_in = _inside(down, poly), _inside(up, poly)
+    if len(c_in) < min_faces or len(f_in) < min_faces:
+        return Measured("unseen", None, None, None, len(c_in), len(f_in))
+
+    fz = float(np.percentile(f_in[:, 2], 5))
+    c50 = float(np.percentile(c_in[:, 2], 50))
+    c95 = float(np.percentile(c_in[:, 2], 95))
+    verdict: Literal["measured", "truncated", "unseen"] = (
+        "truncated" if c95 > mesh_top - truncation_margin_m else "measured")
+    return Measured(verdict, fz, (c50 - fz) / CM_TO_M, (c95 - fz) / CM_TO_M,
+                    len(c_in), len(f_in))
+
+
+def measure(model: Model, down: np.ndarray, up: np.ndarray,
+            mesh_top: float) -> list[tuple[Level, Room, Measured]]:
+    """Every room, IN THE ORDER THE MODEL HOLDS THEM.
+
+    Room names are not unique in a split model -- a piece is named for the area
+    it belongs to, and several pieces can belong to one area. One real level
+    carries three rooms called `hallway`, at 220, 323 and 264 cm, and two
+    called `stairwell` at 446 and 303. So anything keyed by name assigns two
+    thirds of them the wrong height, and does it silently. The room object
+    itself is the identity; nothing here may reduce it to a label.
+    """
+    return [(lv, r, measure_room(r, down, up, mesh_top))
+            for lv in model.levels for r in lv.rooms]
+
+
+class Change(NamedTuple):
+    """One room's height, before and after, and what had to give way."""
+
+    room: Room
+    before_cm: float | None
+    after_cm: float
+    cleared_low_cm: float | None
+
+
+def write_back(measurements: list[tuple[Level, Room, Measured]]) -> list[Change]:
+    """Put the measured heights on the rooms, and say what moved.
+
+    `ceiling_high_cm` only. The p50 is reported for a person to read and is NOT
+    written, because down-facing faces include the undersides of tables,
+    worktops and stair soffits -- so the median is furniture height in exactly
+    the rooms that have furniture. `lights.elevation_for` prefers
+    `ceiling_low_cm`, so writing a contaminated median there would hang the
+    lamp over the dining table at the height of the dining table.
+
+    A STALE LOW IS CLEARED RATHER THAN LEFT TO CONTRADICT THE MEASUREMENT.
+    Polycam's own figure for a room is often above what the mesh measures --
+    four rooms of one real level came out 4 to 12 cm over -- and leaving it
+    would make `ceiling_low_cm` exceed `ceiling_high_cm`, which is not a
+    ceiling range at all but two unrelated numbers. Since `elevation_for` reads
+    the low one FIRST, leaving it is also how this whole stage would appear to
+    run and change nothing for exactly the rooms it corrected.
+
+    A low that still fits under the measurement is left alone: that is a
+    genuine range, and nothing here measured the bottom of one.
+
+    A room this could not measure is left exactly as it was found, including
+    left as None. An absent height is a question; a fabricated one is an answer
+    nobody can tell from a real measurement.
+    """
+    changes = []
+    for _lv, room, m in measurements:
+        if not m.writable:
+            continue
+        assert m.p95_cm is not None
+        after = round(m.p95_cm, 1)
+        stale = (room.ceiling_low_cm
+                 if room.ceiling_low_cm is not None and room.ceiling_low_cm > after
+                 else None)
+        changes.append(Change(room, room.ceiling_high_cm, after, stale))
+        room.ceiling_high_cm = after
+        if stale is not None:
+            room.ceiling_low_cm = None
+    return changes
+
+
 def _inside(pts: np.ndarray, poly: Polygon) -> np.ndarray:
     """Points within a polygon. Bounding box first -- per-point shapely at
     100k faces is far too slow to be useful."""
@@ -79,40 +200,66 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("model")
     ap.add_argument("mesh")
+    ap.add_argument("-o", "--out", help="write the measured heights back into a "
+                                        "copy of the model at this path")
     args = ap.parse_args()
 
     model = load_model(args.model)
     down, up = _classified_faces(args.mesh)
     mesh_top = float(max(down[:, 2].max(), up[:, 2].max()))
+    measurements = measure(model, down, up, mesh_top)
 
     print(f"ceiling faces {len(down):,}   floor faces {len(up):,}   "
           f"mesh top z {mesh_top:.2f} m\n")
     print(f"{'room':<16}{'floor z':>9}{'height p50':>12}{'height p95':>12}   note")
     print("-" * 72)
 
-    for lv in model.levels:
-        for r in lv.rooms:
-            poly = Polygon([(x * CM_TO_M, y * CM_TO_M) for x, y in r.points])
-            if not poly.is_valid:
-                poly = poly.buffer(0)
+    for _lv, room, m in measurements:
+        name = str(room.name)
+        if m.verdict == "unseen":
+            print(f"{name:<16}  NOT SEEN -- too few faces (ceiling "
+                  f"{m.ceiling_faces}, floor {m.floor_faces}). Outside the mesh, "
+                  f"photographed from above, or plan and mesh in different frames")
+            continue
+        assert m.floor_z_m is not None and m.p50_cm is not None
+        assert m.p95_cm is not None
+        note = ("TRUNCATED - scan stopped here, treat as a LOWER BOUND"
+                if m.verdict == "truncated" else "")
+        print(f"{name:<16}{m.floor_z_m:>9.2f}{m.p50_cm:>11.0f}cm"
+              f"{m.p95_cm:>11.0f}cm   {note}")
 
-            c_in, f_in = _inside(down, poly), _inside(up, poly)
-            if len(c_in) < MIN_FACES or len(f_in) < MIN_FACES:
-                print(f"{str(r.name):<16}  too few faces "
-                      f"(ceiling {len(c_in)}, floor {len(f_in)}) -- outside the "
-                      f"mesh, or plan and mesh are not in the same frame")
-                continue
+    if not args.out:
+        refusals = sum(1 for _, _, m in measurements if not m.writable)
+        if refusals:
+            print(f"\n  {refusals} room(s) above could not be measured. Pass -o to "
+                  "write\n  the ones that could into a model; the rest keep "
+                  "whatever height they have.")
+        return
 
-            fz = float(np.percentile(f_in[:, 2], 5))
-            c50 = float(np.percentile(c_in[:, 2], 50))
-            c95 = float(np.percentile(c_in[:, 2], 95))
+    changes = write_back(measurements)
+    save_model(model, args.out)
+    print(f"\nwrote {args.out}")
+    print(f"  {len(changes)} room(s) given a measured ceiling:")
+    for change in changes:
+        was = "unset" if change.before_cm is None else f"{change.before_cm:.0f} cm"
+        note = ("" if change.cleared_low_cm is None else
+                f"   (cleared a stale low of {change.cleared_low_cm:.0f} cm, which "
+                f"the measurement contradicts)")
+        print(f"    {str(change.room.name):<16} {was:>9}  ->  "
+              f"{change.after_cm:.0f} cm{note}")
 
-            note = ""
-            if c95 > mesh_top - TRUNCATION_MARGIN_M:
-                note = "TRUNCATED - scan stopped here, treat as a LOWER BOUND"
-
-            print(f"{str(r.name):<16}{fz:>9.2f}{(c50 - fz) * 100:>11.0f}cm"
-                  f"{(c95 - fz) * 100:>11.0f}cm   {note}")
+    for _lv, room, m in measurements:
+        if m.writable:
+            continue
+        # Named, never silent. A room left without a height is one `lights` will
+        # fall back to the LEVEL's ceiling for -- which on a level containing a
+        # void is how a lounge lamp ends up hanging four and a half metres up.
+        why = ("the scan stopped before the room did, so its height is only a "
+               "lower bound" if m.verdict == "truncated"
+               else "the mesh has too little above it to measure")
+        keeps = ("no height at all" if room.ceiling_high_cm is None
+                 else f"its existing {room.ceiling_high_cm:.0f} cm")
+        print(f"    {str(room.name):<16} NOT WRITTEN -- {why}; keeps {keeps}")
 
 
 if __name__ == "__main__":
