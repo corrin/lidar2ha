@@ -484,3 +484,100 @@ def test_the_piece_a_split_creates_is_checked_against_the_rest_of_the_level():
     assert len(found) == 1, "the new piece was buried and nothing said so"
     assert found[0]["covered"] == "toilet"
     assert found[0]["share_of_covered"] == 1.0
+
+
+def test_a_sliver_is_not_absorbed_where_it_would_seal_a_piece_shut():
+    """The cause of a room being written as its parent, and of the toilet
+    buried inside its own sibling.
+
+    Traces leave slop, and slop smaller than a room is given to whichever piece
+    it touches most. But a sliver lying across the MOUTH of a C-shaped piece
+    closes it into a ring, and a ring has a hole -- which `Room.points` cannot
+    express, so the room is written as its outer boundary alone and swallows
+    whatever sits inside it. Measured on a real declaration: a 20 cm2 sliver
+    turned a 1.74 m2 hallway into the 3.18 m2 whole of its parent.
+
+    It is silent because the report is taken from the polygon, which is right,
+    and only the file gets the sealed ring.
+    """
+    from shapely.ops import unary_union
+
+    from lidar2ha.seams import sections_of
+
+    parent = rect(0, 0, 1000, 1000)
+    toilet = rect(600, 400, 700, 430)
+    hallway = parent.difference(rect(600, 400, 1000, 430))
+    leftover = parent.difference(unary_union([toilet, hallway]))
+
+    # Two guards. The sliver has to prefer the hallway, or the old code would
+    # have given it to the toilet and never sealed anything...
+    reach = leftover.buffer(1.0)
+    assert reach.intersection(hallway).area > reach.intersection(toilet).area, \
+        "the sliver does not prefer the C-shaped piece; this proves nothing"
+    # ...and giving it to the hallway has to be what seals it.
+    assert len(unary_union([hallway, leftover]).interiors) == 1, \
+        "the sliver does not close the mouth; this proves nothing"
+
+    tiling = sections_of(parent, [("toilet", toilet), ("hallway", hallway)],
+                         parent_name="Bathroom")
+
+    for piece in tiling.pieces:
+        assert not piece.poly.interiors, (
+            f"{piece.name} came back with a hole, which cannot be written")
+    assert tiling.absorbed_m2 + tiling.unabsorbed_m2 > 0, \
+        "no slop existed, so nothing was absorbed and this proves nothing"
+
+
+def test_a_written_outline_encloses_what_the_piece_was_reported_as():
+    """The report and the file have to agree. A room whose file says 3.18 m2
+    while the console said 1.74 is one nothing downstream can catch, because
+    every check a person runs is on what they were shown."""
+    from lidar2ha.seams import sections_of, writable_ring
+
+    parent = rect(0, 0, 1000, 1000)
+    left = rect(0, 0, 400, 1000)
+    right = rect(400, 0, 1000, 1000)
+    tiling = sections_of(parent, [("left", left), ("right", right)],
+                         parent_name="Room")
+
+    for piece in tiling.pieces:
+        ring = writable_ring(piece.poly, where=f"Room/{piece.name}")
+        assert abs(Polygon(ring).area - piece.poly.area) < 1.0, (
+            f"{piece.name} is written as a different shape from the one measured")
+
+
+def test_a_piece_with_a_hole_is_refused_rather_than_written_as_its_outline():
+    """`Room.points` is one ring and cannot hold a hole. Writing the exterior
+    alone is not a lossy approximation -- it is a different room, the size of
+    the hole larger, sitting on top of whatever the hole was there to exclude.
+
+    This is also the answer to a kitchen island: an area that is a hole in
+    another room cannot be declared by cutting that room, and refusing here is
+    what makes that legible rather than mysterious.
+    """
+    from lidar2ha.seams import writable_ring
+
+    ring = rect(0, 0, 1000, 1000).difference(rect(400, 400, 600, 600))
+    assert len(ring.interiors) == 1, "if this has no hole the test proves nothing"
+
+    with pytest.raises(ValueError) as caught:
+        writable_ring(ring, where="Level/annulus")
+    assert "annulus" in str(caught.value)
+    assert "m2" in str(caught.value), "the message has to carry both areas"
+
+
+def test_rounding_that_would_change_the_room_is_not_applied():
+    """Two vertices closer together than the rounding step land on the same
+    point, and a duplicate vertex makes the ring self-touching. On a real
+    declaration two vertices 0.008 cm apart merged at 0.1 cm and took the
+    concavity with them."""
+    from lidar2ha.seams import writable_ring
+
+    # A C-shape whose turn-back line carries two near-identical vertices.
+    poly = Polygon([(0, 0), (1000, 0), (1000, 1000), (0, 1000), (0, 600),
+                    (800, 600), (800.0031, 599.9979), (800, 400), (0, 400)])
+    assert poly.is_valid and not poly.interiors
+
+    ring = writable_ring(poly, where="Level/c-shape")
+    assert abs(Polygon(ring).area - poly.area) < 1.0, "the shape changed"
+    assert len(set(ring)) == len(ring), "a duplicate vertex was written"
