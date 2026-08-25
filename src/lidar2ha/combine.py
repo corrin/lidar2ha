@@ -477,6 +477,22 @@ def off_grid_deg(theta_deg: float, source: Level, target: Level) -> float | None
     return min(off, 90.0 - off)
 
 
+def add_caution(store: dict[str, list[str]], capture: str, why: str) -> None:
+    """Record a reason to look at this capture, keeping the ones already there.
+
+    A capture can earn several: its bearing may be unreadable AND it may be too
+    small for its coverage to mean anything. Those are different reasons to go
+    and look at the house, not alternatives. Assigning into the dict kept
+    whichever fired last, and the overwritten one is the one nobody ever saw.
+    """
+    store.setdefault(capture, []).append(why)
+
+
+def joined_cautions(store: dict[str, list[str]]) -> dict[str, str]:
+    """One readable line per capture, in the order the reasons were found."""
+    return {name: "; ".join(reasons) for name, reasons in store.items()}
+
+
 class GridCheck(NamedTuple):
     """What the wall grid has to say about one rotation. Three answers."""
 
@@ -2013,7 +2029,14 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     aligned: dict[str, Alignment] = {
         ref: Alignment(capture=ref, verdict="reference",
                        agreement_m=agreement.get(ref))}
-    cautions: dict[str, str] = {}
+    # A capture can earn several of these -- off the grid with an unreadable
+    # bearing, AND too small for its coverage to mean anything. Assigning kept
+    # whichever fired last and dropped the rest in silence, which is the one
+    # thing this stage may never do.
+    caution_reasons: dict[str, list[str]] = {}
+
+    def caution(capture: str, why: str) -> None:
+        add_caution(caution_reasons, capture, why)
     for name, why_level in rejected.items():
         aligned[name] = Alignment(capture=name, verdict="discarded", reason=why_level)
 
@@ -2075,13 +2098,13 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                 f"inadmissible -- which is not the same as this capture being bad, "
                 f"and says nothing about whether it can be placed")
         elif grid.verdict == "no_grid" and grid.off_deg is not None:
-            cautions[name] = (
+            caution(name, (
                 f"sits {grid.off_deg:.1f} deg off the wall grid, and IS NOT REFUSED "
                 f"FOR IT: the walls here agree on a grid only to "
                 f"{grid.concentration:.2f} against the {min_grid_concentration:.2f} "
                 f"this check needs, so the bearing it is measured against is scatter "
                 f"rather than a direction. Nothing corroborates the rotation -- check "
-                f"this one against the house")
+                f"this one against the house"))
         if name not in in_union:
             # MEMBERSHIP IS DECIDED ON THE PAIRWISE FIGURE, so that is the one
             # quoted against the limit. The averaged-wall figure is reported
@@ -2114,23 +2137,24 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
             # pair straddles the limit in opposite directions depending which
             # way it is measured. Refusing it here is what made the union depend
             # on the anchor and silently cost a toilet.
-            cautions[name] = (
+            caution(name, (
                 f"lands at {fit['median_error_m'] * M_TO_CM:.1f} cm on {ref}, over the "
                 f"{max_median_cm:.0f} cm limit, but agrees with the level at "
                 f"{(agreement.get(name) or 0) * M_TO_CM:.1f} cm. It is kept, and its "
                 f"placement in this frame is the poorer for it -- anchoring on a "
-                f"different capture would place it better")
+                f"different capture would place it better"))
         aligned[name] = record
 
         share = coverage_is_uninformative(sample_along_walls(level.walls),
                                           sample_along_walls(levels[ref].walls))
         if share is not None:
-            cautions[name] = (
+            caution(name, (
                 f"spans {share * 100:.0f}% of the reference's footprint, so it fits "
                 f"inside it wherever it is placed and its {fit['coverage'] * 100:.0f}% "
                 f"coverage says nothing about whether the placement is right. Check "
-                f"this one against the house before believing the rooms below it")
+                f"this one against the house before believing the rooms below it"))
 
+    cautions: dict[str, str] = joined_cautions(caution_reasons)
     fits: dict[str, Fit | None] = {n: a.fit for n, a in aligned.items() if a.usable}
     accepted = [n for n in levels if n in fits]
 

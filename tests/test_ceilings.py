@@ -188,3 +188,51 @@ def test_a_low_that_still_fits_under_the_measurement_is_kept():
     changes = write_back([(None, room, measure_room(room, down, up, mesh_top=5.0))])
     assert room.ceiling_low_cm == 150.0
     assert changes[0].cleared_low_cm is None
+
+
+def test_a_mesh_with_no_upward_faces_reports_rather_than_crashes():
+    """A partial capture -- a stairwell shot looking up, an export that lost its
+    floors -- has faces but none facing a given way. Taking the max of both
+    classes then raises on an empty array, and the traceback replaces the report
+    that would have said every room was unseen and why."""
+    from lidar2ha.ceilings import mesh_top_z
+
+    down = faces(0, 0, 3, 3, 2.4)
+    empty = np.zeros((0, 3))
+    assert mesh_top_z(down, empty) == 2.4
+    assert mesh_top_z(empty, down) == 2.4
+
+
+def test_a_ceiling_at_the_truncation_limit_is_a_lower_bound():
+    """Exactly at the margin the scan still stopped where the room did. The
+    boundary belongs on the refusing side: writing it records a lower bound as
+    a measurement, and nothing downstream can tell the difference."""
+    room = room_at("void", 0, 0, 3, 3)
+    up = faces(0, 0, 3, 3, 0.0)
+    down = faces(0, 0, 3, 3, 4.85)
+    # mesh_top chosen so c95 lands exactly on mesh_top - margin.
+    m = measure_room(room, down, up, mesh_top=5.00, truncation_margin_m=0.15)
+    assert m.verdict == "truncated"
+    assert write_back([(None, room, m)]) == []
+
+
+def test_a_registered_level_is_read_through_its_registration():
+    """The assumption that plan and mesh share a frame was harmless while this
+    only printed. It writes now, so a level that HAS a registration must be read
+    through it -- otherwise coincidental overlap assigns another room's ceiling
+    and puts it in the model."""
+    from lidar2ha.schema import Registration
+
+    # The room sits at the plan origin; the mesh has it 20 m east.
+    room = room_at("shifted", 0, 0, 3, 3)
+    reg = Registration(theta_deg=0.0, tx_m=20.0, ty_m=0.0, mirror=False,
+                       median_error_m=0.02, coverage=1.0)
+    up, down = faces(20, 0, 3, 3, 0.0), faces(20, 0, 3, 3, 2.5)
+
+    unregistered = measure_room(room, down, up, mesh_top=5.0)
+    assert unregistered.verdict == "unseen", (
+        "if the untransformed room already finds the faces this proves nothing")
+
+    registered = measure_room(room, down, up, mesh_top=5.0, registration=reg)
+    assert registered.verdict == "measured"
+    assert registered.p95_cm is not None and abs(registered.p95_cm - 250) < 2

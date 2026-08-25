@@ -997,7 +997,14 @@ def deploy(render_out: Path, project: Path | None, push: bool, push_all: bool,
             manifest.unchanged = []
         deployer.print_manifest(manifest, remote_root, pushing=push)
 
-        if transport and not manifest.empty:
+        # `push` AND a transport. The transport exists for a dry run too, because
+        # a manifest that cannot see the target can only say "everything is
+        # new", which is the one thing you already knew. Without the `push`
+        # test here that connection wrote: a bare `lidar2ha deploy` copied every
+        # changed frame to a live Home Assistant and then printed "Nothing was
+        # copied. Add --push to do it." This is the only stage that writes to a
+        # system somebody depends on, and its dry run is the whole safeguard.
+        if push and transport and not manifest.empty:
             transport.makedirs(remote_root)
             for path, _size in manifest.to_push:
                 transport.put(path, remote_root / path.name)
