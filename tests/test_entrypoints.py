@@ -471,7 +471,9 @@ def test_whichlevel_runs_end_to_end(tmp_path, model_path):
         capture_output=True, text=True)
 
     assert done.returncode == 0, done.stderr
-    assert "IDENTIFIED" in done.stdout or "NONE" in done.stdout
+    # A model fits itself exactly, so anything but IDENTIFIED means the stage
+    # cannot recognise the one case it certainly should.
+    assert "IDENTIFIED" in done.stdout, done.stdout
 
 
 def test_whichlevel_with_nothing_to_compare_against_says_so(tmp_path, model_path):

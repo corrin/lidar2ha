@@ -79,8 +79,11 @@ def test_a_capture_of_nowhere_declared_is_refused_rather_than_ranked():
 
     answer = rank(elsewhere, {"ground": ground, "upstairs": upstairs})
 
-    assert answer.verdict == "none"
-    assert answer.level is None
+    # Either refusal is right and the distinction is not the point: `none` is
+    # "nothing fits", `ambiguous` is "these two are the same answer", and a
+    # small capture landing plausibly on both is genuinely the second.
+    assert answer.level is None, f"named {answer.level!r} for a capture of nowhere"
+    assert answer.verdict in {"none", "ambiguous"}
     assert answer.ranked, "a refusal must still show what it tried"
 
 
@@ -93,18 +96,40 @@ def test_the_reason_names_the_number_that_refused_it():
     assert "cm" in answer.reason
 
 
-def test_a_fit_on_too_little_of_the_capture_is_refused():
-    """The median is taken over the points that MATCHED, so a capture sharing a
-    few walls with a storey reports a fine one and says nothing about the rest
-    of itself. Coverage is the only thing that tells those apart."""
-    ground = storey("ground")
-    answer = rank(ground, {"ground": ground}, min_coverage=0.99, same_level_cm=50.0)
+def test_thin_coverage_is_reported_and_never_refuses():
+    """`combine` paid for this rule once: coverage is the fraction of the
+    CAPTURE a storey explains, so a capture seeing a room the storey does not
+    always scores lower, and a 90% threshold there rejected the one capture
+    holding a mid-level bathroom at 88% -- the very room worth having.
 
-    # Guard: the fit itself is good, so only the coverage rule can be refusing.
-    assert answer.ranked[0].median_cm < 5.0
-    if answer.ranked[0].coverage < 0.99:
-        assert answer.verdict == "none"
-        assert "coverage" in answer.reason or "%" in answer.reason
+    The error decides; a thin fit is said out loud beside it.
+    """
+    ground = storey("ground")
+    # The capture has a wing the storey does not, so part of it matches nothing
+    # -- which is exactly the shape of a capture worth keeping.
+    lv = ground.levels[0]
+    wider = ground.model_copy(update={"levels": [lv.model_copy(update={
+        "walls": [*lv.walls, wall(2000.0, 2000.0, 2600.0, 2000.0),
+                  wall(2600.0, 2000.0, 2600.0, 2400.0)]})]})
+    answer = rank(wider, {"ground": ground}, low_coverage=0.999)
+
+    assert answer.ranked[0].coverage < 0.999, "guard: this fit must read as thin"
+    assert answer.verdict == "identified", "coverage refused a good fit"
+    assert "%" in answer.reason, "the thinness has to be visible"
+
+
+def test_a_level_that_cannot_be_fitted_at_all_is_named():
+    """A level quietly absent from the ranking looks exactly like one that was
+    tried and lost. A capture with no walls to compare against is a fact about
+    the input, and the reader has to be told which levels never ran."""
+    from lidar2ha.schema import Level as L
+    from lidar2ha.schema import Model as M
+
+    wall_less = M(source="x.dxf", levels=[L(name="empty", ceiling_height_cm=250.0)])
+    answer = rank(storey("a"), {"good": storey("a"), "empty": wall_less})
+
+    assert any("empty" in u for u in answer.unfittable)
+    assert "empty" in answer.reason
 
 
 def test_two_storeys_it_cannot_separate_are_ambiguous_not_a_winner():
@@ -115,10 +140,13 @@ def test_two_storeys_it_cannot_separate_are_ambiguous_not_a_winner():
     twin = storey("twin")          # the same shape: nothing can choose
 
     answer = rank(shifted(ground, 800.0, 300.0), {"ground": ground, "twin": twin})
-    assert answer.verdict in {"ambiguous", "identified"}
-    if answer.verdict == "ambiguous":
-        assert answer.level is None
-        assert "too close" in answer.reason
+
+    # Guard: the two really are indistinguishable, or this proves nothing.
+    assert abs(answer.ranked[0].median_cm - answer.ranked[1].median_cm) < 0.5
+    assert answer.verdict == "ambiguous", (
+        f"picked {answer.level!r} out of two identical storeys")
+    assert answer.level is None
+    assert "too close" in answer.reason
 
 
 def test_nothing_to_compare_against_is_said_rather_than_crashed():

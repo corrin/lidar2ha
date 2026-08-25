@@ -7,18 +7,21 @@ answers the question you already aimed it at -- so identifying one capture
 across three storeys means running it by hand, once per storey, and reading the
 numbers side by side. One real table took nine invocations to assemble.
 
-WHAT MAKES IT ANSWERABLE IS COVERAGE, NOT THE ERROR. A capture that shares a
-few walls with a storey reports a fine median over the handful of points that
-matched, and the same capture placed on the wrong storey entirely reports much
-the same thing -- every point does find a nearby point, just the wrong one.
-Measured on one house, a capture of a storey reads 0.0-0.9 cm at 100% coverage
-against its own and 20-35 cm against the others, so the separation is wide; but
-two captures that belong to NO declared storey sit at 21-31 cm on 59-79%, and
-it is the coverage that says those are a refusal rather than a weak answer.
+THE ERROR DECIDES. Measured on one house, a capture reads 0.0-0.9 cm against its
+own storey and 20-35 cm against the others, so the separation is enormous and
+nothing subtle is needed to see it.
 
-So this refuses. A ranking with nothing at the top of it is the failure mode
-worth avoiding: it invites the reader to take the least bad row, which for a
-capture of a building nobody has declared is a confident wrong answer.
+COVERAGE IS REPORTED AND NEVER REFUSES. It is the fraction of the CAPTURE a
+storey explains, so a capture that sees a room the storey does not always scores
+lower -- `combine` learned that the expensive way, where a 90% threshold
+rejected the one capture containing a mid-level bathroom, at 88%, which was the
+very room worth having. A thin fit is said out loud beside the number that
+decided, and left to the reader.
+
+So this refuses on the ERROR. A ranking with nothing at the top of it is the
+failure mode worth avoiding: it invites the reader to take the least bad row,
+which for a capture of a building nobody has declared is a confident wrong
+answer.
 
 Usage:
     python -m lidar2ha.whichlevel capture.json --against ground.json mid.json
@@ -28,7 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .compare import plan_fit
@@ -38,15 +41,21 @@ from .schema import Model, load_model
 # same line for the same reason and this deliberately matches it -- a capture
 # this identifies is one `combine` will then accept.
 SAME_LEVEL_CM = 5.0
-# Below this, the fit rests on too little of the capture to mean anything. A
-# capture that shares a few walls with a storey reports a fine median over the
-# points that matched and says nothing about the rest of itself.
-MIN_COVERAGE = 0.90
-# How much better the best must be than the next. Measured, a capture on its own
-# storey reads 0.0-0.9 cm where the next storey reads 20-35, so the real gap is
-# enormous; anything under this is two storeys the capture cannot tell apart,
-# which happens when it holds rooms from both.
+# Coverage this low is worth SAYING and is never grounds for refusing. It is the
+# fraction of the CAPTURE the storey explains, so a capture that sees a room the
+# storey does not always scores lower -- `combine` learned that the expensive
+# way, where a 90% threshold rejected the one capture containing a mid-level
+# bathroom, at 88%, which was the very room worth having. Reported beside the
+# error so a reader can weigh it; the error is what decides.
+LOW_COVERAGE = 0.90
+# How much better the best must be than the next, as a ratio AND in centimetres.
+# Measured, a capture on its own storey reads 0.0-0.9 cm where the next reads
+# 20-35, so a real answer clears both by a mile. The ratio alone is not enough:
+# an exact fit reads 0.0 cm, and every multiple of zero is zero, so two
+# indistinguishable storeys would both pass it and the first would be picked
+# arbitrarily.
 MARGIN = 2.0
+MIN_GAP_CM = 2.0
 
 
 @dataclass
@@ -68,24 +77,37 @@ class Answer:
     level: str | None
     reason: str
     ranked: list[Candidate]
+    # Levels that could not be fitted at all, and why. A level missing from the
+    # ranking without explanation looks like one that was tried and lost.
+    unfittable: list[str] = field(default_factory=list)
 
 
 def rank(capture: Model, levels: dict[str, Model], *,
          same_level_cm: float = SAME_LEVEL_CM,
-         min_coverage: float = MIN_COVERAGE,
-         margin: float = MARGIN) -> Answer:
+         low_coverage: float = LOW_COVERAGE,
+         margin: float = MARGIN,
+         min_gap_cm: float = MIN_GAP_CM) -> Answer:
     """Fit the capture onto every declared storey and say which one it is.
 
     THREE ANSWERS. `identified` is one storey clearly better than the rest;
     `ambiguous` is two the capture cannot separate, which is what a capture
     holding rooms from both looks like; `none` is a capture that fits nothing,
     which is a refusal and not a ranking with a weak winner at the top.
+
+    THE ERROR DECIDES AND COVERAGE IS REPORTED. Coverage is the fraction of the
+    CAPTURE a storey explains, so a capture seeing a room the storey does not
+    always scores lower -- refusing on it discards exactly the captures worth
+    having. It is said out loud instead, beside the number that did decide.
     """
     ranked: list[Candidate] = []
+    unfittable: list[str] = []
     for name, level in levels.items():
         try:
             fit = plan_fit(capture, level)
-        except ValueError:
+        except ValueError as exc:
+            # Named, not skipped. A level quietly absent from the ranking looks
+            # exactly like one that was tried and lost.
+            unfittable.append(f"{name} ({exc})")
             continue
         ranked.append(Candidate(
             level=name,
@@ -95,11 +117,13 @@ def rank(capture: Model, levels: dict[str, Model], *,
             sampled=fit["sampled"],
         ))
     ranked.sort(key=lambda c: (c.median_cm, -c.coverage))
+    aside = (f". Not comparable at all: {', '.join(unfittable)}"
+             if unfittable else "")
 
     if not ranked:
         return Answer("none", None,
-                      "nothing to compare against -- the capture or every level "
-                      "given has no walls to fit", ranked)
+                      "nothing could be compared -- the capture or every level "
+                      f"given has no walls to fit{aside}", ranked, unfittable)
 
     best = ranked[0]
     if best.median_cm > same_level_cm:
@@ -107,28 +131,31 @@ def rank(capture: Model, levels: dict[str, Model], *,
                       f"the closest is {best.level!r} at {best.median_cm:.1f} cm, "
                       f"over the {same_level_cm:.0f} cm a capture of a storey "
                       f"reads against its own. This is a capture of somewhere "
-                      f"not declared here, or one no fit can place", ranked)
-    if best.coverage < min_coverage:
-        return Answer("none", None,
-                      f"{best.level!r} fits at {best.median_cm:.1f} cm but over "
-                      f"only {best.coverage * 100:.0f}% of the capture. The "
-                      f"median is taken on the part that matched and says "
-                      f"nothing about the rest -- this is a refusal, not a weak "
-                      f"answer", ranked)
+                      f"not declared here, or one no fit can place{aside}",
+                      ranked, unfittable)
 
+    # SEPARATED ON BOTH, or the two storeys are one answer. A ratio alone fails
+    # at an exact fit, where every multiple of 0.0 cm is 0.0 and the first row
+    # would be picked arbitrarily.
     runner = next((c for c in ranked[1:] if c.level != best.level), None)
-    if runner is not None and runner.median_cm < best.median_cm * margin:
+    if runner is not None and not (runner.median_cm >= best.median_cm * margin
+                                   and runner.median_cm - best.median_cm >= min_gap_cm):
         return Answer("ambiguous", None,
                       f"{best.level!r} at {best.median_cm:.1f} cm and "
                       f"{runner.level!r} at {runner.median_cm:.1f} cm are too "
                       f"close to choose between. A capture holding rooms from "
-                      f"two storeys reads exactly like this -- see "
-                      f"`polycam`, which splits one on its ceiling bands",
-                      ranked)
+                      f"two storeys reads exactly like this -- see `polycam`, "
+                      f"which splits one on its ceiling bands{aside}",
+                      ranked, unfittable)
 
+    thin = (f", though over only {best.coverage * 100:.0f}% of the capture -- "
+            f"the rest of it matched nothing there, which is what a capture "
+            f"holding ground the storey does not have looks like"
+            if best.coverage < low_coverage else
+            f" over {best.coverage * 100:.0f}% of the capture")
     return Answer("identified", best.level,
-                  f"{best.level!r} at {best.median_cm:.1f} cm over "
-                  f"{best.coverage * 100:.0f}% of the capture", ranked)
+                  f"{best.level!r} at {best.median_cm:.1f} cm{thin}{aside}",
+                  ranked, unfittable)
 
 
 def levels_from_project(project_path: Path) -> dict[str, Model]:
@@ -160,7 +187,9 @@ def main():
                     help="combined model per storey; the file name is the label")
     ap.add_argument("--project", help="project.yaml, to find them by level name")
     ap.add_argument("--same-level-cm", type=float, default=SAME_LEVEL_CM)
-    ap.add_argument("--min-coverage", type=float, default=MIN_COVERAGE)
+    ap.add_argument("--low-coverage", type=float, default=LOW_COVERAGE,
+                    help="below this, coverage is reported as thin -- it is "
+                         "never a reason to refuse")
     args = ap.parse_args()
 
     levels: dict[str, Model] = {}
@@ -179,7 +208,7 @@ def main():
     for level in capture.levels:
         one = capture.model_copy(update={"levels": [level]})
         answer = rank(one, levels, same_level_cm=args.same_level_cm,
-                      min_coverage=args.min_coverage)
+                      low_coverage=args.low_coverage)
         print(f"  {level.name}  ({len(level.walls)} walls, {len(level.rooms)} rooms)")
         for c in answer.ranked:
             mark = "  <--" if c.level == answer.level else ""

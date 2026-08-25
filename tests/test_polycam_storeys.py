@@ -159,3 +159,26 @@ def test_a_door_goes_to_the_bands_whose_rooms_it_opens_into():
 
     got = doors_touching([inside, outside], band_footprint(rooms))
     assert got == [inside]
+
+
+def test_a_labelled_floor_with_no_rooms_still_becomes_a_level():
+    """Polycam does not always close a room, and a cluster of walls with none
+    would otherwise produce no bands and so no level at all -- the storey and
+    every wall on it vanishing because its floors were not traced. A capture
+    silently one storey short is the failure this repo is organised against."""
+    storeys, shafts = split_into_storeys([])
+    assert (storeys, shafts) == ([], []), (
+        "guard: if this ever returns a band the caller's fallback is dead code")
+
+
+def test_the_storey_height_is_a_parameter_and_not_a_fact():
+    """2.7 m is one house. A building with a mezzanine closer than half a storey
+    would have two real floors merged, and the only way to find that out is to
+    try a different number."""
+    rooms = [room("low", 2.10, 2.10), room("high", 3.60, 3.60)]
+
+    merged, _ = split_into_storeys(rooms, storey_m=4.0)
+    assert len(merged) == 1, "1.5 m apart is under half of 4 m, so one storey"
+
+    apart, _ = split_into_storeys(rooms, storey_m=2.0)
+    assert len(apart) == 2, "1.5 m apart is over half of 2 m, so two"

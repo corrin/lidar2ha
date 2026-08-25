@@ -327,6 +327,15 @@ def main():
                          "keeps its walls and floor heights out of the building")
     ap.add_argument("--default-height", type=float, default=2.4,
                     help="ceiling height in metres when the CSV has none")
+    ap.add_argument("--storey-m", type=float, default=STOREY_M,
+                    help="one storey in metres. Rooms whose ceilings sit closer "
+                         "together than half of this are on the same floor, and "
+                         "a room spanning more than it is a shaft. Raise it for "
+                         "a building with tall storeys; lower it for a mezzanine "
+                         "that is being merged into the floor below")
+    ap.add_argument("--band-reach-m", type=float, default=BAND_REACH_M,
+                    help="how far from a storey's rooms a wall still counts as "
+                         "one of that storey's")
     args = ap.parse_args()
 
     msp = ezdxf.readfile(args.dxf).modelspace()
@@ -432,11 +441,18 @@ def main():
         # one `combine` fits as a rigid body and `compare` averages. Done here
         # rather than earlier because the band is read off the ceilings, which
         # were only attached just above.
-        storeys, shafts = split_into_storeys(rg)
+        storeys, shafts = split_into_storeys(rg, args.storey_m)
 
         # The shaft goes on the lowest band and is flagged there. It is really
         # on all of them; dropping it would lose a room, and filing it quietly
         # would make a stairwell indistinguishable from a tall room.
+        # A LABELLED FLOOR WITH NO ROOM POLYGONS STILL EXISTS. Polycam does not
+        # always close a room, and a cluster of walls with none would otherwise
+        # produce no bands and so no level at all -- the storey and every wall
+        # on it vanishing because its floors were not traced.
+        if not storeys and not shafts:
+            storeys = [(0.0, [])]
+
         if shafts:
             if storeys:
                 order = {id(r): i for i, r in enumerate(rg)}
@@ -468,8 +484,8 @@ def main():
                 # file -- it is simply where the sheet drew the room.
                 name = f"{label} ({centre * M_TO_CM:.0f}cm)"
                 footprint = band_footprint(band_rooms)
-                wg_band = walls_touching(wg, footprint)
-                dg_band = doors_touching(dg, footprint)
+                wg_band = walls_touching(wg, footprint, args.band_reach_m)
+                dg_band = doors_touching(dg, footprint, args.band_reach_m)
             else:
                 name, wg_band, dg_band = label, wg, dg
 
@@ -542,6 +558,7 @@ def _build_level(args, name, rg, wg, dg):
 
 def _report(args, levels):
     """Write the model, then say what is in it."""
+    storey_cm = getattr(args, "storey_m", STOREY_M) * M_TO_CM
     model = Model(source=Path(args.dxf).name, role=args.role, units="cm", levels=levels)
     save_model(model, args.out)
 
@@ -564,7 +581,7 @@ def _report(args, levels):
                 span = f"{hi:.0f}cm"
             mark = ("   SHAFT -- spans storeys, on no single floor"
                     if lo is not None and hi is not None
-                    and hi - lo > STOREY_M * M_TO_CM else "")
+                    and hi - lo > storey_cm else "")
             print(f"      {str(r.name):<14} {len(r.points):>2} pts   "
                   f"ceiling {span}{mark}")
 
