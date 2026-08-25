@@ -17,7 +17,7 @@ from pathlib import Path
 
 import click
 
-from . import __version__, javabridge, render
+from . import __version__, javabridge, projectlevels, render
 from .javabridge import ToolchainError
 
 OK = "ok"
@@ -272,7 +272,27 @@ def init(directory: Path) -> None:
               help="a combined model per storey; its file name is the label")
 @click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="project.yaml, to find them by level name")
-def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -> None:
+@click.option("--write", is_flag=True,
+              help="also print the project.yaml `levels:` block to paste. "
+                   "Refusals are left out")
+@click.option("--capture-id", default=None,
+              help="the capture id as project.yaml spells it, when the model "
+                   "file name is not it")
+@click.option("--same-level-cm", type=float, default=None)
+@click.option("--margin", type=float, default=None,
+              help="how many times better the best storey must be than the "
+                   "next before it counts as identified")
+@click.option("--min-gap-cm", type=float, default=None,
+              help="and how many centimetres better, which is what stops an "
+                   "exact fit against two identical storeys picking one "
+                   "arbitrarily")
+@click.option("--low-coverage", type=float, default=None,
+              help="below this, coverage is reported as thin -- it is never a "
+                   "reason to refuse")
+def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
+               write: bool, capture_id: str | None, same_level_cm: float | None,
+               margin: float | None, min_gap_cm: float | None,
+               low_coverage: float | None) -> None:
     """Say which storey a capture is of, per level inside it.
 
     Every other stage needs the answer first -- `combine` will not look at a
@@ -285,6 +305,13 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -
     from . import whichlevel as stage
     from .schema import load_model
 
+    if write and not project:
+        raise SystemExit(
+            "--write needs --project. The block it prints names LEVELS, and "
+            "only project.yaml says what they are called -- from --against the "
+            "labels are file names, and a block naming those would paste in "
+            "looking right and match no level at all.")
+
     levels = {}
     if project:
         levels.update(stage.levels_from_project(project))
@@ -295,11 +322,21 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -
             "Nothing to compare against. Pass --against with a combined model "
             "per storey, or --project to find them by level name.")
 
+    # Defaulted to None and dropped rather than repeated here, so the numbers
+    # live in the stage alone -- a second copy of a tuned constant drifts, and
+    # a stale one in the packaged command would be the one most people run.
+    tuned = {k: v for k, v in (("same_level_cm", same_level_cm),
+                               ("margin", margin),
+                               ("min_gap_cm", min_gap_cm),
+                               ("low_coverage", low_coverage)) if v is not None}
+
     model = load_model(capture)
     click.echo(f"{capture.name}  ({len(model.levels)} level(s))\n")
+    answers = []
     for level in model.levels:
         one = model.model_copy(update={"levels": [level]})
-        answer = stage.rank(one, levels)
+        answer = stage.rank(one, levels, **tuned)
+        answers.append((level.name, answer))
         click.echo(f"  {level.name}  ({len(level.walls)} walls, "
                    f"{len(level.rooms)} rooms)")
         for c in answer.ranked:
@@ -307,6 +344,11 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -
             click.echo(f"      {c.level:<28}{c.median_cm:7.1f} cm  "
                        f"{c.coverage * 100:3.0f}% of {c.sampled:,} points{mark}")
         click.echo(f"      {answer.verdict.upper()}: {answer.reason}\n")
+
+    if write:
+        click.echo(stage.declaration(
+            capture_id if capture_id is not None
+            else stage.capture_id_of(capture), answers))
 
 
 # --------------------------------------------------------------------------- #
@@ -369,14 +411,20 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
         raise SystemExit(f"{project} has no level {level!r}. It has: "
                          f"{', '.join(sorted(levels))}")
 
-    ids = list(levels[level] or [])
-    if len(ids) < 2:
-        raise SystemExit(f"level {level!r} lists {len(ids)} capture(s). One capture "
-                         f"needs no combining -- build from it directly.")
+    try:
+        entries = projectlevels.parse_entries(levels[level])
+    except ValueError as exc:
+        raise SystemExit(f"{project}, level {level!r}: {exc}") from exc
 
+    ids = [w.capture_id for w in entries]
     captures = settings.get("captures") or {}
     models = {}
-    for capture_id in ids:
+    # key -> (capture id as project.yaml spells it, storey inside it). Stamped
+    # onto the record after combining, because `combine` is handed a dict of
+    # models and cannot know that two of its keys are one export.
+    provenance: dict[str, tuple[str, str | None]] = {}
+    for wanted in entries:
+        capture_id = wanted.capture_id
         # Prefer the model `rooms` has already named. A scanner name is not
         # identity, and combining before naming makes the work list ask about
         # rooms the project has already answered for.
@@ -396,8 +444,34 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                 f"{capture_id}_named.json, {capture_id}_registered.json and "
                 f"{capture_id}.json under {project.parent}.\n"
                 f"Run `python -m lidar2ha.polycam` and `.registration` on it first.")
-        click.echo(f"  {capture_id:<22} {found.relative_to(project.parent)}")
-        models[capture_id] = load_model(found)
+
+        whole = load_model(found)
+        try:
+            expanded = projectlevels.expand(wanted, whole, storey)
+        except ValueError as exc:
+            raise SystemExit(f"{project}, level {level!r}: {exc}") from exc
+        for key, one in expanded:
+            if key in models:
+                # Assigning would drop one of them, and the level would combine
+                # from fewer captures than it lists with nothing saying which.
+                raise SystemExit(
+                    f"{project}, level {level!r}: {key!r} is claimed twice. A "
+                    f"capture may appear under several levels and may name "
+                    f"several storeys, but each (capture, storey) belongs to "
+                    f"one level once.")
+            click.echo(f"  {key:<22} {found.relative_to(project.parent)}")
+            models[key] = one
+            provenance[key] = (
+                capture_id,
+                one.levels[0].name if key != capture_id else None)
+
+    # COUNTED AFTER EXPANDING, because one entry naming two storeys of a
+    # whole-house walk is two contributors, and counting the list would call
+    # that "one capture" and refuse to combine it.
+    if len(models) < 2:
+        raise SystemExit(f"level {level!r} contributes {len(models)} capture(s). "
+                         f"One capture needs no combining -- build from it "
+                         f"directly.")
 
     areas: set[str] = set()
     for capture_id in ids:
@@ -430,11 +504,20 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     click.echo("")
     try:
         result = combining.combine(
-            models, level_name=storey, reference=reference, expected_areas=areas,
+            models, reference=reference, expected_areas=areas,
             max_median_cm=max_median_cm or combining.MAX_MEDIAN_CM,
             max_p90_cm=max_p90_cm or combining.MAX_P90_CM)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+
+    # `Room.source` and `Wall.source` point at these ids, so a composite one
+    # says WHICH storey supplied a room -- an improvement, and useless unless
+    # the record also says which export on disk that was.
+    for record in result.model.captures:
+        origin, storey_name = provenance.get(record.id, (None, None))
+        if origin is not None and origin != record.id:
+            record.from_capture = origin
+            record.storey = storey_name
 
     combining.report(result)
     slug = level.lower().replace(" ", "_")

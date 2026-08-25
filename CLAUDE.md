@@ -159,6 +159,7 @@ mesh           mesh.obj     -> floor elevations
 registration   model+mesh   -> per-level Registration
 textures_*     model+mesh   -> per-wall or tiled textures
 rooms          model+yaml   -> scanner names replaced by HA area ids, open plan merged
+whichlevel     model+levels -> which storey of a capture is which level, or a refusal
 combine        many models  -> one level, geometry selected per room + a work list
 seams / split  model+yaml   -> a fused room cut into the rooms it is used as
 fixtures       fixture mesh -> bright compact clusters, with crops
@@ -204,6 +205,32 @@ declaration order up to a slop and refused above it, and floor nobody claimed
 becomes its own flagged piece rather than a quietly smaller room. Ceilings are
 inherited by neither form: one number standing for two spaces is the error the
 split exists to remove.
+
+### `levels:` says which storeys of a capture a level takes
+
+A capture that walked the whole house holds several levels of its own, so the
+level it belongs to is not a property of the capture. `combine --storey` is one
+global name and on a real project no value of it works: `--storey "Floor 1"`
+combines four single-storey captures and DISCARDS the whole-house walk, whose
+storeys are named `Floor 1 (210cm)`; `--storey "Floor 1 (210cm)"` aborts,
+because the other four have no such level. So the fact is per capture, in
+`project.yaml`, where every other per-capture fact already lives.
+
+ALWAYS A LIST, EVEN OF ONE. One capture can contribute several storeys to the
+SAME level -- Polycam laid one walk of an upstairs across two sheet clusters,
+and after the ceiling-band split two of its levels both belong to that floor
+while holding different rooms. A scalar with a plural special case would have
+made the second one the exception rather than the shape.
+
+Each (capture, storey) becomes its own entry keyed `"<id> [<storey>]"`, and a
+capture contributing one storey keeps its plain id -- so a project that never
+needed any of this combines to byte-identical output, `Room.source` included.
+`origin_of` reads that key back, which is what stops two storeys of one walk
+corroborating each other in the consensus: they are one observation.
+
+The declaration is read strictly. Every key is checked the way `extra="forbid"`
+checks a model field, because the failure of a level entry is that it does
+nothing and says nothing -- which is the failure the entry was written to end.
 
 ### Combining captures: align or discard
 
