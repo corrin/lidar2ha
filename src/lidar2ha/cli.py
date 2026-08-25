@@ -347,7 +347,8 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
 
     if write:
         click.echo(stage.declaration(
-            capture_id or stage.capture_id_of(capture), answers))
+            capture_id if capture_id is not None
+            else stage.capture_id_of(capture), answers))
 
 
 # --------------------------------------------------------------------------- #

@@ -13,6 +13,8 @@ reader who takes it gets a confident wrong answer with nothing objecting.
 
 from __future__ import annotations
 
+import pytest
+
 from lidar2ha.schema import Level, Model, Room, Wall
 from lidar2ha.whichlevel import rank
 
@@ -274,6 +276,26 @@ def test_a_name_carrying_a_quote_still_parses_as_yaml():
     assert body["levels"][odd_level] == [{"id": "walk",
                                           "storeys": [odd_storey]}], (
         "the names have to survive the round trip, not merely parse")
+
+
+def test_a_capture_id_the_declaration_cannot_carry_is_refused_before_it_prints():
+    """`--capture-id` is typed by hand, and an id carrying ` [` produced a
+    block that looked right and was refused only when somebody pasted it into
+    project.yaml and ran `combine` -- by which point nothing connects the error
+    back to the flag that caused it.
+
+    Checked in `declaration`, which is where the id becomes a key, so both
+    entry points get it from one place.
+    """
+    from lidar2ha.whichlevel import Answer, declaration
+
+    answers = [("Floor 1", Answer("identified", "Upstairs", "", []))]
+    assert declaration("walk", answers), "if this raises the test proves nothing"
+
+    with pytest.raises(ValueError, match=r"contains \' \['"):
+        declaration("odd [name]", answers)
+    with pytest.raises(ValueError, match="cannot be blank"):
+        declaration("", answers)
 
 
 def test_a_capture_that_placed_nothing_emits_no_levels_block():

@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .compare import plan_fit
+from .projectlevels import checked_id
 from .schema import Model, load_model
 
 # A fit at or under this is the same storey. `combine.MAX_MEDIAN_CM` draws the
@@ -185,7 +186,14 @@ def declaration(capture_id: str,
     explaining why each decision was made, and PyYAML does not round-trip
     comments: rewriting the file would silently delete the reasoning that makes
     it worth reading.
+
+    The id is checked HERE rather than at each entry point, because this is
+    where it becomes a key: a block naming an id `project.yaml` will refuse
+    pastes in looking right and fails at the far end, where nothing connects
+    the error back to the flag that caused it.
     """
+    capture_id = checked_id(capture_id)
+
     by_level: dict[str, list[str]] = {}
     refused: list[tuple[str, str]] = []
     for storey, answer in answers:
@@ -308,8 +316,9 @@ def main():
         print(f"      {answer.verdict.upper()}: {answer.reason}\n")
 
     if args.write:
-        print(declaration(args.capture_id or capture_id_of(Path(args.capture)),
-                          answers))
+        print(declaration(
+            args.capture_id if args.capture_id is not None
+            else capture_id_of(Path(args.capture)), answers))
 
 
 if __name__ == "__main__":

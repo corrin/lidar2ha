@@ -114,6 +114,25 @@ def test_a_storey_name_that_is_blank_is_refused_while_it_can_still_be_named():
         parse_entries([{"id": "walk", "storeys": ["", "Floor 3"]}])
 
 
+def test_a_mapping_key_that_is_not_a_string_gets_a_sentence_not_a_traceback():
+    """YAML admits `1: x` as a key. Mixing one with a string key raised
+    `TypeError` from inside `sorted`, and `combine` catches only `ValueError`
+    -- so this one bad declaration got a traceback where every other one gets a
+    sentence naming the capture and the key."""
+    with pytest.raises(ValueError, match="does not read"):
+        parse_entries([{"id": "walk", 1: "x", "storey": "Floor 3"}])
+
+
+def test_a_blank_capture_id_is_refused():
+    """It names the export in `Room.source`, so a room carrying a blank one
+    cannot be checked, re-scanned or argued with -- and `--capture-id ""` used
+    to be read as "no override given" and silently replaced by the file name."""
+    with pytest.raises(ValueError, match="cannot be blank"):
+        parse_entries([""])
+    with pytest.raises(ValueError, match="cannot be blank"):
+        parse_entries([{"id": "   ", "storeys": ["Floor 1"]}])
+
+
 def test_an_id_that_is_not_a_string_is_refused():
     """`id: 2006` reads as an int from an unquoted capture id, and stringifies
     to something that matches no export -- so the level would combine one

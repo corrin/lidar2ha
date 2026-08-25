@@ -90,7 +90,11 @@ def parse_entries(entries) -> list[Wanted]:
         # gave them the UNDECLARED path -- a declaration that did nothing, said
         # nothing, and left the capture out of the union it was written to put
         # it in.
-        unknown = sorted(set(entry) - {"id", "storeys"})
+        # STRINGIFIED BEFORE SORTING. YAML admits `1: x` as a key, and a
+        # mapping mixing a numeric key with a string one raised `TypeError`
+        # from inside `sorted` -- which `combine` does not catch, so the reader
+        # got a traceback where every other bad declaration gets a sentence.
+        unknown = sorted(str(k) for k in set(entry) - {"id", "storeys"})
         if unknown:
             hint = (" -- did you mean `storeys:`?"
                     if "storey" in unknown else "")
@@ -148,6 +152,11 @@ def checked_id(capture_id) -> str:
     the mapping.
     """
     text = str(capture_id)
+    if not text.strip():
+        raise ValueError(
+            "a capture id cannot be blank -- it is what names the export in "
+            "`Room.source`, and a room that cannot name where it came from "
+            "cannot be checked or re-scanned")
     if " [" in text:
         raise ValueError(
             f"capture id {text!r} contains ' [', which is how a storey is "
