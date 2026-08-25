@@ -89,11 +89,22 @@ MIN_ELEVATION_CM = 10.0
 # routinely shift more than this between runs, which would mean the declaration
 # is chasing the detector rather than describing the house.
 PAIRING_MATCH_CM = 60.0
-# ...and a point must pick ONE fitting out of the room. Measured over three
-# storeys, the closest pair of fittings within a single room is 10.1 cm and
-# several rooms sit under 40, so no fixed radius is both generous and
-# unambiguous. The second-nearest must therefore be this many times further
-# away than the nearest, or the point has not named anything and is refused.
+# ...and a point must pick ONE candidate out of the room, by a clear margin
+# rather than by a hair.
+#
+# CANDIDATE SPACING MEASURES THE DETECTOR, NOT THE HOUSE. `fixtures` selects on
+# luma alone, so windows, vents and white appliances qualify, and the false
+# positives cluster near the real fittings because both sit on the bright parts
+# of a room. Two runs over one capture bear it out: the closest same-room pair
+# came out at 10.1 cm in one and 15.4 cm in another, on different crops
+# entirely. So there is no spacing to tune a radius against -- the number would
+# be tracking the detector's mood.
+#
+# That is the argument for a RATIO rather than a distance, and for refusing
+# rather than resolving. Whatever the crowding happens to be on the day, a
+# point that does not stand clearly closer to one candidate than to its
+# neighbour has not named anything, and taking the nearer would be the
+# proximity guess this module declines to make everywhere else.
 PAIRING_AMBIGUOUS_RATIO = 2.0
 
 
@@ -225,10 +236,10 @@ def match_fitting(point: tuple[float, float], measured: list[Fitting], *,
 
     * nothing near it -- the distance to the nearest is reported, which is what
       separates "I mistyped a coordinate" from "the detector moved".
-    * two fittings about equally near -- the point has not picked one. Real
-      rooms have fittings 10 cm apart, so this is not hypothetical, and taking
-      the nearer by a millimetre would be the proximity guess this refuses to
-      make anywhere else.
+    * two candidates about equally near -- the point has not picked one.
+      Detected candidates really do land within 10-15 cm of each other, so this
+      is not hypothetical, and taking the nearer by a millimetre would be the
+      proximity guess this refuses to make anywhere else.
     """
     if not measured:
         return None, "the room has no measured fittings at all"

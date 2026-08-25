@@ -108,9 +108,10 @@ def test_a_point_with_nothing_near_it_is_refused_and_the_distance_reported():
 
 
 def test_a_point_between_two_close_fittings_names_neither():
-    """Measured over three storeys, the closest pair of fittings inside one room
-    is 10.1 cm. Taking the nearer by a millimetre would be exactly the proximity
-    guess this refuses to make anywhere else."""
+    """Detected candidates land within 10-15 cm of each other in a real room --
+    partly because `fixtures` selects on luma, so a false positive clusters near
+    the real fitting it is reflecting off. Taking the nearer by a millimetre
+    would be exactly the proximity guess this refuses to make anywhere else."""
     fittings = [Fitting(100, 100, 240), Fitting(110, 100, 240)]
     gap = abs(fittings[0].x - fittings[1].x)
     assert gap < 20, f"if these are far apart the test proves nothing (gap {gap})"
