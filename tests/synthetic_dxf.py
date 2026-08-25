@@ -133,10 +133,18 @@ def one_storey(directory: Path) -> tuple[Path, Path]:
 
     The shape of every capture that already worked, and so the one the storey
     split must leave completely alone.
+
+    THE TWO CEILINGS DIFFER, AND THE TALLER ROOM COMES FIRST. Both sit well
+    inside one band, so this is still a single-storey capture -- but sheet order
+    and height order now disagree, which is the only way a test can tell the
+    band search SORTING rooms to find them apart from it EMITTING them sorted.
+    Given equal ceilings that sort is stable and the two are indistinguishable:
+    the first version of this fixture used 2.40 for both, and the golden test
+    passed happily with the reordering bug put back in on purpose.
     """
     sheet = Sheet().floor_label("Floor 1", x=3.0)
-    sheet.room("Bedroom", 0.0, 0.0, 4.0, 3.0, 2.40)
-    sheet.room("Hallway", 4.0, 0.0, 2.0, 3.0, 2.40)
+    sheet.room("Bedroom", 0.0, 0.0, 4.0, 3.0, 2.60)
+    sheet.room("Hallway", 4.0, 0.0, 2.0, 3.0, 2.30)
     for x0, y0, x1, y1 in ((0, 0, 6, 0), (6, 0, 6, 3), (6, 3, 0, 3),
                            (0, 3, 0, 0), (4, 0, 4, 3)):
         sheet.wall(x0, y0, x1, y1)
@@ -162,4 +170,17 @@ def three_storeys_on_one_cluster(directory: Path) -> tuple[Path, Path]:
                            (0, 3, 6, 3), (6, 3, 6, 6), (6, 6, 0, 6), (0, 6, 0, 3)):
         sheet.wall(x0, y0, x1, y1)
     sheet.door(4.0, 1.0)
+    return sheet.write(directory)
+
+
+def labelled_floor_with_no_rooms(directory: Path) -> tuple[Path, Path]:
+    """Walls and a floor label, but no closed room outlines.
+
+    Polycam does not always close a room. Without a fallback this cluster
+    produces no ceiling bands and therefore no level at all -- the storey and
+    every wall on it vanishing because its floors were not traced.
+    """
+    sheet = Sheet().floor_label("Floor 1", x=3.0)
+    for x0, y0, x1, y1 in ((0, 0, 6, 0), (6, 0, 6, 3), (6, 3, 0, 3), (0, 3, 0, 0)):
+        sheet.wall(x0, y0, x1, y1)
     return sheet.write(directory)

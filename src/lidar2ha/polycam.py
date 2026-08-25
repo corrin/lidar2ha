@@ -338,6 +338,18 @@ def main():
                          "one of that storey's")
     args = ap.parse_args()
 
+    # VALIDATED AT THE BOUNDARY, because a non-positive storey height does not
+    # fail here -- it makes every room its own band, or none, and the model
+    # that comes out is a plausible one with the wrong number of floors in it.
+    for flag, value in (("--storey-m", args.storey_m),
+                        ("--band-reach-m", args.band_reach_m),
+                        ("--default-height", args.default_height)):
+        if not value > 0:
+            raise SystemExit(
+                f"{flag} must be greater than zero, got {value}. These are "
+                f"lengths in metres; a zero or negative one silently changes "
+                f"how many storeys this capture appears to have.")
+
     msp = ezdxf.readfile(args.dxf).modelspace()
 
     floor_labels = [

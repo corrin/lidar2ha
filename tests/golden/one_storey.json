@@ -1,0 +1,134 @@
+{
+  "source": "plan.dxf",
+  "role": "geometry",
+  "units": "cm",
+  "levels": [
+    {
+      "name": "Floor 1",
+      "ceiling_height_cm": 260.0,
+      "elevation_cm": null,
+      "walls": [
+        {
+          "xStart": 0.0,
+          "yStart": 0.0,
+          "xEnd": 600.0,
+          "yEnd": 0.0,
+          "thickness": 10.0,
+          "height": 260.0,
+          "source": null
+        },
+        {
+          "xStart": 600.0,
+          "yStart": 0.0,
+          "xEnd": 600.0,
+          "yEnd": 300.0,
+          "thickness": 9.999999999999964,
+          "height": 229.99999999999997,
+          "source": null
+        },
+        {
+          "xStart": 600.0,
+          "yStart": 300.0,
+          "xEnd": 0.0,
+          "yEnd": 300.0,
+          "thickness": 9.999999999999964,
+          "height": 260.0,
+          "source": null
+        },
+        {
+          "xStart": 0.0,
+          "yStart": 300.0,
+          "xEnd": 0.0,
+          "yEnd": 0.0,
+          "thickness": 10.0,
+          "height": 260.0,
+          "source": null
+        },
+        {
+          "xStart": 400.0,
+          "yStart": 0.0,
+          "xEnd": 400.0,
+          "yEnd": 300.0,
+          "thickness": 9.999999999999964,
+          "height": 229.99999999999997,
+          "source": null
+        }
+      ],
+      "rooms": [
+        {
+          "name": "Bedroom",
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              400.0,
+              0.0
+            ],
+            [
+              400.0,
+              300.0
+            ],
+            [
+              0.0,
+              300.0
+            ]
+          ],
+          "ceiling_low_cm": 260.0,
+          "ceiling_high_cm": 260.0,
+          "sloped": false,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "split_from": null,
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        },
+        {
+          "name": "Hallway",
+          "points": [
+            [
+              400.0,
+              0.0
+            ],
+            [
+              600.0,
+              0.0
+            ],
+            [
+              600.0,
+              300.0
+            ],
+            [
+              400.0,
+              300.0
+            ]
+          ],
+          "ceiling_low_cm": 229.99999999999997,
+          "ceiling_high_cm": 229.99999999999997,
+          "sloped": false,
+          "scanner_name": null,
+          "ha_area": null,
+          "merged_from": [],
+          "split_from": null,
+          "source": null,
+          "score": null,
+          "provisional": false,
+          "provisional_reason": []
+        }
+      ],
+      "doors": [
+        {
+          "x": 432.0,
+          "y": 106.0,
+          "width": 79.99999999999999
+        }
+      ],
+      "registration": null
+    }
+  ],
+  "captures": []
+}

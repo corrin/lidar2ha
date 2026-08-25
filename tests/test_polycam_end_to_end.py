@@ -21,13 +21,18 @@ hand-diffing against captures that are not here. Nothing guarded it until now.
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 import sys
 from unittest import mock
 
 from lidar2ha import polycam
 from lidar2ha.schema import load_model
-from synthetic_dxf import one_storey, three_storeys_on_one_cluster
+from synthetic_dxf import (
+    labelled_floor_with_no_rooms,
+    one_storey,
+    three_storeys_on_one_cluster,
+)
 
 
 def run_polycam(dxf, csv, out, capsys=None):
@@ -83,8 +88,9 @@ def test_ceilings_come_from_the_csv_row_that_says_ceiling(tmp_path):
     run_polycam(dxf, csv, tmp_path / "out.json")
 
     model = load_model(tmp_path / "out.json")
-    for r in model.levels[0].rooms:
-        assert r.ceiling_high_cm == 240.0
+    heights = {str(r.name): r.ceiling_high_cm for r in model.levels[0].rooms}
+    assert heights["Bedroom"] == 260.0
+    assert round(heights["Hallway"]) == 230.0
 
 
 # --------------------------------------------------------------------------- #
@@ -157,31 +163,50 @@ def test_each_storey_keeps_the_walls_that_bound_it(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_single_band_capture_is_emitted_byte_for_byte(tmp_path):
+def test_a_single_band_capture_matches_the_committed_golden(tmp_path):
     """THE REGRESSION THIS FILE EXISTS FOR, and one already made once.
 
     `split_into_storeys` sorts rooms by ceiling height to FIND the bands. An
     early version emitted them in that order, which reshuffled the rooms of
     every capture that had only one band -- which is every capture that was
-    already working. Nothing downstream reads room order by contract, but
-    `ceilings` matches rooms positionally, models are diffed between runs, and
-    a silent reordering is exactly the change nobody reviews.
+    already working. I caught it by hand-diffing against captures that are not
+    in this repo, and nothing guarded it.
 
-    Caught last time by hand-diffing against captures that are not in this
-    repo. This is the guard that does not depend on having them.
+    AGAINST A COMMITTED FILE, not against a second run of the same code. Two
+    runs agreeing proves the stage is deterministic and nothing more: a
+    reordering is perfectly deterministic and would have passed that happily.
+    `tests/golden/one_storey.json` is the output as it stands, so a future
+    change to the band search has to explain itself by updating a file a
+    reviewer can read.
     """
     dxf, csv = one_storey(tmp_path / "cap")
+    run_polycam(dxf, csv, tmp_path / "out.json")
 
-    run_polycam(dxf, csv, tmp_path / "first.json")
-    run_polycam(dxf, csv, tmp_path / "second.json")
+    golden = pathlib.Path("tests/golden/one_storey.json").read_text(encoding="utf-8")
+    got = (tmp_path / "out.json").read_text(encoding="utf-8")
+    assert json.loads(got) == json.loads(golden), (
+        "single-band output changed; if that is intended, regenerate "
+        "tests/golden/one_storey.json and say why in the commit")
 
-    first = (tmp_path / "first.json").read_text(encoding="utf-8")
-    second = (tmp_path / "second.json").read_text(encoding="utf-8")
-    assert first == second, "the same input produced two different models"
+    # Stated separately, because it is the property the golden is protecting
+    # and a reviewer should not have to diff a file to see it.
+    rooms = json.loads(got)["levels"][0]["rooms"]
+    assert [r["name"] for r in rooms] == ["Bedroom", "Hallway"], (
+        "rooms came out in ceiling-height order rather than sheet order")
 
-    # And the order is the one the sheet gave, not the one the band search used.
-    rooms = json.loads(first)["levels"][0]["rooms"]
-    assert [r["name"] for r in rooms] == ["Bedroom", "Hallway"]
+
+def test_a_labelled_floor_with_no_rooms_still_produces_a_level(tmp_path, capsys):
+    """Polycam does not always close a room. Without the fallback this cluster
+    yields no ceiling bands and so no level at all -- the storey and every wall
+    on it vanishing because its floors were not traced. Tested through `main()`
+    because the fallback lives there, not in `split_into_storeys`."""
+    dxf, csv = labelled_floor_with_no_rooms(tmp_path / "cap")
+    run_polycam(dxf, csv, tmp_path / "out.json", capsys)
+
+    model = load_model(tmp_path / "out.json")
+    assert len(model.levels) == 1, "the labelled floor vanished"
+    assert model.levels[0].rooms == []
+    assert len(model.levels[0].walls) == 4, "its walls went with it"
 
 
 def test_the_stage_runs_as_a_subprocess(tmp_path):
@@ -196,3 +221,19 @@ def test_the_stage_runs_as_a_subprocess(tmp_path):
 
     assert done.returncode == 0, done.stderr
     assert len(load_model(tmp_path / "out.json").levels) == 3
+
+
+def test_a_zero_storey_height_is_refused_at_the_boundary(tmp_path):
+    """It does not fail on its own. A storey height of zero makes every room
+    its own band, and what comes out is a plausible model with the wrong number
+    of floors in it -- which is the silent kind of wrong."""
+    import pytest
+
+    dxf, csv = one_storey(tmp_path / "cap")
+    argv = ["lidar2ha.polycam", str(dxf), "--csv", str(csv),
+            "-o", str(tmp_path / "out.json"), "--storey-m", "0"]
+
+    with mock.patch.object(sys, "argv", argv), pytest.raises(SystemExit) as caught:
+        polycam.main()
+    assert "greater than zero" in str(caught.value)
+    assert not (tmp_path / "out.json").exists(), "it wrote a model anyway"

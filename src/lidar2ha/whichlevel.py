@@ -187,6 +187,13 @@ def main():
                     help="combined model per storey; the file name is the label")
     ap.add_argument("--project", help="project.yaml, to find them by level name")
     ap.add_argument("--same-level-cm", type=float, default=SAME_LEVEL_CM)
+    ap.add_argument("--margin", type=float, default=MARGIN,
+                    help="how many times better the best storey must be than "
+                         "the next before it counts as identified")
+    ap.add_argument("--min-gap-cm", type=float, default=MIN_GAP_CM,
+                    help="and how many centimetres better, which is what stops "
+                         "an exact fit against two identical storeys picking "
+                         "one arbitrarily")
     ap.add_argument("--low-coverage", type=float, default=LOW_COVERAGE,
                     help="below this, coverage is reported as thin -- it is "
                          "never a reason to refuse")
@@ -208,7 +215,8 @@ def main():
     for level in capture.levels:
         one = capture.model_copy(update={"levels": [level]})
         answer = rank(one, levels, same_level_cm=args.same_level_cm,
-                      low_coverage=args.low_coverage)
+                      low_coverage=args.low_coverage, margin=args.margin,
+                      min_gap_cm=args.min_gap_cm)
         print(f"  {level.name}  ({len(level.walls)} walls, {len(level.rooms)} rooms)")
         for c in answer.ranked:
             mark = "  <--" if c.level == answer.level else ""
