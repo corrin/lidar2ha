@@ -185,6 +185,10 @@ activated `.venv` yourself. Paths below are illustrative; substitute your own.
 # 1. floor plan -> intermediate model.  Add --role fixtures for a fixture pass:
 #    its geometry is bad on purpose, and marking it keeps its walls and floor
 #    heights out of the building.
+#    A capture that walked more than one storey comes out as more than one
+#    level: Polycam returns every storey on one sheet, so the model is cut on
+#    ceiling height and each band becomes a level named for the height it sat
+#    at -- `Floor 1 (210cm)`.  Those names are what step 5c declares.
 python -m lidar2ha.polycam floorplan.dxf --csv rooms.csv -o home.json
 
 # 2. what elevation is each floor at?
@@ -214,7 +218,40 @@ python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 #     outlined, but the cutoff is a guess until you have read a sheet against
 #     it -- and a candle or a mirror still looks exactly like a fitting.
 
-# 5c. OPTIONAL, when a level was scanned more than once: merge the captures.
+# 5c. OPTIONAL, when a capture walked more than one storey: say which storey
+#     of it belongs to which level.  `whichlevel` fits each of the capture's
+#     levels onto the levels you have already combined and REFUSES rather than
+#     naming a weak winner -- a capture of somewhere undeclared still produces
+#     a least-bad row, and taking it is a confident wrong answer.
+#     --write prints the project.yaml block to paste.  It leaves refusals out:
+#     writing an unidentified storey down as a declaration would turn a refusal
+#     into a fact.
+lidar2ha whichlevel unknown_registered.json --project project.yaml --write
+
+#     which prints a block to merge into `levels:` at the TOP level of
+#     project.yaml -- it carries its own `levels:` key, so pasting it
+#     underneath one nests the whole declaration where combine never looks:
+#
+#       levels:
+#         "Upstairs":
+#           - id: "unknown_geometry_0825-1649"
+#             storeys: ["Floor 1 (710cm)", "Floor 3"]
+#
+#     merged with the entries already there, which stay as they are:
+#
+#       levels:
+#         "Upstairs":
+#           - upstairs_geometry_0823-1058          # a bare id still works
+#           - id: "unknown_geometry_0825-1649"
+#             storeys: ["Floor 1 (710cm)", "Floor 3"]
+#
+#     ALWAYS A LIST, even of one.  One capture can hold several storeys of the
+#     SAME floor -- Polycam laid one walk of an upstairs across two sheet
+#     clusters, and after the split two of its levels both belong to that floor
+#     while holding different rooms.  Naming one storey per capture would have
+#     discarded 23 m2 of it.
+
+# 5d. OPTIONAL, when a level was scanned more than once: merge the captures.
 #     Geometry is SELECTED, never averaged -- two plans of one room disagree by
 #     ~17 cm and blending matches neither wall -- so the best-scoring capture
 #     takes each room whole and the room records which one it came from.
@@ -224,7 +261,7 @@ python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 python -m lidar2ha.combine midlevel_named.json midlevel_fixtures_named.json     -o midlevel_combined.json
 lidar2ha combine "Mid Level" --project project.yaml   # same, via project.yaml
 
-# 5d. OPTIONAL, and the one step no scan can do for you: cut the rooms an open
+# 5e. OPTIONAL, and the one step no scan can do for you: cut the rooms an open
 #     plan fuses.  There is no wall to segment on, so EVERY capture returns the
 #     kitchen end and the dining end as one polygon and rescanning never
 #     separates them -- the boundary is yours to declare.  Read coordinates off

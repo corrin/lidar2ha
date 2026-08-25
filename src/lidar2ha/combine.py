@@ -60,6 +60,7 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 from .compare import MATCH_LIMIT_M, Fit, plan_fit
+from .projectlevels import origin_of
 from .registration import grid_bearing as _wall_grid_bearing
 from .registration import (
     grid_concentration,
@@ -425,9 +426,15 @@ def one_level(model: Model, name: str | None) -> Level:
     if len(model.levels) != 1:
         raise ValueError(
             f"contributes {len(model.levels)} levels "
-            f"{[lv.name for lv in model.levels]}, and combining is per level. Pass "
-            f"--level NAME to choose one -- flattening two storeys into a single "
-            f"plan lets a mirrored fit explain as much of it as the correct one")
+            f"{[lv.name for lv in model.levels]}, and combining is per level -- "
+            f"flattening two storeys into a single plan lets a mirrored fit "
+            f"explain as much of it as the correct one. Say which belong here, "
+            f"in project.yaml under this level:\n"
+            f"      - id: <capture>\n"
+            f"        storeys: [{', '.join(repr(lv.name) for lv in model.levels[:2])}]\n"
+            f"    A capture may name SEVERAL, and appear under more than one "
+            f"level: a whole-house walk is both. `--storey` still works and "
+            f"applies to every capture at once")
     return model.levels[0]
 
 
@@ -821,11 +828,23 @@ def fits_onto_others(models: Mapping[str, Model]) -> dict[str, float]:
 
 def agreement_from(pairwise: Mapping[tuple[str, str], float],
                    alive: set[str]) -> dict[str, float]:
-    """Each capture's best agreement with any OTHER capture still in the set."""
+    """Each capture's best agreement with any OTHER capture still in the set.
+
+    OTHER means a different EXPORT, not merely a different key. One capture can
+    contribute two of its storeys to a level -- a whole-house walk splits, and
+    two of its storeys can belong to the same floor -- and those two are one
+    observation. Letting them agree with each other would let a walk certify
+    itself into a union nothing else vouched for, which is the opposite of what
+    the consensus is for. They are disjoint in practice and score `inf` against
+    each other anyway, so this closes a hole that a coincidence was holding
+    shut.
+    """
     out: dict[str, float] = {}
     for name in alive:
+        mine = origin_of(name)
         errors = [v for (src, tgt), v in pairwise.items()
-                  if src == name and tgt in alive and tgt != name]
+                  if src == name and tgt in alive and tgt != name
+                  and origin_of(tgt) != mine]
         if errors:
             # The BEST pairing, not the mean of them. A capture is in the frame
             # if it lands well on ANY other capture; it is the odd one out if it
