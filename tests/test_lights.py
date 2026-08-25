@@ -108,11 +108,28 @@ def test_the_rooms_own_ceiling_beats_the_levels():
     assert elevation_for(laundry, level) == 200
 
 
-def test_a_sloped_ceiling_uses_its_low_end():
-    """Under the rake, not through it."""
+def test_a_sloped_ceiling_uses_its_high_end():
+    """The eave is not where anything hangs.
+
+    This used the LOW end, reasoning that a fitting under a rake should stay
+    under it. The reasoning holds and the number does not: the low end of a
+    sloping ceiling is where it meets the WALL. Measured over one storey of
+    raked rooms, none of whose lows was wrong, it put a master-bedroom
+    downlight at 90 cm and a sewing-room light at 130.
+    """
     level = Level(name="Ground", ceiling_height_cm=250)
-    void = room("void", ceiling_low_cm=320, ceiling_high_cm=470, sloped=True)
-    assert elevation_for(void, level) == 300
+    raked = room("attic", ceiling_low_cm=110, ceiling_high_cm=400, sloped=True)
+    assert elevation_for(raked, level) == 380
+
+
+def test_a_room_with_only_a_low_reading_still_uses_it():
+    """Preferring the high end is not distrusting the low one. Where a capture
+    supplied only the low figure it is the sole evidence there is, and falling
+    through to the level's height would discard a real measurement for a
+    building-wide guess."""
+    level = Level(name="Ground", ceiling_height_cm=470)
+    only_low = room("laundry", ceiling_low_cm=220)
+    assert elevation_for(only_low, level) == 200
 
 
 def test_a_room_with_no_measured_ceiling_falls_back_to_the_level():
