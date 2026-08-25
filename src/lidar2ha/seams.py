@@ -512,6 +512,16 @@ def writable_ring(poly: Polygon, *, where: str,
     survive it keeps full precision. A long decimal in a model is a cosmetic
     problem; a room silently twice its size is not.
     """
+    if poly.interiors:
+        held = sum(Polygon(r).area for r in poly.interiors) / CM2_PER_M2
+        raise ValueError(
+            f"{where}: this piece has a hole in it -- {held:.2f} m2 across "
+            f"{len(poly.interiors)} ring(s) -- and a room outline is a single "
+            f"ring, so writing it would produce a room {held:.2f} m2 larger "
+            f"sitting on top of whatever the hole excluded. An area that is a "
+            f"HOLE in another room, such as an island the scanner walks around, "
+            f"cannot be declared by cutting that room")
+
     exact = [(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
     rounded = [(round(x, ndigits), round(y, ndigits)) for x, y in exact]
     deduped = [p for i, p in enumerate(rounded) if p != rounded[i - 1]]

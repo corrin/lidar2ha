@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 
-from lidar2ha.combine import grid_verdict
+from lidar2ha.combine import add_caution, grid_verdict, joined_cautions
 from lidar2ha.registration import grid_concentration
 from lidar2ha.schema import Level, Wall
 
@@ -109,3 +109,23 @@ def test_a_capture_with_no_walls_has_no_grid_to_be_off():
     check = grid_verdict(45.0, empty, rectilinear())
     assert check.verdict == "no_grid"
     assert check.off_deg is None
+
+
+def test_a_capture_earning_two_cautions_keeps_both():
+    """Cautions were assigned into a dict, not accumulated, so a capture that
+    earned two kept whichever fired last.
+
+    They are not alternatives. "its bearing is unreadable" and "it is too small
+    for its coverage to mean anything" are different reasons to go and look at
+    the house, and the overwritten one is the one nobody ever saw -- which is
+    the single thing this stage may not do.
+    """
+    store: dict[str, list[str]] = {}
+    add_caution(store, "scan", "sits 5.2 deg off the wall grid, and IS NOT REFUSED")
+    add_caution(store, "scan", "spans 12% of the reference's footprint")
+    add_caution(store, "other", "lands at 5.2 cm on the anchor")
+
+    assert len(store["scan"]) == 2
+    line = joined_cautions(store)["scan"]
+    assert "off the wall grid" in line and "footprint" in line
+    assert joined_cautions(store)["other"] == "lands at 5.2 cm on the anchor"

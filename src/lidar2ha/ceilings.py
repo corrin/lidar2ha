@@ -19,8 +19,12 @@ room did and the number is a LOWER BOUND -- one capture reported 592 cm for a
 space the owner's notes put nearer 7 m. This warns when that happens rather
 than quietly returning a plausible height.
 
-Assumes plan and mesh share a frame up to cm-vs-m scaling, which holds when
-registration is near-identity; the reported face counts show if it does not.
+THE ROOM IS CARRIED ONTO THE MESH BY ITS LEVEL'S REGISTRATION when the level
+has one. Where it does not, plan and mesh are assumed to share a frame up to
+cm-vs-m scaling -- true of a capture measured against its own mesh, and the
+reported face counts show when it is not. That assumption was harmless while
+this only printed; it writes now, so a level that HAS a registration must be
+read through it rather than around it.
 
 Measuring is not writing. Without `-o` this reports and changes nothing; with
 it, the rooms it could measure get a `ceiling_high_cm` and the rooms it could
@@ -43,7 +47,8 @@ import numpy as np
 import trimesh
 from shapely.geometry import Point, Polygon
 
-from .schema import Level, Model, Room, load_model, save_model
+from .placefixtures import plan_cm_to_mesh_m
+from .schema import Level, Model, Registration, Room, load_model, save_model
 
 CM_TO_M = 0.01
 DOWN_FACING = -0.85
@@ -68,6 +73,20 @@ def _classified_faces(mesh_path: str):
     if not down:
         raise SystemExit(f"no triangle geometry in {mesh_path}")
     return np.vstack(down), np.vstack(up)
+
+
+def mesh_top_z(down: np.ndarray, up: np.ndarray) -> float:
+    """The highest face centre in the mesh, from whichever classes have one.
+
+    A mesh can hold faces and still hold none facing a given way -- a partial
+    capture of a stairwell, or a export that lost its floors. Taking `.max()`
+    of both classes then raises on an empty array, which loses the report that
+    would have said every room was unseen and why.
+    """
+    tops = [float(arr[:, 2].max()) for arr in (down, up) if len(arr)]
+    if not tops:
+        raise SystemExit("the mesh has no up- or down-facing faces to measure from")
+    return max(tops)
 
 
 class Measured(NamedTuple):
@@ -96,11 +115,24 @@ class Measured(NamedTuple):
         return self.verdict == "measured"
 
 
+def room_in_mesh_frame(room: Room, reg: Registration | None) -> Polygon:
+    """This room's footprint where the mesh has it, in metres.
+
+    Through `plan_cm_to_mesh_m` rather than by writing the rotation out again:
+    two hand-written copies of one transform is how a sign error survives.
+    """
+    if reg is None:
+        return Polygon([(x * CM_TO_M, y * CM_TO_M) for x, y in room.points])
+    placed = plan_cm_to_mesh_m(np.asarray(room.points, dtype=float), reg)
+    return Polygon([(x, y) for x, y in placed])
+
+
 def measure_room(room: Room, down: np.ndarray, up: np.ndarray, mesh_top: float, *,
+                 registration: Registration | None = None,
                  min_faces: int = MIN_FACES,
                  truncation_margin_m: float = TRUNCATION_MARGIN_M) -> Measured:
     """This room's ceiling height above its own floor, or why not."""
-    poly = Polygon([(x * CM_TO_M, y * CM_TO_M) for x, y in room.points])
+    poly = room_in_mesh_frame(room, registration)
     if not poly.is_valid:
         poly = poly.buffer(0)
 
@@ -112,7 +144,7 @@ def measure_room(room: Room, down: np.ndarray, up: np.ndarray, mesh_top: float, 
     c50 = float(np.percentile(c_in[:, 2], 50))
     c95 = float(np.percentile(c_in[:, 2], 95))
     verdict: Literal["measured", "truncated", "unseen"] = (
-        "truncated" if c95 > mesh_top - truncation_margin_m else "measured")
+        "truncated" if c95 >= mesh_top - truncation_margin_m else "measured")
     return Measured(verdict, fz, (c50 - fz) / CM_TO_M, (c95 - fz) / CM_TO_M,
                     len(c_in), len(f_in))
 
@@ -128,7 +160,8 @@ def measure(model: Model, down: np.ndarray, up: np.ndarray,
     thirds of them the wrong height, and does it silently. The room object
     itself is the identity; nothing here may reduce it to a label.
     """
-    return [(lv, r, measure_room(r, down, up, mesh_top))
+    return [(lv, r, measure_room(r, down, up, mesh_top,
+                                 registration=lv.registration))
             for lv in model.levels for r in lv.rooms]
 
 
@@ -206,7 +239,7 @@ def main():
 
     model = load_model(args.model)
     down, up = _classified_faces(args.mesh)
-    mesh_top = float(max(down[:, 2].max(), up[:, 2].max()))
+    mesh_top = mesh_top_z(down, up)
     measurements = measure(model, down, up, mesh_top)
 
     print(f"ceiling faces {len(down):,}   floor faces {len(up):,}   "
