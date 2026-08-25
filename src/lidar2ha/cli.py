@@ -932,8 +932,11 @@ def export_glb(sh3d: Path, out: Path, keep_obj: bool) -> None:
               help="print floorplan.yaml, to paste as a dashboard card")
 @click.option("--env", type=click.Path(path_type=Path), default=Path(".env"),
               show_default=True, help="file to read HA_SSH_* from")
+@click.option("--subdir", default=None,
+              help="deploy into /config/www/floorplan/NAME/ and point the card "
+                   "there. One storey per subdirectory")
 def deploy(render_out: Path, project: Path | None, push: bool, push_all: bool,
-           show_card: bool, env: Path) -> None:
+           show_card: bool, env: Path, subdir: str | None) -> None:
     """Copy the floor plan to Home Assistant, and print the card.
 
     Writes nothing unless you pass --push. This is the one step that touches a
@@ -943,10 +946,22 @@ def deploy(render_out: Path, project: Path | None, push: bool, push_all: bool,
     from . import deploy as deployer
     from . import ha
 
-    local = deployer.deployable(render_out)
-    card = deployer.card_path(render_out).read_text(encoding="utf-8")
+    if subdir is not None and not deployer.valid_subdir(subdir):
+        raise SystemExit(
+            f"--subdir {subdir!r} is not a single safe path segment. It is joined "
+            f"onto a path on a live Home Assistant and then created, so it may "
+            f"hold letters, digits, dot, dash and underscore only.")
 
-    missing = deployer.check_card_matches_images(card, local)
+    remote_root = (deployer.REMOTE_ROOT if subdir is None
+                   else deployer.REMOTE_ROOT / subdir)
+    local = deployer.deployable(render_out)
+    # Checked against the card AS THE PLUGIN WROTE IT: the rewrite below adds a
+    # directory to every reference, which would stop any of them matching a
+    # local file name and turn this check into one that always fails.
+    as_written = deployer.card_path(render_out).read_text(encoding="utf-8")
+    card = deployer.card_for_subdir(as_written, subdir)
+
+    missing = deployer.check_card_matches_images(as_written, local)
     if missing:
         raise SystemExit(
             f"The card refers to images that are not in {local}: {missing}\n"
@@ -975,17 +990,17 @@ def deploy(render_out: Path, project: Path | None, push: bool, push_all: bool,
         click.echo(f"  Could not reach the target ({exc}); listing local files only.")
 
     try:
-        remote = transport.listdir(deployer.REMOTE_ROOT) if transport else []
+        remote = transport.listdir(remote_root) if transport else []
         manifest = deployer.plan(local, remote)
         if push_all:
             manifest.changed += manifest.unchanged
             manifest.unchanged = []
-        deployer.print_manifest(manifest, deployer.REMOTE_ROOT, pushing=push)
+        deployer.print_manifest(manifest, remote_root, pushing=push)
 
         if transport and not manifest.empty:
-            transport.makedirs(deployer.REMOTE_ROOT)
+            transport.makedirs(remote_root)
             for path, _size in manifest.to_push:
-                transport.put(path, deployer.REMOTE_ROOT / path.name)
+                transport.put(path, remote_root / path.name)
                 click.echo(f"    pushed {path.name}")
             click.echo("\n  Done. The card below points at these files.")
     finally:
