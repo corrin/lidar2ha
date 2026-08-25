@@ -261,6 +261,55 @@ def init(directory: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# whichlevel
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("capture", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--against", multiple=True,
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="a combined model per storey; its file name is the label")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="project.yaml, to find them by level name")
+def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None) -> None:
+    """Say which storey a capture is of, per level inside it.
+
+    Every other stage needs the answer first -- `combine` will not look at a
+    capture until project.yaml declares its level, and `compare` only answers
+    the question you already aimed. This ranks a capture against every storey
+    you have, and REFUSES rather than naming a weak winner: a capture of
+    somewhere undeclared still produces a least-bad row, and taking it is a
+    confident wrong answer.
+    """
+    from . import whichlevel as stage
+    from .schema import load_model
+
+    levels = {}
+    if project:
+        levels.update(stage.levels_from_project(project))
+    for path in against:
+        levels[path.stem] = load_model(path)
+    if not levels:
+        raise SystemExit(
+            "Nothing to compare against. Pass --against with a combined model "
+            "per storey, or --project to find them by level name.")
+
+    model = load_model(capture)
+    click.echo(f"{capture.name}  ({len(model.levels)} level(s))\n")
+    for level in model.levels:
+        one = model.model_copy(update={"levels": [level]})
+        answer = stage.rank(one, levels)
+        click.echo(f"  {level.name}  ({len(level.walls)} walls, "
+                   f"{len(level.rooms)} rooms)")
+        for c in answer.ranked:
+            mark = "  <--" if c.level == answer.level else ""
+            click.echo(f"      {c.level:<28}{c.median_cm:7.1f} cm  "
+                       f"{c.coverage * 100:3.0f}% of {c.sampled:,} points{mark}")
+        click.echo(f"      {answer.verdict.upper()}: {answer.reason}\n")
+
+
+# --------------------------------------------------------------------------- #
 # combine
 # --------------------------------------------------------------------------- #
 

@@ -46,6 +46,25 @@ from .schema import Door, Level, Model, Room, Wall, save_model
 
 M_TO_CM = 100.0
 
+# One storey, in metres. Used two ways: rooms whose ceilings sit closer together
+# than half of this are on the same floor, and a room spanning more than this is
+# a shaft rather than a room with a tall ceiling.
+#
+# 2.7 m is a guess from one house, whose storeys came out 270 cm apart with
+# ceilings of 210, 480 and 710 cm above the capture datum. What would move it: a
+# building with a mezzanine or a split level closer than half a storey, which
+# would merge two real floors -- the symptom is a level whose rooms disagree
+# about their ceiling by more than a normal room-to-room variation.
+STOREY_M = 2.7
+
+# How far from a band's rooms a wall still counts as one of that band's. Half a
+# metre: wide enough to catch a wall drawn along the outside of a room outline
+# rather than through it, narrow enough not to reach the next room along.
+# Measured, 0.1 to 0.6 m all give the same walls on the capture this was built
+# for, so the answer is not sensitive to it -- 1.0 m starts pulling in
+# neighbours and the fit degrades.
+BAND_REACH_M = 0.5
+
 
 def strip_mtext(raw):
     """Polycam wraps MTEXT in formatting codes, e.g. '\\A1;Living Room'."""
@@ -108,6 +127,114 @@ def split_into_floors(items, n_floors):
         start = idx + 1
     clusters.append(ordered[start:])
     return clusters
+
+
+def split_into_storeys(rooms, storey_m=STOREY_M):
+    """One cluster's rooms grouped into the storeys they are actually on.
+
+    `split_into_floors` separates the sheet's side-by-side layout, and on most
+    captures that is the storey. On one it was not: walking a whole house in one
+    go produced a cluster holding rooms whose ceilings sit at 210, 480 and 710
+    cm -- three storeys stacked, a `Bedroom` at cx 2.22 m and an `Office` at
+    2.45 m, 23 cm apart in plan and a storey apart in the building.
+
+    POLYCAM REPORTS A CEILING ABOVE THE CAPTURE DATUM, not above the room's own
+    floor, so the height IS the storey and the bands come out cleanly separated.
+    `Floor N` is a real field and simply not that: it is where the sheet drew
+    the room.
+
+    A room taller than a storey belongs to no band. A stairwell is the one room
+    that genuinely spans them, and its span identifies it without a mesh -- so
+    it is returned separately for the caller to place and flag rather than
+    being averaged into whichever band its midpoint happens to land in.
+
+    Returns [(band_centre_m, rooms)], lowest first, and the shafts.
+    """
+    banded, shafts = [], []
+    for order, room in enumerate(rooms):
+        low, high = room.get("ceiling_low"), room.get("ceiling_high")
+        if low is None or high is None:
+            banded.append((None, order, room))
+        elif high - low > storey_m:
+            shafts.append(room)
+        else:
+            banded.append(((low + high) / 2, order, room))
+
+    # A room with no ceiling reading cannot be placed by height. It stays with
+    # the first band rather than becoming a storey of its own -- it is missing
+    # evidence, not evidence of a separate floor.
+    unknown = [(order, r) for mid, order, r in banded if mid is None]
+    known = sorted(((mid, order, r) for mid, order, r in banded if mid is not None),
+                   key=lambda t: t[0])
+
+    bands: list[list[tuple[float, int, dict]]] = []
+    for mid, order, room in known:
+        if bands and mid - bands[-1][-1][0] < storey_m / 2:
+            bands[-1].append((mid, order, room))
+        else:
+            bands.append([(mid, order, room)])
+
+    # SORTED TO FIND THE BANDS, EMITTED IN THE ORDER THEY ARRIVED. Height order
+    # is how a band is discovered and is not otherwise meaningful, and emitting
+    # it would silently reshuffle the rooms of every single-band capture --
+    # which is every capture that was already working.
+    out = []
+    for band in bands:
+        centre = sum(m for m, _, _ in band) / len(band)
+        out.append((centre, [r for _, _, r in sorted(band, key=lambda t: t[1])]))
+    if unknown:
+        rooms_unknown = [r for _, r in sorted(unknown, key=lambda t: t[0])]
+        if out:
+            out[0][1].extend(rooms_unknown)
+        else:
+            out = [(0.0, rooms_unknown)]
+    return out, shafts
+
+
+def band_footprint(rooms):
+    """One band's rooms as a single shapely geometry, for distance tests."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    polys = [Polygon(r["points"]).buffer(0) for r in rooms if len(r["points"]) >= 3]
+    return unary_union(polys) if polys else None
+
+
+def walls_touching(walls, footprint, reach_m=BAND_REACH_M):
+    """Every wall running along this band's rooms. NOT an exclusive partition.
+
+    A WALL CAN BELONG TO MORE THAN ONE STOREY, and in a stacked capture most
+    do: the building's outer envelope runs the full height, so it is a wall of
+    the ground floor and of the top floor alike. Splitting it exclusively would
+    give one storey the envelope and leave the others with the partitions only.
+
+    Nor is there a rule that could split it. Polycam keys ceiling heights by
+    ROOM, so a wall carries no height at all, and the storeys of one cluster
+    are stacked -- a ground-floor bedroom wall and a top-floor office wall sit
+    centimetres apart in plan. Measured, assigning exclusively by nearest
+    centroid put the top band 22.1 cm from the storey it belongs to and by
+    nearest footprint 20.5 cm, where taking every wall that touches puts it at
+    4.3 cm.
+
+    The cost is that an interior partition appears on two levels. That is a
+    duplicate for `combine` to drop -- it already deduplicates walls two
+    captures both drew -- and the alternative is a storey missing the walls
+    that bound it.
+    """
+    from shapely.geometry import LineString
+    if footprint is None:
+        return list(walls)
+    near = footprint.buffer(reach_m)
+    return [w for w in walls
+            if LineString([w["start"], w["end"]]).intersects(near)]
+
+
+def doors_touching(doors, footprint, reach_m=BAND_REACH_M):
+    """Doors are points, so this is a containment test rather than a crossing."""
+    from shapely.geometry import Point
+    if footprint is None:
+        return list(doors)
+    near = footprint.buffer(reach_m)
+    return [d for d in doors if near.contains(Point(d["cx"], d["cy"]))]
 
 
 def _parse_height(value):
@@ -200,7 +327,28 @@ def main():
                          "keeps its walls and floor heights out of the building")
     ap.add_argument("--default-height", type=float, default=2.4,
                     help="ceiling height in metres when the CSV has none")
+    ap.add_argument("--storey-m", type=float, default=STOREY_M,
+                    help="one storey in metres. Rooms whose ceilings sit closer "
+                         "together than half of this are on the same floor, and "
+                         "a room spanning more than it is a shaft. Raise it for "
+                         "a building with tall storeys; lower it for a mezzanine "
+                         "that is being merged into the floor below")
+    ap.add_argument("--band-reach-m", type=float, default=BAND_REACH_M,
+                    help="how far from a storey's rooms a wall still counts as "
+                         "one of that storey's")
     args = ap.parse_args()
+
+    # VALIDATED AT THE BOUNDARY, because a non-positive storey height does not
+    # fail here -- it makes every room its own band, or none, and the model
+    # that comes out is a plausible one with the wrong number of floors in it.
+    for flag, value in (("--storey-m", args.storey_m),
+                        ("--band-reach-m", args.band_reach_m),
+                        ("--default-height", args.default_height)):
+        if not value > 0:
+            raise SystemExit(
+                f"{flag} must be greater than zero, got {value}. These are "
+                f"lengths in metres; a zero or negative one silently changes "
+                f"how many storeys this capture appears to have.")
 
     msp = ezdxf.readfile(args.dxf).modelspace()
 
@@ -300,65 +448,129 @@ def main():
             r["ceiling_low"] = low
             r["ceiling_high"] = high
 
-        # A level's height is its tallest room -- anything less and a
-        # double-height space is capped short.
-        h = max((r["ceiling_high"] for r in rg), default=args.default_height)
+        # THE SHEET POSITION IS NOT ALWAYS THE STOREY. Split the cluster on
+        # ceiling band before building anything: a level holding two storeys is
+        # one `combine` fits as a rigid body and `compare` averages. Done here
+        # rather than earlier because the band is read off the ceilings, which
+        # were only attached just above.
+        storeys, shafts = split_into_storeys(rg, args.storey_m)
 
-        def wall_height(w, rooms_here=rg, fallback=h):
-            """Height of the room a wall bounds, not a single level-wide value.
+        # The shaft goes on the lowest band and is flagged there. It is really
+        # on all of them; dropping it would lose a room, and filing it quietly
+        # would make a stairwell indistinguishable from a tall room.
+        # A LABELLED FLOOR WITH NO ROOM POLYGONS STILL EXISTS. Polycam does not
+        # always close a room, and a cluster of walls with none would otherwise
+        # produce no bands and so no level at all -- the storey and every wall
+        # on it vanishing because its floors were not traced.
+        if not storeys and not shafts:
+            storeys = [(0.0, [])]
 
-            A 2.2 m laundry and a 4.7 m void can share a level, so taking the
-            nearest room's ceiling keeps each wall the right height. Ties and
-            open edges fall back to the tallest room, which errs upward -- too
-            tall merely hides behind the ceiling, too short leaves a gap light
-            leaks through.
-            """
-            best, bestd = None, float("inf")
-            for r in rooms_here:
-                d = (r["cx"] - w["cx"]) ** 2 + (r["cy"] - w["cy"]) ** 2
-                if d < bestd:
-                    best, bestd = r, d
-            return best["ceiling_high"] if best else fallback
+        if shafts:
+            if storeys:
+                order = {id(r): i for i, r in enumerate(rg)}
+                merged = sorted(storeys[0][1] + shafts,
+                                key=lambda r: order.get(id(r), 0))
+                storeys[0] = (storeys[0][0], merged)
+            else:
+                storeys = [(0.0, list(shafts))]
 
-        levels.append(Level(
-            name=label,
-            ceiling_height_cm=h * M_TO_CM,
-            # The DXF is 2D, so it carries no floor elevation. Filled in
-            # separately from the mesh -- see mesh.py.
-            elevation_cm=None,
-            walls=[
-                Wall(
-                    x_start=w["start"][0] * M_TO_CM,
-                    y_start=w["start"][1] * M_TO_CM,
-                    x_end=w["end"][0] * M_TO_CM,
-                    y_end=w["end"][1] * M_TO_CM,
-                    thickness=w["thickness"] * M_TO_CM,
-                    height=wall_height(w) * M_TO_CM,
-                )
-                for w in wg
-            ],
-            rooms=[
-                Room(
-                    name=r.get("name"),
-                    points=[(p[0] * M_TO_CM, p[1] * M_TO_CM) for p in r["points"]],
-                    ceiling_low_cm=r["ceiling_low"] * M_TO_CM,
-                    ceiling_high_cm=r["ceiling_high"] * M_TO_CM,
-                    # A room whose ceiling is a range is sloped or double-height.
-                    # These are the candidates for a void through the slab above.
-                    sloped=r["ceiling_high"] - r["ceiling_low"] > 0.15,
-                )
-                for r in rg
-            ],
-            doors=[
-                Door(
-                    x=d["cx"] * M_TO_CM,
-                    y=d["cy"] * M_TO_CM,
-                    width=max(d["width"], d["depth"]) * M_TO_CM,
-                )
-                for d in dg
-            ],
-        ))
+        if len(storeys) > 1:
+            bands = ", ".join(f"{c * M_TO_CM:.0f}cm x{len(rs)}" for c, rs in storeys)
+            print(f"WARNING: {label} holds {len(rg)} room(s) across "
+                  f"{len(storeys)} ceiling bands: {bands}")
+            print("  Polycam reports a ceiling above the CAPTURE DATUM, so the "
+                  "band is the storey")
+            print(f"  and {label!r} is only where the sheet drew them. Splitting "
+                  f"it -- a level holding")
+            print("  two storeys is one nothing downstream can fit.")
+        for shaft in shafts:
+            span = (shaft["ceiling_high"] - shaft["ceiling_low"]) * M_TO_CM
+            print(f"  {str(shaft['name'])!r} spans {span:.0f}cm, more than a "
+                  f"storey: a shaft, on no single")
+            print("  floor. Kept on the lowest band and flagged.")
 
+        for centre, band_rooms in storeys:
+            if len(storeys) > 1:
+                # Named for the band so two storeys off one cluster are tellable
+                # apart. `Floor N` is kept because it is a real field from the
+                # file -- it is simply where the sheet drew the room.
+                name = f"{label} ({centre * M_TO_CM:.0f}cm)"
+                footprint = band_footprint(band_rooms)
+                wg_band = walls_touching(wg, footprint, args.band_reach_m)
+                dg_band = doors_touching(dg, footprint, args.band_reach_m)
+            else:
+                name, wg_band, dg_band = label, wg, dg
+
+            levels.append(_build_level(args, name, band_rooms, wg_band, dg_band))
+    _report(args, levels)
+
+
+def _build_level(args, name, rg, wg, dg):
+    """One Level from one storey's rooms, walls and doors."""
+
+    # A level's height is its tallest room -- anything less and a
+    # double-height space is capped short.
+    h = max((r["ceiling_high"] for r in rg), default=args.default_height)
+
+    def wall_height(w, rooms_here=rg, fallback=h):
+        """Height of the room a wall bounds, not a single level-wide value.
+
+        A 2.2 m laundry and a 4.7 m void can share a level, so taking the
+        nearest room's ceiling keeps each wall the right height. Ties and
+        open edges fall back to the tallest room, which errs upward -- too
+        tall merely hides behind the ceiling, too short leaves a gap light
+        leaks through.
+        """
+        best, bestd = None, float("inf")
+        for r in rooms_here:
+            d = (r["cx"] - w["cx"]) ** 2 + (r["cy"] - w["cy"]) ** 2
+            if d < bestd:
+                best, bestd = r, d
+        return best["ceiling_high"] if best else fallback
+
+    return Level(
+        name=name,
+        ceiling_height_cm=h * M_TO_CM,
+        # The DXF is 2D, so it carries no floor elevation. Filled in
+        # separately from the mesh -- see mesh.py.
+        elevation_cm=None,
+        walls=[
+            Wall(
+                x_start=w["start"][0] * M_TO_CM,
+                y_start=w["start"][1] * M_TO_CM,
+                x_end=w["end"][0] * M_TO_CM,
+                y_end=w["end"][1] * M_TO_CM,
+                thickness=w["thickness"] * M_TO_CM,
+                height=wall_height(w) * M_TO_CM,
+            )
+            for w in wg
+        ],
+        rooms=[
+            Room(
+                name=r.get("name"),
+                points=[(p[0] * M_TO_CM, p[1] * M_TO_CM) for p in r["points"]],
+                ceiling_low_cm=r["ceiling_low"] * M_TO_CM,
+                ceiling_high_cm=r["ceiling_high"] * M_TO_CM,
+                # A room whose ceiling is a range is sloped or double-height.
+                # These are the candidates for a void through the slab above.
+                sloped=r["ceiling_high"] - r["ceiling_low"] > 0.15,
+            )
+            for r in rg
+        ],
+        doors=[
+            Door(
+                x=d["cx"] * M_TO_CM,
+                y=d["cy"] * M_TO_CM,
+                width=max(d["width"], d["depth"]) * M_TO_CM,
+            )
+            for d in dg
+        ],
+    )
+
+
+def _report(args, levels):
+    """Write the model, then say what is in it."""
+    storey_cm = getattr(args, "storey_m", STOREY_M) * M_TO_CM
     model = Model(source=Path(args.dxf).name, role=args.role, units="cm", levels=levels)
     save_model(model, args.out)
 
@@ -379,7 +591,11 @@ def main():
                 span = f"{lo:.0f}-{hi:.0f}cm  SLOPED/DOUBLE-HEIGHT"
             else:
                 span = f"{hi:.0f}cm"
-            print(f"      {str(r.name):<14} {len(r.points):>2} pts   ceiling {span}")
+            mark = ("   SHAFT -- spans storeys, on no single floor"
+                    if lo is not None and hi is not None
+                    and hi - lo > storey_cm else "")
+            print(f"      {str(r.name):<14} {len(r.points):>2} pts   "
+                  f"ceiling {span}{mark}")
 
 
 if __name__ == "__main__":
