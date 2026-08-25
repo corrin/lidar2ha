@@ -158,6 +158,60 @@ def rank(capture: Model, levels: dict[str, Model], *,
                   ranked, unfittable)
 
 
+def capture_id_of(model_path: Path) -> str:
+    """The capture id as project.yaml spells it, from a model file name.
+
+    A guess about a filename, which is why `--capture-id` exists: the id is the
+    thing being declared and a wrong one produces a block that looks right and
+    names a capture nothing can find.
+    """
+    stem = Path(model_path).stem
+    for suffix in ("_named", "_registered", "_combined"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
+def declaration(capture_id: str,
+                answers: list[tuple[str, Answer]]) -> str:
+    """The `levels:` block to paste, from what each storey was identified as.
+
+    REFUSALS ARE LEFT OUT, and said so. A storey this could not place is
+    exactly the one a person should look at, and writing it into a declaration
+    turns a refusal into a fact -- after which nothing ever asks again.
+
+    Not written into project.yaml. A fifth of a real one is commentary
+    explaining why each decision was made, and PyYAML does not round-trip
+    comments: rewriting the file would silently delete the reasoning that makes
+    it worth reading.
+    """
+    by_level: dict[str, list[str]] = {}
+    refused: list[tuple[str, str]] = []
+    for storey, answer in answers:
+        if answer.verdict == "identified" and answer.level:
+            by_level.setdefault(answer.level, []).append(storey)
+        else:
+            refused.append((storey, answer.verdict))
+
+    lines = [f"# {capture_id}: {len(by_level)} level(s) identified, "
+             f"{len(refused)} storey(s) not placed.",
+             "# Paste under `levels:` in project.yaml, merging with what is there."]
+    for storey, verdict in refused:
+        lines.append(f"#   {storey} -- {verdict.upper()}, left out deliberately: "
+                     f"a refusal written down stops being one.")
+    if not by_level:
+        lines.append("# Nothing to declare. Every storey was refused.")
+        return "\n".join(lines)
+
+    lines.append("levels:")
+    for level in sorted(by_level):
+        lines.append(f'  "{level}":')
+        lines.append(f"    - id: {capture_id}")
+        inner = ", ".join(f'"{s}"' for s in by_level[level])
+        lines.append(f"      storeys: [{inner}]")
+    return "\n".join(lines)
+
+
 def levels_from_project(project_path: Path) -> dict[str, Model]:
     """The combined model per level named in project.yaml, where one exists.
 
@@ -183,10 +237,18 @@ def levels_from_project(project_path: Path) -> dict[str, Model]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("capture")
-    ap.add_argument("--against", nargs="*", default=[],
-                    help="combined model per storey; the file name is the label")
+    ap.add_argument("--against", action="extend", nargs="+", default=[],
+                    help="combined model per storey; the file name is the label. "
+                         "Repeatable, and takes several at once -- both forms "
+                         "accumulate, as the `lidar2ha whichlevel` flag does")
     ap.add_argument("--project", help="project.yaml, to find them by level name")
     ap.add_argument("--same-level-cm", type=float, default=SAME_LEVEL_CM)
+    ap.add_argument("--write", action="store_true",
+                    help="also print the project.yaml `levels:` block to paste. "
+                         "Refusals are left out")
+    ap.add_argument("--capture-id",
+                    help="the capture id as project.yaml spells it, when the "
+                         "model file name is not it")
     ap.add_argument("--margin", type=float, default=MARGIN,
                     help="how many times better the best storey must be than "
                          "the next before it counts as identified")
@@ -198,6 +260,13 @@ def main():
                     help="below this, coverage is reported as thin -- it is "
                          "never a reason to refuse")
     args = ap.parse_args()
+
+    if args.write and not args.project:
+        raise SystemExit(
+            "--write needs --project. The block it prints names LEVELS, and "
+            "only project.yaml says what they are called -- from --against the "
+            "labels are file names, and a block naming those would paste in "
+            "looking right and match no level at all.")
 
     levels: dict[str, Model] = {}
     if args.project:
@@ -212,17 +281,23 @@ def main():
     capture = load_model(args.capture)
     print(f"{Path(args.capture).name}  ({len(capture.levels)} level(s))\n")
 
+    answers: list[tuple[str, Answer]] = []
     for level in capture.levels:
         one = capture.model_copy(update={"levels": [level]})
         answer = rank(one, levels, same_level_cm=args.same_level_cm,
                       low_coverage=args.low_coverage, margin=args.margin,
                       min_gap_cm=args.min_gap_cm)
+        answers.append((level.name, answer))
         print(f"  {level.name}  ({len(level.walls)} walls, {len(level.rooms)} rooms)")
         for c in answer.ranked:
             mark = "  <--" if c.level == answer.level else ""
             print(f"      {c.level:<28}{c.median_cm:7.1f} cm  "
                   f"{c.coverage * 100:3.0f}% of {c.sampled:,} points{mark}")
         print(f"      {answer.verdict.upper()}: {answer.reason}\n")
+
+    if args.write:
+        print(declaration(args.capture_id or capture_id_of(Path(args.capture)),
+                          answers))
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import click
 
-from . import __version__, javabridge, render
+from . import __version__, javabridge, projectlevels, render
 from .javabridge import ToolchainError
 
 OK = "ok"
@@ -369,14 +369,20 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
         raise SystemExit(f"{project} has no level {level!r}. It has: "
                          f"{', '.join(sorted(levels))}")
 
-    ids = list(levels[level] or [])
-    if len(ids) < 2:
-        raise SystemExit(f"level {level!r} lists {len(ids)} capture(s). One capture "
-                         f"needs no combining -- build from it directly.")
+    try:
+        entries = projectlevels.parse_entries(levels[level])
+    except ValueError as exc:
+        raise SystemExit(f"{project}, level {level!r}: {exc}") from exc
 
+    ids = [w.capture_id for w in entries]
     captures = settings.get("captures") or {}
     models = {}
-    for capture_id in ids:
+    # key -> (capture id as project.yaml spells it, storey inside it). Stamped
+    # onto the record after combining, because `combine` is handed a dict of
+    # models and cannot know that two of its keys are one export.
+    provenance: dict[str, tuple[str, str | None]] = {}
+    for wanted in entries:
+        capture_id = wanted.capture_id
         # Prefer the model `rooms` has already named. A scanner name is not
         # identity, and combining before naming makes the work list ask about
         # rooms the project has already answered for.
@@ -396,8 +402,26 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                 f"{capture_id}_named.json, {capture_id}_registered.json and "
                 f"{capture_id}.json under {project.parent}.\n"
                 f"Run `python -m lidar2ha.polycam` and `.registration` on it first.")
-        click.echo(f"  {capture_id:<22} {found.relative_to(project.parent)}")
-        models[capture_id] = load_model(found)
+
+        whole = load_model(found)
+        try:
+            expanded = projectlevels.expand(wanted, whole, storey)
+        except ValueError as exc:
+            raise SystemExit(f"{project}, level {level!r}: {exc}") from exc
+        for key, one in expanded:
+            click.echo(f"  {key:<22} {found.relative_to(project.parent)}")
+            models[key] = one
+            provenance[key] = (
+                capture_id,
+                one.levels[0].name if key != capture_id else None)
+
+    # COUNTED AFTER EXPANDING, because one entry naming two storeys of a
+    # whole-house walk is two contributors, and counting the list would call
+    # that "one capture" and refuse to combine it.
+    if len(models) < 2:
+        raise SystemExit(f"level {level!r} contributes {len(models)} capture(s). "
+                         f"One capture needs no combining -- build from it "
+                         f"directly.")
 
     areas: set[str] = set()
     for capture_id in ids:
@@ -430,11 +454,20 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     click.echo("")
     try:
         result = combining.combine(
-            models, level_name=storey, reference=reference, expected_areas=areas,
+            models, reference=reference, expected_areas=areas,
             max_median_cm=max_median_cm or combining.MAX_MEDIAN_CM,
             max_p90_cm=max_p90_cm or combining.MAX_P90_CM)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+
+    # `Room.source` and `Wall.source` point at these ids, so a composite one
+    # says WHICH storey supplied a room -- an improvement, and useless unless
+    # the record also says which export on disk that was.
+    for record in result.model.captures:
+        origin, storey_name = provenance.get(record.id, (None, None))
+        if origin is not None and origin != record.id:
+            record.from_capture = origin
+            record.storey = storey_name
 
     combining.report(result)
     slug = level.lower().replace(" ", "_")

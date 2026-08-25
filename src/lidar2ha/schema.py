@@ -193,6 +193,17 @@ class Capture(_Base):
     windows_found: int | None = None
     note: str | None = None
 
+    # WHERE THIS ENTRY REALLY CAME FROM, when one capture contributes more than
+    # one of its storeys to a level. A whole-house walk splits into storeys and
+    # two of them can belong to the same floor -- Polycam laid one walk of an
+    # upstairs across two sheet clusters, holding different rooms -- so each
+    # becomes its own entry, keyed `<id> [<storey>]`. `Room.source` points at
+    # that key, which is an improvement in provenance and useless unless the
+    # record also says which export on disk it was.
+    # Both None for the ordinary case, where `id` IS the capture id.
+    from_capture: str | None = None
+    storey: str | None = None
+
     # --- where this capture sits in the combined frame ----------------------
     # The rigid transform `combine` used to move this capture's plan onto the
     # reference's. Without it nothing downstream can re-derive where a room came

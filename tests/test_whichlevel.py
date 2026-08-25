@@ -221,3 +221,60 @@ def test_the_stage_refuses_to_run_with_nothing_to_compare_against(tmp_path):
     with mock.patch.object(sys, "argv", argv), pytest.raises(SystemExit) as caught:
         whichlevel.main()
     assert "Nothing to compare against" in str(caught.value)
+
+
+def test_the_declaration_names_only_the_storeys_that_were_identified():
+    """The block is meant to be pasted, so a refusal in it stops being one --
+    after which nothing ever asks about that storey again."""
+    from lidar2ha.whichlevel import Answer, declaration
+
+    answers = [
+        ("Floor 1 (210cm)", Answer("identified", "Ground Level", "", [])),
+        ("Floor 1 (480cm)", Answer("none", None, "", [])),
+        ("Floor 3", Answer("identified", "Upstairs", "", [])),
+    ]
+    block = declaration("walk", answers)
+
+    assert 'storeys: ["Floor 1 (210cm)"]' in block
+    assert 'storeys: ["Floor 3"]' in block
+    assert '"Floor 1 (480cm)"' not in block, "a refusal was written as a fact"
+    assert "Floor 1 (480cm) -- NONE" in block, "and it was not mentioned at all"
+
+
+def test_two_storeys_of_one_level_are_declared_together():
+    """One capture can hold several storeys of one floor -- a whole-house walk
+    laid across two sheet clusters does. Emitting two entries with the same id
+    would read as a duplicate rather than as the shape it is."""
+    from lidar2ha.whichlevel import Answer, declaration
+
+    answers = [("Floor 1 (710cm)", Answer("identified", "Upstairs", "", [])),
+               ("Floor 3", Answer("identified", "Upstairs", "", []))]
+    block = declaration("walk", answers)
+
+    assert block.count("- id: walk") == 1
+    assert 'storeys: ["Floor 1 (710cm)", "Floor 3"]' in block
+
+
+def test_a_capture_that_placed_nothing_emits_no_levels_block():
+    """An empty `levels:` heading pasted into project.yaml is a declaration
+    that says nothing and looks like one that says something."""
+    from lidar2ha.whichlevel import Answer, declaration
+
+    block = declaration("walk", [("Floor 1", Answer("none", None, "", []))])
+    # The key itself, not the word -- the header comment mentions `levels:`
+    # while telling the reader where to paste.
+    assert not [ln for ln in block.splitlines() if ln.strip() == "levels:"]
+    assert "Nothing to declare" in block
+
+
+def test_the_capture_id_is_taken_from_the_model_name_without_its_suffix():
+    """project.yaml names the capture, not the file `rooms` or `registration`
+    wrote. A wrong id produces a block that looks right and names a capture
+    nothing can find."""
+    from pathlib import Path
+
+    from lidar2ha.whichlevel import capture_id_of
+
+    assert capture_id_of(Path("exports/walk/walk_named.json")) == "walk"
+    assert capture_id_of(Path("walk_registered.json")) == "walk"
+    assert capture_id_of(Path("walk.json")) == "walk"
