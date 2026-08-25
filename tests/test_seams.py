@@ -455,3 +455,32 @@ def test_an_unregistered_level_cannot_be_asked():
                  floor=synthetic_floor(step_at=0.19))
 
     assert cuts[0].edges[0].unmeasured == "level is unregistered"
+
+
+def test_the_piece_a_split_creates_is_checked_against_the_rest_of_the_level():
+    """The failure a split makes possible rather than one it causes.
+
+    The pieces of one cut tile their parent exactly, so a split cannot overlap
+    itself. But a split is where the SMALL piece comes into existence, and the
+    small piece is what gets buried: on one real house a fused room cut into a
+    1.44 m2 toilet and a 1.74 m2 hallway, and the toilet then sat inside a
+    hallway polygon belonging to a different room entirely. Before the cut
+    there was one room and nothing to see.
+
+    So the check runs over every room on the level, not within the cut.
+    """
+    from lidar2ha.rooms import Placed, covered_rooms, polygon_of
+
+    level = Level(name="Mid Level", ceiling_height_cm=250, rooms=[
+        # The piece a cut has just produced...
+        Room(name="toilet", points=[(0, 0), (120, 0), (120, 120), (0, 120)]),
+        # ...and a room drawn by somebody else that already covers that floor.
+        Room(name="hallway", points=[(-100, -100), (600, -100), (600, 200),
+                                     (-100, 200)]),
+    ])
+    placed = [Placed(str(r.name), "cut", polygon_of(r)) for r in level.rooms]
+
+    found = covered_rooms(placed)
+    assert len(found) == 1, "the new piece was buried and nothing said so"
+    assert found[0]["covered"] == "toilet"
+    assert found[0]["share_of_covered"] == 1.0
