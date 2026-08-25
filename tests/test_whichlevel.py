@@ -153,3 +153,71 @@ def test_nothing_to_compare_against_is_said_rather_than_crashed():
     answer = rank(storey("a"), {})
     assert answer.verdict == "none"
     assert answer.ranked == []
+
+
+def test_levels_are_found_from_a_project_by_level_name(tmp_path):
+    """The path guessing nothing exercised: a level named in project.yaml is
+    slugified and looked for under exports/. Untested, it fails on somebody
+    else's directory layout and the stage looks like it found no levels rather
+    than like it looked in the wrong place."""
+    import yaml
+
+    from lidar2ha.whichlevel import levels_from_project
+
+    (tmp_path / "exports").mkdir()
+    ground = storey("ground")
+    (tmp_path / "exports" / "ground_level_combined.json").write_text(
+        ground.model_dump_json(), encoding="utf-8")
+    (tmp_path / "project.yaml").write_text(
+        yaml.safe_dump({"levels": {"Ground Level": ["a"], "Mid Level": ["b"]}}),
+        encoding="utf-8")
+
+    found = levels_from_project(tmp_path / "project.yaml")
+
+    assert set(found) == {"Ground Level"}, (
+        "a level with no combined model on disk must be skipped, not guessed at")
+    assert found["Ground Level"].levels[0].walls
+
+
+def test_the_stage_prints_a_ranking_and_a_verdict(tmp_path, capsys):
+    """`rank` is tested above; this is the half that turns it into something a
+    person reads. A stage whose logic is right and whose output is empty is one
+    nobody can act on."""
+    import sys
+    from unittest import mock
+
+    from lidar2ha import whichlevel
+
+    ground = storey("ground")
+    (tmp_path / "ground.json").write_text(ground.model_dump_json(), encoding="utf-8")
+    (tmp_path / "cap.json").write_text(
+        shifted(ground, 900.0, 200.0).model_dump_json(), encoding="utf-8")
+
+    argv = ["lidar2ha.whichlevel", str(tmp_path / "cap.json"),
+            "--against", str(tmp_path / "ground.json")]
+    with mock.patch.object(sys, "argv", argv):
+        whichlevel.main()
+
+    out = capsys.readouterr().out
+    assert "IDENTIFIED" in out
+    assert "ground" in out
+    assert "cm" in out and "%" in out, "the numbers a reader weighs are missing"
+
+
+def test_the_stage_refuses_to_run_with_nothing_to_compare_against(tmp_path):
+    """Exiting with a usable sentence beats ranking a capture against an empty
+    set and reporting that nothing matched."""
+    import sys
+    from unittest import mock
+
+    import pytest
+
+    from lidar2ha import whichlevel
+
+    (tmp_path / "cap.json").write_text(
+        storey("a").model_dump_json(), encoding="utf-8")
+    argv = ["lidar2ha.whichlevel", str(tmp_path / "cap.json")]
+
+    with mock.patch.object(sys, "argv", argv), pytest.raises(SystemExit) as caught:
+        whichlevel.main()
+    assert "Nothing to compare against" in str(caught.value)
