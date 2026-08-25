@@ -21,9 +21,28 @@ floor may physically span three, with a fitting on each landing. The plugin sums
 sources sharing a name, so N placements carrying one entity_id is not a
 workaround, it is the correct representation of one switch driving N bulbs.
 
+WHICH ENTITY DRIVES WHICH FITTING IS NOT IN THE GEOMETRY. A room with several
+of each cannot be paired by anything here -- proximity would be a confident
+guess wrong about as often as it is right, since a ceiling light, two cabinet
+lights and a wall pair interleave. The only place that knowledge exists is in
+the owner's head, so `lights.pairing` in project.yaml is where they write it
+down, addressed by plan coordinate:
+
+    lights:
+      pairing:
+        den:
+          light.den_dimmer_switch_ceiling: [[-23.0, -421.9], [-129.2, -414.6]]
+
+Rooms are counted by DEVICE, not by entity. Several entities are routinely one
+fitting and Home Assistant says so by giving them one `device_id`: one real
+Sonoff exposes four `light.*` entities of which one controls sound. Counting
+entities made a room of ten look unresolvable where six devices, four of them
+interior fittings, is a short declaration.
+
 Nothing is silently dropped. An entity whose area has no room, a room nobody
-lights, an entity excluded by hand -- each is counted and named, because a dark
-room in the final render is otherwise a mystery with no thread to pull.
+lights, an entity excluded by hand, a declared pairing that names no fitting --
+each is counted and named, because a dark room in the final render is otherwise
+a mystery with no thread to pull.
 
 Usage:
     python -m lidar2ha.lights model.json registry.json -o lights.json \\
@@ -45,6 +64,7 @@ from .ha import (
     LightEntity,
     classify,
     coordinator_groups,
+    device_groups,
     light_entities,
     load_registry,
     redundant_groups,
@@ -62,6 +82,20 @@ SPREAD_FRACTION = 0.55
 POLE_TOLERANCE_CM = 5.0
 MIN_ELEVATION_CM = 10.0
 
+# How far a declared pairing point may sit from the fitting it names. A point is
+# authored by copying a detected fitting's own coordinate, so a real one matches
+# at about zero; this exists to catch a re-detection that MOVED the fitting, and
+# to tell that apart from a typo. What would move it: a capture whose fittings
+# routinely shift more than this between runs, which would mean the declaration
+# is chasing the detector rather than describing the house.
+PAIRING_MATCH_CM = 60.0
+# ...and a point must pick ONE fitting out of the room. Measured over three
+# storeys, the closest pair of fittings within a single room is 10.1 cm and
+# several rooms sit under 40, so no fixed radius is both generous and
+# unambiguous. The second-nearest must therefore be this many times further
+# away than the nearest, or the point has not named anything and is refused.
+PAIRING_AMBIGUOUS_RATIO = 2.0
+
 
 @dataclass
 class LightsConfig:
@@ -73,16 +107,28 @@ class LightsConfig:
     extra: dict[str, list[str]] = field(default_factory=dict)
     power: dict[str, float] = field(default_factory=dict)
     default_power: float = 0.5
+    # area -> entity_id -> the plan-cm points of the fittings that entity drives.
+    # WHICH ENTITY DRIVES WHICH FITTING IS NOT IN THE GEOMETRY and cannot be
+    # inferred -- the only place it exists is in the owner's head, so this is
+    # where they write it down.
+    pairing: dict[str, dict[str, list[tuple[float, float]]]] = field(
+        default_factory=dict)
 
     @classmethod
     def from_project(cls, project: dict) -> LightsConfig:
         section = (project or {}).get("lights") or {}
+        pairing: dict[str, dict[str, list[tuple[float, float]]]] = {}
+        for area, by_entity in (section.get("pairing") or {}).items():
+            for entity_id, points in (by_entity or {}).items():
+                pairing.setdefault(str(area), {})[str(entity_id)] = [
+                    (float(p[0]), float(p[1])) for p in points]
         return cls(
             exclude=set(section.get("exclude") or []),
             include=set(section.get("include") or []),
             extra={k: list(v) for k, v in (section.get("extra") or {}).items()},
             power={k: float(v) for k, v in (section.get("power") or {}).items()},
             default_power=float(section.get("default_power", 0.5)),
+            pairing=pairing,
         )
 
 
@@ -98,10 +144,21 @@ class Report:
     duplicate_names: dict[str, list[str]] = field(default_factory=dict)
     # (area, fittings, entities) where measured positions were used.
     measured: list[tuple[str, int, int]] = field(default_factory=list)
-    # (area, fittings, entities) where several of each made the pairing a guess.
-    ambiguous: list[tuple[str, int, int]] = field(default_factory=list)
+    # (area, fittings, entities, devices) where several of each made the pairing
+    # a guess. `devices` is carried because it is the number that says whether
+    # the room is resolvable: "7 fittings, 2 entities" reads as hopeless where
+    # "7 fittings, 2 entities on 1 device" reads as one line of project.yaml.
+    ambiguous: list[tuple[str, int, int, int]] = field(default_factory=list)
     # (area, count) of measured fittings the daylight difference called windows.
     daylight: list[tuple[str, int]] = field(default_factory=list)
+    # (area, entity, why) -- a declared pairing that could not be honoured. The
+    # entity is still placed, by the ordinary spread, so this line is the only
+    # thing between the declaration and looking like it worked.
+    pairing_failed: list[tuple[str, str, str]] = field(default_factory=list)
+    # (area, entities, fittings) left over where a room IS partly declared.
+    # Working through a house one room at a time is the normal state, and how
+    # much is still undeclared has to be visible.
+    pairing_partial: list[tuple[str, list[str], int]] = field(default_factory=list)
 
 
 def room_index(model: Model) -> dict[str, tuple[int, Level, Room]]:
@@ -154,6 +211,100 @@ def place(poly: Polygon, count: int,
                      centre[1] + radius * math.sin(angle))
         spread.append(candidate if poly.contains(Point(candidate)) else centre)
     return known + spread
+
+
+def match_fitting(point: tuple[float, float], measured: list[Fitting], *,
+                  match_cm: float = PAIRING_MATCH_CM,
+                  ambiguous_ratio: float = PAIRING_AMBIGUOUS_RATIO,
+                  ) -> tuple[Fitting | None, str]:
+    """The one measured fitting a declared point names. (fitting, why not).
+
+    TWO WAYS TO REFUSE, AND NEITHER IS SILENT, because a pairing that binds the
+    wrong fitting is a light in the wrong place that looks exactly like a light
+    in the right place:
+
+    * nothing near it -- the distance to the nearest is reported, which is what
+      separates "I mistyped a coordinate" from "the detector moved".
+    * two fittings about equally near -- the point has not picked one. Real
+      rooms have fittings 10 cm apart, so this is not hypothetical, and taking
+      the nearer by a millimetre would be the proximity guess this refuses to
+      make anywhere else.
+    """
+    if not measured:
+        return None, "the room has no measured fittings at all"
+
+    ranked = sorted(measured, key=lambda f: math.dist((f.x, f.y), point))
+    nearest = ranked[0]
+    away = math.dist((nearest.x, nearest.y), point)
+    if away > match_cm:
+        return None, (f"nothing measured within {match_cm:.0f} cm -- the nearest "
+                      f"fitting is {away:.0f} cm away at ({nearest.x:.0f}, "
+                      f"{nearest.y:.0f})")
+
+    if len(ranked) > 1:
+        second = math.dist((ranked[1].x, ranked[1].y), point)
+        if second < away * ambiguous_ratio:
+            return None, (f"names no single fitting -- two are about equally "
+                          f"near, at {away:.0f} cm and {second:.0f} cm. Move the "
+                          f"point onto the one you mean")
+    return nearest, ""
+
+
+def declared_pairs(area: str, in_area: list[LightEntity], measured: list[Fitting],
+                   declaration: dict[str, list[tuple[float, float]]],
+                   report: Report,
+                   ) -> tuple[list[tuple[LightEntity, tuple[float, float],
+                                          float | None]],
+                              list[LightEntity], set[int]]:
+    """Carry out this room's `lights.pairing`. (placements, left over, claimed).
+
+    Returns the entities the declaration did NOT name alongside the placements,
+    because those still have to be placed by the ordinary rules -- a house is
+    declared one room at a time and a half-declared room must not lose the other
+    half.
+
+    AN ENTITY WHOSE DECLARATION CANNOT BE HONOURED IS NOT SILENTLY DROPPED, and
+    is not silently placed either. It goes back in with the undeclared ones, so
+    it still appears, and the reason lands in the report -- centring it quietly
+    would look exactly like the declaration having worked.
+
+    A declaration naming an entity that is not in this room is reported rather
+    than ignored: it is almost always a typo or an area that moved, and the
+    consequence of ignoring it is a fitting nobody ever placed.
+    """
+    by_id = {e.entity_id: e for e in in_area}
+    for entity_id in declaration:
+        if entity_id not in by_id:
+            report.pairing_failed.append(
+                (area, entity_id, "declared here but not a light of this area -- "
+                                  "renamed, moved, or a typo"))
+
+    pairs: list[tuple[LightEntity, tuple[float, float], float | None]] = []
+    claimed: set[int] = set()
+    named: set[str] = set()
+    index = {id(f): i for i, f in enumerate(measured)}
+
+    for entity in in_area:
+        points = declaration.get(entity.entity_id)
+        if not points:
+            continue
+        found: list[Fitting] = []
+        for point in points:
+            fitting, why = match_fitting(point, measured)
+            if fitting is None:
+                report.pairing_failed.append(
+                    (area, entity.entity_id,
+                     f"({point[0]:.0f}, {point[1]:.0f}) {why}"))
+                continue
+            found.append(fitting)
+        if not found:
+            continue
+        named.add(entity.entity_id)
+        for fitting in found:
+            claimed.add(index[id(fitting)])
+            pairs.append((entity, (fitting.x, fitting.y), fitting.elevation))
+
+    return pairs, [e for e in in_area if e.entity_id not in named], claimed
 
 
 def elevation_for(room: Room, level: Level, drop_cm: float = DROP_CM) -> float:
@@ -279,23 +430,40 @@ def build_lights(
         # fittings and 5 light.* entities, the rest on dumb switches -- so the
         # one-entity-many-fittings case is the common one, not the exception.
         pairs: list[tuple[LightEntity, tuple[float, float], float | None]] = []
-        if measured and len(in_area) == 1:
+        declared, undeclared, claimed = declared_pairs(
+            area, in_area, measured, config.pairing.get(area) or {}, report)
+        pairs += declared
+
+        # Fittings the declaration did not claim are still the room's, and are
+        # shared out by the rules below among the entities it did not name.
+        left = [f for i, f in enumerate(measured) if i not in claimed]
+        devices = len(device_groups(undeclared))
+
+        if declared and undeclared:
+            report.pairing_partial.append(
+                (area, [e.entity_id for e in undeclared], len(left)))
+
+        if left and len(undeclared) == 1:
             # The plugin sums sources sharing a name, so N placements carrying
             # one entity_id is the correct representation of one switch driving
             # N bulbs -- not a workaround for having too few entities.
-            entity = in_area[0]
-            pairs = [(entity, (f.x, f.y), f.elevation) for f in measured]
-            report.measured.append((area, len(measured), 1))
-        elif measured and len(in_area) > 1:
+            entity = undeclared[0]
+            pairs += [(entity, (f.x, f.y), f.elevation) for f in left]
+            report.measured.append((area, len(left), 1))
+        elif left and len(undeclared) > 1:
             # Which entity drives which fitting is not knowable from geometry,
             # and pairing by proximity would be a confident guess that is wrong
-            # as often as it is right. Fall back to spreading and say so.
-            report.ambiguous.append((area, len(measured), len(in_area)))
-            positions = place(poly, len(in_area))
-            pairs = [(e, p, None) for e, p in zip(in_area, positions, strict=True)]
-        else:
-            positions = place(poly, len(in_area))
-            pairs = [(e, p, None) for e, p in zip(in_area, positions, strict=True)]
+            # as often as it is right. Fall back to spreading and say so --
+            # counting DEVICES, because entities sharing one are one fitting and
+            # a count that says otherwise makes a resolvable room look hopeless.
+            report.ambiguous.append((area, len(left), len(undeclared), devices))
+            positions = place(poly, len(undeclared))
+            pairs += [(e, p, None)
+                      for e, p in zip(undeclared, positions, strict=True)]
+        elif undeclared:
+            positions = place(poly, len(undeclared))
+            pairs += [(e, p, None)
+                      for e, p in zip(undeclared, positions, strict=True)]
 
         for entity, (x, y), measured_elevation in pairs:
             power = config.power.get(entity.entity_id, config.default_power)
@@ -400,10 +568,36 @@ def print_report(report: Report, lights: list[Light]) -> None:
 
     if report.ambiguous:
         print("\nAMBIGUOUS -- measured fittings ignored, placed at the pole instead:")
-        for area, found, entities in report.ambiguous:
-            print(f"    {area:<22} {found} fitting(s) and {entities} entities")
-        print("    Which entity drives which fitting is not in the geometry. Split the")
-        print("    room with `seams`, or name the pairing in project.yaml.")
+        for area, found, entities, devices in report.ambiguous:
+            on = (f"{entities} entities on {devices} device"
+                  + ("s" if devices != 1 else "")
+                  if devices != entities else f"{entities} entities")
+            print(f"    {area:<22} {found} fitting(s) and {on}")
+        print("    Which entity drives which fitting is not in the geometry and cannot")
+        print("    be guessed from it. Name the pairing in project.yaml:")
+        print("      lights:")
+        print("        pairing:")
+        print("          <area>:")
+        print("            light.<entity>: [[x_cm, y_cm], ...]")
+        print("    The coordinates are plan centimetres in this model's own frame --")
+        print("    the same ones `split:` sections use. Each point takes the fitting")
+        print("    nearest it, and says so rather than guessing if that is not one.")
+
+    if report.pairing_failed:
+        print(f"\n  PAIRING NOT HONOURED ({len(report.pairing_failed)}) -- the entity is "
+              "still placed, by the\n  ordinary spread, so these lines are the only "
+              "sign the declaration did nothing:")
+        for area, entity_id, why in report.pairing_failed:
+            print(f"    {area:<18} {entity_id:<44} {why}")
+
+    if report.pairing_partial:
+        print("\n  PARTLY DECLARED -- these rooms have a pairing that does not cover "
+              "everything:")
+        for area, entity_ids, left in report.pairing_partial:
+            print(f"    {area:<18} {len(entity_ids)} entity(ies) unnamed, "
+                  f"{left} fitting(s) unclaimed")
+            for entity_id in entity_ids:
+                print(f"        {entity_id}")
 
     if report.daylight:
         print("\nIGNORED AS DAYLIGHT -- bright in an ordinary capture too, so a window:")
@@ -423,7 +617,8 @@ def main():
     ap.add_argument("model")
     ap.add_argument("registry", help="registry.json, from `lidar2ha lights --refresh`")
     ap.add_argument("-o", "--out", default="lights.json")
-    ap.add_argument("--project", help="project.yaml, for lights.exclude / extra / power")
+    ap.add_argument("--project",
+                    help="project.yaml, for lights.exclude / extra / power / pairing")
     ap.add_argument("--fittings", help="real fitting positions, if you have them")
     ap.add_argument("--report", action="store_true", help="print the review table")
     args = ap.parse_args()

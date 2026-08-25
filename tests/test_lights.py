@@ -380,7 +380,8 @@ def test_several_entities_and_several_fittings_is_reported_not_guessed():
     lights, report = build_lights(
         model, [light("light.a", "lounge"), light("light.b", "lounge")], None, found)
 
-    assert report.ambiguous == [("lounge", 2, 2)]
+    # Two entities on two devices -- these carry none, so each is its own.
+    assert report.ambiguous == [("lounge", 2, 2, 2)]
     assert len(lights) == 2
     # Fell back to the pole rather than pairing them off by distance.
     assert {(lt.x, lt.y) for lt in lights} != {(50, 50), (250, 250)}
