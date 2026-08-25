@@ -221,7 +221,8 @@ def test_every_stage_exposes_a_main():
     stages = ["ceilings", "combine", "compare", "contactsheet", "deploy", "fixtures",
               "floormap", "ha", "inspect_dxf", "inspect_mesh", "lights", "mesh",
               "placefixtures", "render", "polycam", "preview", "registration", "rooms",
-              "seams", "textures_project", "textures_tile", "thresholds"]
+              "seams", "textures_project", "textures_tile", "thresholds",
+              "whichlevel"]
     missing = [s for s in stages
                if not callable(getattr(importlib.import_module(f"lidar2ha.{s}"), "main", None))]
     assert missing == []
@@ -451,3 +452,39 @@ def test_something_that_is_not_a_glb_is_refused_by_name(tmp_path):
     path.write_bytes(b"not a gltf at all, but long enough to unpack")
     with pytest.raises(SystemExit, match="binary glTF"):
         glb_node_names(path)
+
+
+def test_whichlevel_runs_end_to_end(tmp_path, model_path):
+    """Every unit test passed once while a stage's main() crashed on every
+    input, which is why this file exists.
+
+    Fitting a model against ITSELF is the degenerate case, and the one most
+    likely to divide by zero or trip a margin rule -- so it is the right smoke
+    test for a stage whose whole job is comparing two models.
+    """
+    import subprocess
+    import sys
+
+    done = subprocess.run(
+        [sys.executable, "-m", "lidar2ha.whichlevel", str(model_path),
+         "--against", str(model_path)],
+        capture_output=True, text=True)
+
+    assert done.returncode == 0, done.stderr
+    # A model fits itself exactly, so anything but IDENTIFIED means the stage
+    # cannot recognise the one case it certainly should.
+    assert "IDENTIFIED" in done.stdout, done.stdout
+
+
+def test_whichlevel_with_nothing_to_compare_against_says_so(tmp_path, model_path):
+    """A stage that exits non-zero with a usable sentence beats one that raises
+    somewhere deep -- see this module's docstring."""
+    import subprocess
+    import sys
+
+    done = subprocess.run(
+        [sys.executable, "-m", "lidar2ha.whichlevel", str(model_path)],
+        capture_output=True, text=True)
+
+    assert done.returncode != 0
+    assert "Nothing to compare against" in (done.stdout + done.stderr)
