@@ -253,8 +253,14 @@ lidar2ha render house.sh3d -o render_out --project project.yaml --preview
 lidar2ha render house.sh3d -o render_out --project project.yaml
 
 # 9. copy it to Home Assistant. Writes nothing without --push.
+#    --subdir puts one storey in its own directory and points the card at it.
+#    Without it a second storey deploys over the first: `base.png` is replaced
+#    while the frames of the storey that was there stay beside it, named after
+#    entity ids nothing in this render owns.  Those are reported, never
+#    deleted -- they are somebody's working dashboard.
 lidar2ha deploy render_out --project project.yaml
 lidar2ha deploy render_out --project project.yaml --push
+lidar2ha deploy render_out --project project.yaml --push --subdir upstairs
 
 # OPTIONAL. The same model as geometry, for a real-time 3D card rather than
 # raytraced overlays. Each object is named after its entity id, and the count
