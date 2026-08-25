@@ -642,7 +642,9 @@ def _project_settings(project: Path | None) -> dict:
 @click.option("--refresh", is_flag=True,
               help="fetch the registry from Home Assistant rather than using the cache")
 @click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
-              default=None, help="project.yaml, for lights.exclude / include / extra / power")
+              default=None,
+              help="project.yaml, for lights.exclude / include / extra / power "
+                   "/ pairing")
 @click.option("--fittings", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="real fitting positions, when you have them")
 @click.option("--env", type=click.Path(path_type=Path), default=Path(".env"),
