@@ -49,6 +49,9 @@ def test_a_bare_capture_id_still_works():
 
 
 def test_a_mapping_names_the_storeys_this_level_wants():
+    """The declaration itself. Without it there is no way to say which storey
+    of a multi-storey capture belongs to this floor, and the capture reaches
+    `combine` whole and is discarded."""
     got = parse_entries([{"id": "walk", "storeys": ["Floor 1 (210cm)"]}])
     assert got == [Wanted("walk", ("Floor 1 (210cm)",))]
 
@@ -61,6 +64,8 @@ def test_a_single_storey_written_without_brackets_is_taken_as_one():
 
 
 def test_a_mapping_with_no_id_is_refused_by_name():
+    """A mapping naming storeys but no capture applies to nothing. Skipping it
+    would leave a level quietly short of a capture somebody had written down."""
     with pytest.raises(ValueError, match="needs an `id:`"):
         parse_entries([{"storeys": ["Floor 1"]}])
 
@@ -77,6 +82,44 @@ def test_an_unreadable_entry_is_refused_rather_than_skipped():
     the union -- which is the failure this whole file exists to end."""
     with pytest.raises(ValueError, match="capture id or a mapping"):
         parse_entries([42])
+
+
+def test_a_level_written_without_its_dashes_is_refused_rather_than_spelt_out():
+    """`"Ground Level": my_capture` -- the `- ` forgotten -- iterated as one
+    capture per CHARACTER. Four one-letter ids match no export, so the level
+    combined from nothing while the file plainly named a capture. A mapping
+    written there is worse: it iterates as its keys, which look plausible."""
+    assert list("walk") == ["w", "a", "l", "k"], (
+        "if a string does not iterate as letters this test proves nothing")
+    for entry in ("walk", {"walk": ["Floor 1"]}):
+        with pytest.raises(ValueError, match="takes a LIST of captures"):
+            parse_entries(entry)
+
+
+def test_a_storeys_that_is_not_a_list_of_names_is_refused():
+    """A number raised `TypeError` from inside a comprehension, naming neither
+    the capture nor the key; a mapping was read as its keys and became storey
+    names nobody wrote."""
+    with pytest.raises(ValueError, match="not a list of storey names"):
+        parse_entries([{"id": "walk", "storeys": 42}])
+    with pytest.raises(ValueError, match="not a list of storey names"):
+        parse_entries([{"id": "walk", "storeys": {"Floor 1": 1}}])
+
+
+def test_a_storey_name_that_is_blank_is_refused_while_it_can_still_be_named():
+    """`expand` matches these against `Level.name` exactly, so a blank refuses
+    anyway -- three stages later, quoting `''`, which tells the reader nothing
+    about which of their entries is wrong."""
+    with pytest.raises(ValueError, match="not a storey name"):
+        parse_entries([{"id": "walk", "storeys": ["", "Floor 3"]}])
+
+
+def test_an_id_that_is_not_a_string_is_refused():
+    """`id: 2006` reads as an int from an unquoted capture id, and stringifies
+    to something that matches no export -- so the level would combine one
+    capture short with nothing saying so."""
+    with pytest.raises(ValueError, match="must be the capture id as a string"):
+        parse_entries([{"id": 2006}])
 
 
 # --------------------------------------------------------------------------- #
@@ -149,12 +192,17 @@ def test_project_yaml_beats_the_flag_where_both_speak():
 
 
 def test_a_key_says_which_export_it_came_from():
-    """`Room.source` points at these, so provenance depends on the round trip."""
+    """`Room.source` points at these keys, so a room that cannot name the
+    export it came from cannot be checked, re-scanned or argued with. It is
+    also what stops two storeys of one walk vouching for each other in the
+    consensus."""
     assert origin_of(entry_key("walk", "Floor 3")) == "walk"
     assert origin_of(entry_key("plain", None)) == "plain"
 
 
-def test_a_capture_id_that_would_confuse_the_key_is_refused():
+@pytest.mark.parametrize("entry", ["odd [name]",
+                                   {"id": "odd [name]", "storeys": ["Floor 1"]}])
+def test_a_capture_id_that_would_confuse_the_key_is_refused(entry):
     """`entry_key` marks a storey with ` [name]` and `origin_of` reads it back,
     so an id carrying the same marker splits in the wrong place and two
     unrelated captures can look like one export. Silently: the only symptom is
@@ -162,8 +210,26 @@ def test_a_capture_id_that_would_confuse_the_key_is_refused():
 
     Refused at the boundary, which makes the format unambiguous by
     construction rather than by hoping nobody names a capture that way.
+
+    BOTH SHAPES. The first version of this guard sat in the mapping branch
+    alone, so a bare string walked straight past it -- and this test only
+    exercised the mapping, so it passed while the hole was open.
     """
     assert origin_of("odd [name]") != "odd [name]", (
         "if this parses correctly the refusal below is unnecessary")
     with pytest.raises(ValueError, match=r"contains ' \['"):
-        parse_entries([{"id": "odd [name]", "storeys": ["Floor 1"]}])
+        parse_entries([entry])
+
+
+def test_a_key_this_does_not_read_is_refused_rather_than_ignored():
+    """`storey:` singular is what a person writes first, and ignoring it handed
+    them the UNDECLARED path: a declaration that did nothing, said nothing, and
+    left the capture out of the very union it was written to put it in.
+
+    Every key is read, the way `schema.py` forbids an extra field.
+    """
+    with pytest.raises(ValueError, match="did you mean `storeys:`"):
+        parse_entries([{"id": "walk", "storey": "Floor 3"}])
+
+    with pytest.raises(ValueError, match="does not read"):
+        parse_entries([{"id": "walk", "stories": ["Floor 3"]}])

@@ -251,8 +251,29 @@ def test_two_storeys_of_one_level_are_declared_together():
                ("Floor 3", Answer("identified", "Upstairs", "", []))]
     block = declaration("walk", answers)
 
-    assert block.count("- id: walk") == 1
+    # Quoted, because a generated storey name is not something to interpolate
+    # raw into a file another tool has to parse.
+    assert block.count('- id: "walk"') == 1
     assert 'storeys: ["Floor 1 (710cm)", "Floor 3"]' in block
+
+
+def test_a_name_carrying_a_quote_still_parses_as_yaml():
+    """The block is emitted to be pasted into project.yaml and read back by
+    PyYAML, so a level called `the "den"` -- level names are typed by a
+    person and storey names are generated -- must not produce a file that
+    fails to load, or worse one that loads to a different shape."""
+    import yaml
+
+    from lidar2ha.whichlevel import Answer, declaration
+
+    odd_level, odd_storey = 'the "den"', 'Floor \\ 1 "low"'
+    block = declaration(
+        "walk", [(odd_storey, Answer("identified", odd_level, "", []))])
+
+    body = yaml.safe_load(block)
+    assert body["levels"][odd_level] == [{"id": "walk",
+                                          "storeys": [odd_storey]}], (
+        "the names have to survive the round trip, not merely parse")
 
 
 def test_a_capture_that_placed_nothing_emits_no_levels_block():

@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,7 +196,10 @@ def declaration(capture_id: str,
 
     lines = [f"# {capture_id}: {len(by_level)} level(s) identified, "
              f"{len(refused)} storey(s) not placed.",
-             "# Paste under `levels:` in project.yaml, merging with what is there."]
+             "# Merge into project.yaml at the TOP level, into the `levels:`",
+             "# section that is already there -- this block carries its own",
+             "# `levels:` key, so pasting it underneath one nests it and the",
+             "# whole declaration is read as a capture id."]
     for storey, verdict in refused:
         lines.append(f"#   {storey} -- {verdict.upper()}, left out deliberately: "
                      f"a refusal written down stops being one.")
@@ -203,11 +207,15 @@ def declaration(capture_id: str,
         lines.append("# Nothing to declare. Every storey was refused.")
         return "\n".join(lines)
 
+    # QUOTED THROUGH json.dumps, which is a YAML 1.2 double-quoted scalar and
+    # escapes what needs escaping. A storey name is generated from a ceiling
+    # height today and a level name is whatever somebody typed, so neither is
+    # something to interpolate raw into a file another tool has to parse.
     lines.append("levels:")
     for level in sorted(by_level):
-        lines.append(f'  "{level}":')
-        lines.append(f"    - id: {capture_id}")
-        inner = ", ".join(f'"{s}"' for s in by_level[level])
+        lines.append(f"  {json.dumps(level)}:")
+        lines.append(f"    - id: {json.dumps(capture_id)}")
+        inner = ", ".join(json.dumps(s) for s in by_level[level])
         lines.append(f"      storeys: [{inner}]")
     return "\n".join(lines)
 

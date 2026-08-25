@@ -409,6 +409,14 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
         except ValueError as exc:
             raise SystemExit(f"{project}, level {level!r}: {exc}") from exc
         for key, one in expanded:
+            if key in models:
+                # Assigning would drop one of them, and the level would combine
+                # from fewer captures than it lists with nothing saying which.
+                raise SystemExit(
+                    f"{project}, level {level!r}: {key!r} is claimed twice. A "
+                    f"capture may appear under several levels and may name "
+                    f"several storeys, but each (capture, storey) belongs to "
+                    f"one level once.")
             click.echo(f"  {key:<22} {found.relative_to(project.parent)}")
             models[key] = one
             provenance[key] = (

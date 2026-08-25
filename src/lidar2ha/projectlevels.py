@@ -52,10 +52,21 @@ def parse_entries(entries) -> list[Wanted]:
     and the whole point of this file is that such a capture was hard enough to
     notice already.
     """
+    if entries is None:
+        return []
+    # THE LIST ITSELF, before its items. `"Ground": my_capture` -- the dash
+    # forgotten -- iterates as one capture per character, and four one-letter
+    # ids that match no file are a declaration that quietly did nothing. A
+    # mapping iterates as its keys, which is worse: the ids look plausible.
+    if isinstance(entries, (str, bytes)) or not isinstance(entries, (list, tuple)):
+        raise ValueError(
+            f"a `levels:` level takes a LIST of captures, got {entries!r}. "
+            f"Write each capture on its own `- ` line")
+
     out: list[Wanted] = []
-    for entry in entries or []:
+    for entry in entries:
         if isinstance(entry, str):
-            out.append(Wanted(entry))
+            out.append(Wanted(checked_id(entry)))
             continue
         if not isinstance(entry, dict):
             raise ValueError(
@@ -67,6 +78,26 @@ def parse_entries(entries) -> list[Wanted]:
             raise ValueError(
                 f"a `levels:` mapping needs an `id:` naming the capture, got "
                 f"{sorted(entry)}")
+        if not isinstance(capture_id, str):
+            # `id: 2006` reads as an int and would stringify to something that
+            # matches no export, so the level would combine one capture short.
+            raise ValueError(
+                f"a `levels:` `id:` must be the capture id as a string, got "
+                f"{capture_id!r}. Quote it")
+
+        # NO KEY GOES UNREAD, the way `schema.py` forbids an extra field. The
+        # singular `storey:` is the one a person writes first, and ignoring it
+        # gave them the UNDECLARED path -- a declaration that did nothing, said
+        # nothing, and left the capture out of the union it was written to put
+        # it in.
+        unknown = sorted(set(entry) - {"id", "storeys"})
+        if unknown:
+            hint = (" -- did you mean `storeys:`?"
+                    if "storey" in unknown else "")
+            raise ValueError(
+                f"{capture_id!r} has {'keys' if len(unknown) > 1 else 'a key'} "
+                f"this does not read: {unknown}{hint}. A `levels:` entry takes "
+                f"`id:` and `storeys:`")
 
         raw = entry.get("storeys")
         storeys: tuple[str, ...] | None
@@ -76,24 +107,52 @@ def parse_entries(entries) -> list[Wanted]:
             # Tolerated because it is what a person writes first, and refusing
             # a clear intention over a bracket helps nobody.
             storeys = (raw,)
+        elif not isinstance(raw, (list, tuple)):
+            # A mapping iterated as its keys and read as storey names; a number
+            # raised `TypeError` from inside a comprehension, which names no
+            # capture and no key.
+            raise ValueError(
+                f"{capture_id!r} has a `storeys:` that is not a list of storey "
+                f"names: {raw!r}")
         else:
-            storeys = tuple(str(s) for s in raw)
-            if not storeys:
+            if not raw:
                 raise ValueError(
                     f"{capture_id!r} has an empty `storeys:` list. Leave the key "
                     f"out to take the capture's only level, or name the storeys "
                     f"this level should take")
-        if " [" in str(capture_id):
-            # `entry_key` marks a storey with ` [name]`, and `origin_of` reads
-            # it back to tell which entries are one export. An id containing
-            # the same marker would be split in the wrong place and two
-            # unrelated captures could look like one -- silently, since the
-            # only symptom is a consensus that counted wrong.
-            raise ValueError(
-                f"capture id {capture_id!r} contains ' [', which is how a "
-                f"storey is marked on a combined-model key. Rename the capture")
-        out.append(Wanted(str(capture_id), storeys))
+            bad = [s for s in raw if not isinstance(s, str) or not s.strip()]
+            if bad:
+                # `expand` matches these against `Level.name` exactly, so a
+                # blank or a number matches nothing and refuses -- naming the
+                # empty string, which tells the reader nothing about which of
+                # their entries is wrong.
+                raise ValueError(
+                    f"{capture_id!r} has a `storeys:` entry that is not a "
+                    f"storey name: {bad[0]!r}. Names come from the model json "
+                    f"-- `lidar2ha whichlevel` prints them")
+            storeys = tuple(raw)
+        out.append(Wanted(checked_id(capture_id), storeys))
     return out
+
+
+def checked_id(capture_id) -> str:
+    """A capture id that cannot be confused with a storey-marked key.
+
+    `entry_key` marks a storey with ` [name]` and `origin_of` reads it back to
+    tell which entries came from one export. An id carrying the same marker
+    splits in the wrong place, and two unrelated captures then look like one --
+    silently, the only symptom being a consensus that counted wrong.
+
+    Checked for BOTH shapes. The first version of this guard sat in the mapping
+    branch alone, so a bare string walked past it, and the test only exercised
+    the mapping.
+    """
+    text = str(capture_id)
+    if " [" in text:
+        raise ValueError(
+            f"capture id {text!r} contains ' [', which is how a storey is "
+            f"marked on a combined-model key. Rename the capture")
+    return text
 
 
 def entry_key(capture_id: str, storey: str | None) -> str:
