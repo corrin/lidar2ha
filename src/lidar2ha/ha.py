@@ -203,6 +203,40 @@ def classify(entity: LightEntity) -> tuple[str, str]:
     return "fitting", ""
 
 
+def device_groups(entities: list[LightEntity]) -> list[list[LightEntity]]:
+    """The entities grouped into the physical fittings they actually are.
+
+    SEVERAL ENTITIES ARE ROUTINELY ONE FITTING, and Home Assistant already says
+    so: they share a `device_id`. One real Sonoff exposes `Games Cupboard
+    Light`, `..._effect_light`, `..._effect_sound` and `..._effect_status` --
+    four `light.*` entities, one switch, and one of them controls SOUND. Counted
+    as entities that room has ten and looks unresolvable; counted as devices it
+    has six, of which four are interior fittings.
+
+    Same argument as `coordinator_groups`: the device is a mechanical fact where
+    the name is a guess.
+
+    ENTITIES WITH NO DEVICE ARE NOT POOLED. `device_id: None` is a template or a
+    helper, which has no device and no fitting of its own -- one house exposes a
+    door light twice, once per adjoining room, so each can address it. Two such
+    entities share nothing but the absence, and grouping them would claim they
+    are one light on no evidence at all.
+
+    Order is preserved so a report reads in the same order twice running.
+    """
+    groups: dict[str, list[LightEntity]] = {}
+    out: list[list[LightEntity]] = []
+    for entity in entities:
+        if entity.device_id is None:
+            out.append([entity])
+            continue
+        if entity.device_id not in groups:
+            groups[entity.device_id] = []
+            out.append(groups[entity.device_id])
+        groups[entity.device_id].append(entity)
+    return out
+
+
 def redundant_groups(entities: list[LightEntity]) -> dict[str, list[str]]:
     """Groups whose members are themselves present, mapped to those members.
 
