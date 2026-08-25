@@ -45,6 +45,7 @@ from shapely.ops import split as shapely_split
 from shapely.ops import unary_union
 
 from .placefixtures import plan_cm_to_mesh_m
+from .rooms import Placed, covered_rooms, polygon_of
 from .schema import Level, Model, Registration, Room, load_model, save_model
 from .thresholds import FloorSample, Support, boundary_support
 
@@ -465,6 +466,40 @@ def apply(model: Model, declarations: list[dict], *,
     return cuts
 
 
+def report_overlaps(model: Model, *, level_name: str | None = None) -> None:
+    """Whether any room now sits on top of another, across the whole level.
+
+    THE PIECES OF ONE CUT TILE THEIR PARENT EXACTLY, so a split cannot overlap
+    itself -- but it is where the small piece comes into existence, and a small
+    piece is what gets buried. On one real house a 3.2 m2 fused room split into
+    a 1.44 m2 toilet and a 1.74 m2 hallway, and the toilet then sat entirely
+    inside a hallway polygon that came from somewhere else entirely. Before the
+    split there was one room and nothing to see; after it there is a room that
+    disappears.
+
+    Checked over every room on the level rather than within the cut, because
+    the polygon that buries a new piece belongs to a different room.
+    """
+    findings = []
+    for lv in model.levels:
+        if level_name is not None and lv.name != level_name:
+            continue
+        placed = [Placed(str(r.ha_area or r.name or r.scanner_name or "?"),
+                         str(r.source or lv.name), polygon_of(r))
+                  for r in lv.rooms if len(r.points) >= 3]
+        findings += covered_rooms(placed)
+
+    if not findings:
+        return
+    print(f"\n  {len(findings)} room(s) now lie inside another:")
+    for item in findings:
+        print(f"    {item['overlap_m2']:.2f} m2 of {item['covered']} "
+              f"({item['covered_area_m2']} m2) is inside {item['covering']} "
+              f"-- {item['share_of_covered'] * 100:.0f}% of it")
+    print("    Both are in the model, so the smaller draws underneath and an "
+          "audit\n    counting named areas cannot see it. Decide which is right.")
+
+
 def report(cuts: list[Cut]) -> None:
     for cut in cuts:
         whole = sum(p.poly.area for p in cut.tiling.pieces) / CM2_PER_M2
@@ -563,6 +598,7 @@ def main():
         raise SystemExit(str(exc)) from exc
 
     report(cuts)
+    report_overlaps(model, level_name=args.level)
     save_model(model, args.out)
     print(f"\nwrote {args.out}")
 
