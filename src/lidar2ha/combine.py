@@ -131,6 +131,19 @@ MAX_OFF_GRID_DEG = 5.0
 # scores above it and the check should be off entirely.
 MIN_GRID_CONCENTRATION = 0.5
 
+# How much of the smaller room has to be buried before `covered_rooms` says so.
+# Adjacent rooms share a wall and, after two captures have been fitted onto one
+# another, share a centimetre or two of floor with it -- so a report on any
+# intersection at all would fire on every neighbouring pair and mean nothing.
+#
+# Measured over three storeys of one house: the pairs a person picked out by
+# eye read 22% and 49% of the smaller room, and every pair nobody minded read
+# 5.6% or less. Both halves of the test have to pass, because share alone fires
+# on a sliver -- a 0.3 m2 scanner artefact is 40% covered by whatever it sits
+# on, and there is no room there to lose.
+COVERED_SHARE = 0.10
+COVERED_MIN_M2 = 0.10
+
 # Below this coverage, say loudly that the capture covers ground the reference
 # does not. A signal to act on, never a reason to reject.
 NEW_GROUND_COVERAGE = 0.95
@@ -1825,6 +1838,70 @@ def alignment_record(result: Combined) -> list[dict[str, Any]]:
     return out
 
 
+def covered_rooms(chosen: list[Candidate], *,
+                  min_share: float = COVERED_SHARE,
+                  min_area_m2: float = COVERED_MIN_M2) -> list[dict[str, Any]]:
+    """Selected rooms that lie on top of each other, worst first.
+
+    A ROOM THAT IS PRESENT BUT COVERED IS WORSE THAN ONE THAT IS MISSING. It
+    renders underneath, it holds its Home Assistant area, and every audit that
+    counts named areas reports it as fine -- so the usual signals all say the
+    level is complete. Found four times on one real house in a day, every one
+    of them by a person looking at a picture and none by any check here:
+
+        a 1.4 m2 toilet sitting entirely inside a hallway polygon
+        a 1.0 m2 basement swallowed as a lobe of the stairwell, and unnamed,
+            so the coverage roll-up called it NEVER SCANNED
+        3.6 m2 of kitchen standing on hallway and stairwell
+        4.0 m2 of a hallway that was really the stairwell opening
+
+    `combine` already reports two captures claiming one floor with rooms of
+    DIFFERENT SHAPE, as `captures_disagree`. This is the other way for two rooms
+    to occupy one place, and nothing saw it.
+
+    Reported and never resolved here. Which room is right is a question about
+    the house -- an island, a mezzanine and a mis-drawn wall all look like this
+    -- and quietly preferring one would be the silent pick this stage exists to
+    refuse.
+    """
+    items = []
+    for i, a in enumerate(chosen):
+        for b in chosen[i + 1:]:
+            if not a.poly.intersects(b.poly):
+                continue
+            shared = a.poly.intersection(b.poly).area
+            if shared <= 0:
+                continue
+            shared_m2 = shared * CM2_TO_M2
+            # Share of the SMALLER room, because that is the one at risk of
+            # disappearing. Against the larger, a swallowed cupboard is a
+            # rounding error -- the 1.4 m2 toilet above is 15% of its hallway
+            # and 100% of itself.
+            smaller, larger = ((a, b) if a.area_m2 <= b.area_m2 else (b, a))
+            share = shared_m2 / smaller.area_m2 if smaller.area_m2 else 0.0
+            if share < min_share or shared_m2 < min_area_m2:
+                continue
+            items.append({
+                "kind": "rooms_overlap",
+                "covered": smaller.label,
+                "covered_capture": smaller.capture,
+                "covered_area_m2": round(smaller.area_m2, 2),
+                "covering": larger.label,
+                "covering_capture": larger.capture,
+                "overlap_m2": round(shared_m2, 2),
+                "share_of_covered": round(share, 3),
+                "reasons": [
+                    f"{shared_m2:.2f} m2 of {smaller.label} lies inside "
+                    f"{larger.label} -- {share * 100:.0f}% of it. Both are in the "
+                    f"model, so the smaller one draws underneath and an audit "
+                    f"counting named areas cannot see that it is buried. Decide "
+                    f"which is right: one may be an island or an opening the other "
+                    f"should have a hole for, or a wall may be in the wrong place"],
+            })
+    items.sort(key=lambda it: -float(it["share_of_covered"]))
+    return items
+
+
 def worklist(decisions: list[Decision], cands: list[Candidate],
              scores: dict[int, Score], fragments: list[Fragment],
              naming: list[Naming],
@@ -1878,6 +1955,12 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
                 "unmeasured": score.missing,
                 "reasons": decision.reasons,
             })
+
+    # Overlap is judged on the rooms that WON, because those are the ones that
+    # reach the model. Two losing candidates sitting on each other is the
+    # ordinary state of two captures of one room and says nothing.
+    items.extend(covered_rooms([cands[i] for d in decisions
+                                for i in d.winner_rooms]))
 
     for fragment in fragments:
         items.append({
