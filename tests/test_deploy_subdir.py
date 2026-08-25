@@ -79,6 +79,10 @@ def test_a_plain_re_render_of_one_storey_is_not_warned_about():
 
 
 def test_a_first_deploy_into_an_empty_directory_is_not_warned_about():
+    """Nothing is being replaced and nothing is being left behind, so there is
+    no other storey to collide with. A cross-storey warning on the very first
+    deploy would teach the reader to ignore it before it ever meant
+    anything."""
     manifest = Manifest(added=[(Path("base.png"), 100)])
     assert another_render_here(manifest) == []
 
@@ -101,3 +105,100 @@ def test_the_manifest_is_scoped_to_the_directory_it_lists():
         # The same render into its own subdirectory has nothing to explain.
         own = plan(local, [RemoteFile("base.png", 10)])
         assert own.extra == []
+
+
+def _fake_transport(recorder):
+    class Fake:
+        def __init__(self, **kw):
+            pass
+
+        def listdir(self, remote):
+            return [RemoteFile("base.png", 1)]
+
+        def makedirs(self, remote):
+            recorder.append(("makedirs", str(remote)))
+
+        def put(self, local, remote):
+            recorder.append(("put", str(remote)))
+
+        def close(self):
+            pass
+
+    return Fake
+
+
+def _render_dir(tmp: Path) -> Path:
+    out = tmp / "render_out"
+    (out / "floorplan").mkdir(parents=True)
+    (out / "floorplan" / "base.png").write_bytes(b"x" * 40)
+    (out / "floorplan.yaml").write_text(
+        "image: /local/floorplan/base.png?version=AAAA\n", encoding="utf-8")
+    return out
+
+
+def test_a_dry_run_writes_nothing_to_the_live_system(tmp_path, monkeypatch):
+    """The safeguard the whole stage is built around, and it was not there.
+
+    `deploy` connects even for a dry run, because a manifest that cannot see the
+    target can only say "everything is new". The click subcommand then pushed on
+    `if transport and not manifest.empty` -- no test of the flag -- so a bare
+    `lidar2ha deploy` copied every changed frame to a live Home Assistant and
+    printed "Nothing was copied. Add --push to do it." underneath it.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha import cli
+    from lidar2ha import deploy as deployer
+
+    done: list[tuple[str, str]] = []
+    monkeypatch.setattr(deployer, "SFTPTransport", _fake_transport(done))
+    monkeypatch.setattr(deployer, "credentials", lambda project=None: {})
+
+    out = _render_dir(tmp_path)
+    result = CliRunner().invoke(cli.cli, ["deploy", str(out)])
+
+    assert result.exit_code == 0, result.output
+    assert done == [], f"a dry run wrote to the target: {done}"
+    assert "Nothing was copied" in result.output
+
+
+def test_the_push_flag_does_write(tmp_path, monkeypatch):
+    """The other half of the same property: guarding the dry run must not have
+    turned --push into a second dry run."""
+    from click.testing import CliRunner
+
+    from lidar2ha import cli
+    from lidar2ha import deploy as deployer
+
+    done: list[tuple[str, str]] = []
+    monkeypatch.setattr(deployer, "SFTPTransport", _fake_transport(done))
+    monkeypatch.setattr(deployer, "credentials", lambda project=None: {})
+
+    out = _render_dir(tmp_path)
+    result = CliRunner().invoke(cli.cli, ["deploy", str(out), "--push"])
+
+    assert result.exit_code == 0, result.output
+    assert ("put", "/config/www/floorplan/base.png") in done, done
+
+
+def test_push_into_a_subdir_writes_only_there(tmp_path, monkeypatch):
+    """The paths the card was rewritten to point at have to be the paths the
+    files actually land on, or the dashboard is a page of broken images."""
+    from click.testing import CliRunner
+
+    from lidar2ha import cli
+    from lidar2ha import deploy as deployer
+
+    done: list[tuple[str, str]] = []
+    monkeypatch.setattr(deployer, "SFTPTransport", _fake_transport(done))
+    monkeypatch.setattr(deployer, "credentials", lambda project=None: {})
+
+    out = _render_dir(tmp_path)
+    result = CliRunner().invoke(
+        cli.cli, ["deploy", str(out), "--subdir", "upstairs", "--push", "--card"])
+
+    assert result.exit_code == 0, result.output
+    assert ("put", "/config/www/floorplan/upstairs/base.png") in done, done
+    # The card and the files are one deliverable: a card pointing at the root
+    # while its images sit one level down is a page of broken images.
+    assert "/local/floorplan/upstairs/base.png" in result.output
