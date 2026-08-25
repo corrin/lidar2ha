@@ -20,6 +20,16 @@ into the card, and `/local/` is Home Assistant's alias for `/config/www/`. So th
 images must land at `/config/www/floorplan/` or the card renders broken links,
 and there is no configuration that changes it.
 
+ONE STOREY PER SUBDIRECTORY. Per-light frames are named after entity ids, which
+are unique across a house, so they survive sharing a directory. `base.png` and
+`transparent.png` are not, and `base.png` is the frame every other one is
+composited onto -- so deploying a second storey into the same directory
+replaces the first storey's background with this one's, and every frame that
+storey owns then composites onto the wrong picture. Pass `--subdir` and the
+images go one level down with the card rewritten to match. Without it, a
+directory already holding another render's frames is reported before anything
+is copied.
+
 THE CARD AND THE IMAGES ARE COUPLED. Each image is referenced with a
 `?version=<hash>` cache-buster derived from its content, so a card deployed
 without its images points at hashes that do not exist, and images deployed
@@ -103,6 +113,29 @@ def referenced_images(card: str) -> set[str]:
     return set(re.findall(r"/local/floorplan/([^?\s\"']+)", card))
 
 
+def valid_subdir(name: str) -> bool:
+    """One path segment, and one that cannot climb out of the floorplan root.
+
+    This string is joined onto a remote path on a live Home Assistant and then
+    created with mkdir, so a `..` or an absolute path in it would write
+    somewhere nobody asked for.
+    """
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)) and name != ".."
+
+
+def card_for_subdir(card: str, subdir: str | None) -> str:
+    """The card, pointing at the subdirectory the images are going into.
+
+    THE PLUGIN BAKES `/local/floorplan/` IN and knows nothing about levels, so
+    the rewrite has to happen here. A card deployed without it points at the
+    root while its images sit one directory down, which renders as a page of
+    broken images rather than as an error.
+    """
+    if subdir is None:
+        return card
+    return card.replace("/local/floorplan/", f"/local/floorplan/{subdir}/")
+
+
 def digest(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest().upper()
 
@@ -132,6 +165,26 @@ def plan(local_dir: Path, remote: list[RemoteFile]) -> Manifest:
 
     manifest.extra = sorted(by_name)
     return manifest
+
+
+def another_render_here(manifest: Manifest) -> list[str]:
+    """Frames on the target that belong to a render this is not.
+
+    A directory holding another storey's output looks exactly like a directory
+    holding a stale copy of this one, EXCEPT that `base.png` is about to be
+    replaced while a pile of frames nobody in this render owns is left sitting
+    beside it. Those frames are named after entity ids, so they are not stale
+    versions of anything here -- they belong to a storey whose background is
+    about to become this storey's.
+
+    Reported and never acted on. Deleting them would throw away a working
+    dashboard, and refusing would block the ordinary case of re-deploying one
+    storey after renaming a light.
+    """
+    replacing_base = any(path.name in ("base.png", "transparent.png")
+                         for path, _ in manifest.changed)
+    strays = [name for name in manifest.extra if name.endswith(".png")]
+    return strays if replacing_base and strays else []
 
 
 def check_card_matches_images(card: str, local_dir: Path) -> list[str]:
@@ -223,6 +276,14 @@ def print_manifest(manifest: Manifest, remote_root: PurePosixPath, pushing: bool
     for name in manifest.extra:
         print(f"    on target but not in this render: {name}")
 
+    strays = another_render_here(manifest)
+    if strays:
+        print(f"\n  WARNING: this replaces base.png while leaving {len(strays)} "
+              f"frame(s) behind\n  that no render here owns. Those belong to "
+              f"another storey, and every one\n  of them composites onto the "
+              f"background about to be replaced. Deploy each\n  storey with "
+              f"--subdir <name> to keep them apart.")
+
     if manifest.empty:
         print("\n  Nothing to do; the target already matches this render.")
         return
@@ -238,12 +299,25 @@ def main():
     ap.add_argument("--push", action="store_true", help="actually copy the files")
     ap.add_argument("--all", action="store_true", help="push every file, not only changes")
     ap.add_argument("--card", action="store_true", help="print floorplan.yaml to paste")
+    ap.add_argument("--subdir", help="deploy into /config/www/floorplan/NAME/ and "
+                                     "point the card there. One storey per "
+                                     "subdirectory; see the module docstring")
     args = ap.parse_args()
 
-    local = deployable(args.render_out)
-    card = card_path(args.render_out).read_text(encoding="utf-8")
+    if args.subdir is not None and not valid_subdir(args.subdir):
+        raise SystemExit(
+            f"--subdir {args.subdir!r} is not a single safe path segment. It is "
+            f"joined onto a path on a live Home Assistant and then created, so "
+            f"it may hold letters, digits, dot, dash and underscore only.")
 
-    missing = check_card_matches_images(card, local)
+    remote_root = REMOTE_ROOT if args.subdir is None else REMOTE_ROOT / args.subdir
+    local = deployable(args.render_out)
+    # Checked against the card AS THE PLUGIN WROTE IT. The rewrite below adds a
+    # directory to every reference, which would stop any of them matching a
+    # local file name and turn this check into one that always fails.
+    as_written = card_path(args.render_out).read_text(encoding="utf-8")
+
+    missing = check_card_matches_images(as_written, local)
     if missing:
         raise SystemExit(
             f"The card refers to images that are not in {local}: {missing}\n"
@@ -254,20 +328,21 @@ def main():
         import yaml
         project = yaml.safe_load(Path(args.project).read_text(encoding="utf-8")) or {}
 
+    card = card_for_subdir(as_written, args.subdir)
     settings = credentials(project)
     transport = SFTPTransport(**settings) if args.push else None
     try:
-        remote = transport.listdir(REMOTE_ROOT) if transport else []
+        remote = transport.listdir(remote_root) if transport else []
         manifest = plan(local, remote)
         if args.all:
             manifest.changed += manifest.unchanged
             manifest.unchanged = []
-        print_manifest(manifest, REMOTE_ROOT, pushing=args.push)
+        print_manifest(manifest, remote_root, pushing=args.push)
 
         if args.push and transport:
-            transport.makedirs(REMOTE_ROOT)
+            transport.makedirs(remote_root)
             for path, _size in manifest.to_push:
-                transport.put(path, REMOTE_ROOT / path.name)
+                transport.put(path, remote_root / path.name)
                 print(f"    pushed {path.name}")
     finally:
         if transport:
