@@ -162,10 +162,28 @@ def elevation_for(room: Room, level: Level, drop_cm: float = DROP_CM) -> float:
     The room's own ceiling wins over the level's, because ceiling height is a
     property of the room -- a 2.2 m laundry and a 4.7 m void share a level, and
     hanging the laundry light at 4.5 m would light it from outside the building.
-    The LOW end of a sloped ceiling is used, so a fitting under a rake stays
-    under it.
+
+    THE HIGH END OF A RAKE, NOT THE LOW ONE. This preferred `ceiling_low_cm`,
+    reasoning that a fitting under a rake should stay under it. The reasoning
+    holds and the number does not: the low end of a sloping ceiling is the
+    EAVE, where it meets the wall, and nothing hangs there. Measured over one
+    storey of raked rooms, where every low was correct and none was stale:
+
+        master_bedroom   low 110  high 400  ->  placed at  90 cm
+        sewing_room      low 150  high 400  ->  placed at 130 cm
+        girl_bedroom     low 160  high 264  ->  placed at 140 cm
+        office           low 170  high 268  ->  placed at 150 cm
+
+    A master-bedroom downlight at 90 cm. Off the high end the same four come out
+    at 380, 380, 244 and 248, and the double-height rooms stay right too -- a
+    den measured at 396 and a stairwell shaft at 485.
+
+    So this is not a case of distrusting `ceiling_low_cm`. It is true, and it is
+    simply not the height anything hangs at. The only reading that misleads off
+    the high end is a room the scan saw through, and `ceilings` refuses to write
+    those at all rather than recording a lower bound as a measurement.
     """
-    ceiling = room.ceiling_low_cm or room.ceiling_high_cm or level.ceiling_height_cm
+    ceiling = room.ceiling_high_cm or room.ceiling_low_cm or level.ceiling_height_cm
     return max(MIN_ELEVATION_CM, ceiling - drop_cm)
 
 
