@@ -53,6 +53,11 @@ MIN_PIECE_CM2 = 1_000     # 0.1 m2; below this it is a sliver, not a room
 EXTEND_CM = 10_000        # push the seam well past the polygon so it cuts clean
 CM2_PER_M2 = 10_000
 
+# Decimal places kept for a written vertex. 0.1 cm is far finer than any
+# scan resolves and keeps a model readable -- but see `writable_ring`, which
+# checks rather than assumes that rounding left the room the shape it was.
+COORD_DP = 1
+
 # Two traces claiming the same floor. Below this it is the hand that read the
 # coordinates off a preview; above it, the declaration genuinely disagrees with
 # itself about where a room is. Tuned to nothing -- it is a guess at how
@@ -124,12 +129,15 @@ class Tiling:
     moved_m2: float = 0.0
     remainder_m2: float = 0.0
     absorbed_m2: float = 0.0
+    # Slop that could not be given to any piece without sealing a hole into it.
+    unabsorbed_m2: float = 0.0
 
     @property
     def accounted(self) -> bool:
         """Nothing needs saying about this declaration beyond the areas."""
         return not (self.spill_m2 or self.offcut_m2 or self.moved_m2
-                    or self.remainder_m2 or self.absorbed_m2)
+                    or self.remainder_m2 or self.absorbed_m2
+                    or self.unabsorbed_m2)
 
 
 def _repair(poly: Polygon) -> Polygon:
@@ -231,13 +239,31 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
             remainders.append(Piece(parent_name, bit, ("unclaimed_remainder",)))
             tiling.remainder_m2 += bit.area / CM2_PER_M2
             continue
-        near = max(range(len(tiling.pieces)),
-                   key=lambda k: bit.buffer(ABSORB_REACH_CM)
-                   .intersection(tiling.pieces[k].poly).area)
-        grown, _ = _largest(_repair(unary_union([tiling.pieces[near].poly, bit])))
-        tiling.pieces[near] = Piece(tiling.pieces[near].name, grown,
-                                    tiling.pieces[near].reasons)
-        tiling.absorbed_m2 += bit.area / CM2_PER_M2
+        # ABSORBING MUST NOT CHANGE A PIECE'S TOPOLOGY. A sliver lying in the
+        # mouth of a C-shaped piece seals it into a ring, and a ring has a hole
+        # -- which `Room.points` cannot express, so the room is written as its
+        # outer boundary alone and swallows whatever sits inside it. Measured: a
+        # 20 cm2 sliver closed a 1.74 m2 hallway into the 3.18 m2 whole of its
+        # parent, burying the 1.44 m2 toilet that was the other half of the same
+        # split. The console said 1.74 throughout, because the report is taken
+        # from the polygon and only the FILE got the sealed ring.
+        reach = bit.buffer(ABSORB_REACH_CM)
+        touching = [k for k in range(len(tiling.pieces))
+                    if reach.intersection(tiling.pieces[k].poly).area > 0]
+        touching.sort(key=lambda k: -reach.intersection(tiling.pieces[k].poly).area)
+        for k in touching:
+            grown, _ = _largest(_repair(unary_union([tiling.pieces[k].poly, bit])))
+            if len(grown.interiors) > len(tiling.pieces[k].poly.interiors):
+                continue
+            tiling.pieces[k] = Piece(tiling.pieces[k].name, grown,
+                                     tiling.pieces[k].reasons)
+            tiling.absorbed_m2 += bit.area / CM2_PER_M2
+            break
+        else:
+            # Nowhere to put it without sealing something shut. Left out and
+            # counted: the pieces then do not tile the parent exactly, and that
+            # is a fact about the declaration worth seeing rather than hiding.
+            tiling.unabsorbed_m2 += bit.area / CM2_PER_M2
     tiling.pieces.extend(remainders)
 
     return tiling
@@ -443,8 +469,7 @@ def apply(model: Model, declarations: list[dict], *,
                 ceiling = ceilings[i] if ceilings and i < len(ceilings) else None
                 new_rooms.append(Room(
                     name=piece.name,
-                    points=[(round(x, 1), round(y, 1))
-                            for x, y in piece.poly.exterior.coords[:-1]],
+                    points=writable_ring(piece.poly, where=f"{where}/{piece.name}"),
                     scanner_name=target.scanner_name or target.name,
                     ha_area=piece.name if target.ha_area else None,
                     split_from=target.ha_area or target.name,
@@ -464,6 +489,50 @@ def apply(model: Model, declarations: list[dict], *,
                             boundaries_of(tiling.pieces, lv.registration, floor)))
 
     return cuts
+
+
+def writable_ring(poly: Polygon, *, where: str,
+                  ndigits: int = COORD_DP) -> list[tuple[float, float]]:
+    """A piece's vertices as a room outline, rounded only where that is safe.
+
+    ROUNDING MOVES A VERTEX, and two vertices closer together than the step
+    land on the same point. A duplicate vertex makes the ring self-touching,
+    shapely calls the result invalid, and `.area` on an invalid ring is not the
+    area of anything -- it silently reports the outline's gross extent.
+
+    Measured, on a real declaration: a section came out of `sections_of` at
+    1.74 m2 with two vertices 0.008 cm apart on the line where the outline
+    turns back to exclude a toilet. Rounded to 0.1 cm they merged, the
+    concavity went, and the room was written as 3.18 m2 -- the whole of its
+    parent. The toilet, the other piece of the same split, was then entirely
+    inside its own sibling. The console said 1.74 throughout, because the
+    report is computed from the polygon and only the FILE got the broken ring.
+
+    So the rounded ring is checked before it is used, and a piece that cannot
+    survive it keeps full precision. A long decimal in a model is a cosmetic
+    problem; a room silently twice its size is not.
+    """
+    exact = [(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
+    rounded = [(round(x, ndigits), round(y, ndigits)) for x, y in exact]
+    deduped = [p for i, p in enumerate(rounded) if p != rounded[i - 1]]
+
+    # What rounding is allowed to cost: every vertex may move half a step, and
+    # the area follows the boundary, so the bound is perimeter x half-step.
+    tolerance = max(1.0, poly.length * 0.5 * 10 ** -ndigits)
+    if len(deduped) >= 3:
+        candidate = Polygon(deduped)
+        if candidate.is_valid and abs(candidate.area - poly.area) <= tolerance:
+            return deduped
+
+    check = Polygon(exact)
+    if not check.is_valid or abs(check.area - poly.area) > tolerance:
+        raise ValueError(
+            f"{where}: the outline written for this piece encloses "
+            f"{check.area / CM2_PER_M2:.2f} m2 where the piece measures "
+            f"{poly.area / CM2_PER_M2:.2f} m2. Refusing to write it -- a room "
+            f"whose file disagrees with the report is one nothing downstream "
+            f"can catch, and the report is what a person reads")
+    return exact
 
 
 def report_overlaps(model: Model, *, level_name: str | None = None) -> None:
@@ -540,6 +609,10 @@ def report(cuts: list[Cut]) -> None:
         if t.absorbed_m2:
             print(f"  note: {t.absorbed_m2:.2f} m2 of slop absorbed into the "
                   "nearest section")
+        if t.unabsorbed_m2:
+            print(f"  note: {t.unabsorbed_m2:.4f} m2 of slop left unclaimed -- "
+                  "giving it to any neighbouring\n        piece would have closed "
+                  "that piece around another room")
 
     if cuts:
         print("\n  ceilings are unmeasured on every piece -- a fused room's "
