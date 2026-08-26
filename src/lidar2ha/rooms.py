@@ -28,13 +28,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
-from .schema import Model, Room, load_model, save_model
+from .schema import Level, Model, Room, load_model, save_model
 
 CM2_TO_M2 = 1e-4
 
@@ -134,58 +134,234 @@ def covered_rooms(placed: list[Placed], *,
     return items
 
 
-def apply(model: Model, mapping: dict, merges: list) -> tuple[int, int, list]:
-    """Rename and merge in place. Returns (renamed, merged, unmapped)."""
-    renamed, merged, unmapped = 0, 0, []
+class Crossed(NamedTuple):
+    """A merge that spanned more than one of a capture's ceiling bands."""
 
+    survivor: str
+    bands: tuple[str, ...]
+    onto: str
+
+
+class Applied(NamedTuple):
+    """What `apply` did, including everything it declined to do."""
+
+    renamed: int
+    merged: int
+    unmapped: list[str]
+    crossed: list[Crossed]
+    emptied: list[str]
+    unapplied: list[list[str]]
+
+
+def band_groups(model: Model) -> list[list[Level]]:
+    """The capture's levels grouped by the frame they share, lowest band first.
+
+    `polycam` cuts one Polycam level into ceiling bands, and those come out of
+    ONE sheet cluster -- so a room the split separated can be unioned back.
+    Polycam's own levels cannot: they are separate clusters with separate
+    origins, and on one house two of them fit the same reference 17.36 m apart.
+
+    A level with no `from_level` is its own group, which is every capture
+    written before the field existed.
+
+    Order inside a group is file order, which `split_into_storeys` emits lowest
+    band first. That is what makes "the lowest band" readable without parsing
+    a level name back apart.
+    """
+    groups: list[list[Level]] = []
+    by_origin: dict[str, list[Level]] = {}
     for lv in model.levels:
-        by_scanner = {r.name: r for r in lv.rooms if r.name}
+        if lv.from_level is None:
+            groups.append([lv])
+            continue
+        if lv.from_level not in by_origin:
+            by_origin[lv.from_level] = []
+            groups.append(by_origin[lv.from_level])
+        by_origin[lv.from_level].append(lv)
+    return groups
 
-        # --- merge first, so the survivor carries one area name ---------------
-        consumed: set[str] = set()
+
+def _present(group: list[str], levels: list[Level]) -> int:
+    """How many of the declaration's rooms this band group actually holds."""
+    have = {r.name for lv in levels for r in lv.rooms if r.name}
+    return sum(1 for n in group if n in have)
+
+
+def _across_frames(group: list[str], groups: list[list[Level]]) -> str | None:
+    """The reason this declaration cannot be carried out, or None.
+
+    A merge is applied inside a band group, so it is only impossible when NO
+    group holds two of its rooms while two different groups hold one each.
+    That is the reader asking for a union across frames.
+
+    SCOPED, not "the names appear on more than one level". Polycam repeats
+    labels across storeys as a matter of course -- `Hallway`, `Bedroom` -- so
+    refusing on the bare collision refused 155 of 500 ordinary captures that
+    have no bands at all, every one of which merged correctly before.
+    """
+    holds = [gi for gi, levels in enumerate(groups) if _present(group, levels) >= 2]
+    if holds:
+        return None
+    spread = [gi for gi, levels in enumerate(groups) if _present(group, levels) == 1]
+    if len(spread) < 2:
+        return None
+
+    where = "; ".join(
+        f"{sorted({lv.name for lv in groups[gi] for r in lv.rooms if r.name in group})}"
+        f" (cut from {groups[gi][0].from_level or 'nothing -- a Polycam level of its own'})"
+        for gi in spread)
+    return (
+        f"merge {group} names one room in each of two frames: {where}. Ceiling "
+        f"bands of one Polycam level can be merged because they were cut from "
+        f"one sheet, but Polycam's own levels are separate clusters with "
+        f"separate origins -- unioning across them makes one polygon spanning "
+        f"the gap between them. That case is decided in `combine`, between "
+        f"captures, not here")
+
+
+def _fuse(members: list[tuple[Level, Room]], group: list[str],
+          order: list[Level]) -> tuple[Level, Room]:
+    """Union the members onto the lowest band. (level, survivor)."""
+    union = unary_union([polygon_of(r) for _, r in members])
+    if union.geom_type == "MultiPolygon":
+        # Imperfectly abutting polygons: keep the real room, report the rest.
+        parts = sorted(union.geoms, key=lambda g: g.area, reverse=True)
+        dropped = sum(g.area for g in parts[1:]) / 10_000
+        print(f"  note: merging {group} left {len(parts)} disjoint pieces; "
+              f"keeping the largest, dropping {dropped:.2f} m2")
+        union = parts[0]
+
+    survivor = members[0][1]
+    survivor.points = [(x, y) for x, y in union.exterior.coords[:-1]]
+    # A merged open volume is as tall as its tallest part. Heights are
+    # optional, so a group where nobody knows its ceiling stays unknown
+    # rather than becoming zero.
+    highs = [r.ceiling_high_cm for _, r in members if r.ceiling_high_cm is not None]
+    lows = [r.ceiling_low_cm for _, r in members if r.ceiling_low_cm is not None]
+    high = max(highs) if highs else None
+    low = min(lows) if lows else None
+    survivor.ceiling_high_cm = high
+    survivor.ceiling_low_cm = low
+    survivor.sloped = high is not None and low is not None and high - low > 15
+    survivor.merged_from = list(group)
+
+    # THE LOWEST BAND, which is what `polycam` already does with a shaft: a
+    # volume spanning bands belongs at the bottom of it, not in whichever band
+    # the declaration happened to name first.
+    target = min((lv for lv, _ in members), key=order.index)
+    if high is not None and target.ceiling_height_cm < high:
+        # `polycam` sized the level from the rooms that band held. A room merged
+        # up from a taller band is taller than that, and a level shorter than
+        # its own room caps the double-height space the merge just restored.
+        target.ceiling_height_cm = high
+    return target, survivor
+
+
+def apply(model: Model, mapping: dict, merges: list) -> Applied:
+    """Rename and merge in place, saying what was refused as well as done.
+
+    THE BAND A ROOM LEAVES IS NOT DELETED. Its walls and doors stay where
+    `polycam` put them and the level stays in the file, because `textures_*`
+    runs BEFORE this stage and `scene.py` looks its output up by POSITION --
+    `(index of level, index of wall)`. Removing a level renumbers every level
+    after it, so a rectified photo either paints the wrong wall or vanishes
+    from `scene.tsv` without a word.
+    """
+    renamed, merged = 0, 0
+    unmapped: list[str] = []
+    crossed: list[Crossed] = []
+    emptied: list[str] = []
+    unapplied: list[list[str]] = []
+
+    groups = band_groups(model)
+    everywhere = {r.name for lv in model.levels for r in lv.rooms if r.name}
+
+    # EVERY BAD DECLARATION AT ONCE. Raising on the first leaves the reader to
+    # find the rest one run at a time.
+    refusals = [reason for group in merges
+                if (reason := _across_frames(group, groups)) is not None]
+    if refusals:
+        raise ValueError("\n".join(refusals))
+
+    for group in merges:
+        if sum(1 for n in group if n in everywhere) < 2:
+            # A typo in `merge:` used to do nothing and say nothing: the rooms
+            # stay separate, the open plan stays split, and the only symptom is
+            # a lighting group that binds to half a room.
+            unapplied.append(list(group))
+
+    for levels in groups:
+        held = {id(lv): {id(r) for r in lv.rooms} for lv in levels}
+        by_scanner: dict[str, tuple[Level, Room]] = {}
+        for lv in levels:
+            for r in lv.rooms:
+                if r.name:
+                    by_scanner.setdefault(r.name, (lv, r))
+
+        # BY IDENTITY, not by name. Keyed by name and filtered over the whole
+        # band group, a room on another band that merely SHARED a name with a
+        # consumed one was deleted -- 18 m2 of floor gone while the report read
+        # `merged=1` and named nothing.
+        consumed: set[int] = set()
         for group in merges:
             members = [by_scanner[n] for n in group if n in by_scanner]
             if len(members) < 2:
                 continue
-            union = unary_union([polygon_of(m) for m in members])
-            if union.geom_type == "MultiPolygon":
-                # Imperfectly abutting polygons: keep the real room, report the rest.
-                parts = sorted(union.geoms, key=lambda g: g.area, reverse=True)
-                dropped = sum(g.area for g in parts[1:]) / 10_000
-                print(f"  note: merging {group} left {len(parts)} disjoint pieces; "
-                      f"keeping the largest, dropping {dropped:.2f} m2")
-                union = parts[0]
-
-            survivor = members[0]
-            survivor.points = [(x, y) for x, y in union.exterior.coords[:-1]]
-            # A merged open volume is as tall as its tallest part. Heights are
-            # optional, so a group where nobody knows its ceiling stays unknown
-            # rather than becoming zero.
-            highs = [m.ceiling_high_cm for m in members if m.ceiling_high_cm is not None]
-            lows = [m.ceiling_low_cm for m in members if m.ceiling_low_cm is not None]
-            high = max(highs) if highs else None
-            low = min(lows) if lows else None
-            survivor.ceiling_high_cm = high
-            survivor.ceiling_low_cm = low
-            survivor.sloped = high is not None and low is not None and high - low > 15
-            survivor.merged_from = list(group)
-            consumed.update(n for n in group if n != survivor.name)
+            target, survivor = _fuse(members, group, levels)
+            was = next(lv for lv, r in members if r is survivor)
+            # In file order, which is lowest band first, so the report reads
+            # the way the building does rather than the way it was typed.
+            spanned = tuple(dict.fromkeys(
+                lv.name for lv in sorted((lv for lv, _ in members),
+                                         key=levels.index)))
+            if was is not target:
+                # OFF THE BAND IT CAME FROM, by identity, before it goes onto
+                # the target. Appended without removing, the same Room object
+                # sat on two levels: written to disk twice, drawn twice, and --
+                # since the plugin sums sources sharing a name -- lit twice.
+                was.rooms = [r for r in was.rooms if r is not survivor]
+                held[id(was)].discard(id(survivor))
+                held[id(target)].add(id(survivor))
+                target.rooms.append(survivor)
+            for _lv, room in members:
+                if room is not survivor:
+                    consumed.add(id(room))
+                    # The map has to follow the model, or a second declaration
+                    # naming this room appends the same object twice -- which
+                    # survives to disk, and the plugin sums sources sharing a
+                    # name, so that room's lights double.
+                    if room.name and by_scanner.get(room.name, (None, None))[1] is room:
+                        del by_scanner[room.name]
+            if survivor.name:
+                by_scanner[survivor.name] = (target, survivor)
+            if len(spanned) > 1:
+                crossed.append(Crossed(str(survivor.name), spanned, target.name))
             merged += 1
 
-        lv.rooms = [r for r in lv.rooms if r.name not in consumed]
+        for lv in levels:
+            lv.rooms = [r for r in lv.rooms if id(r) not in consumed]
+            if not lv.rooms and held[id(lv)]:
+                # Reported, not removed: a band that gave its floor away still
+                # carries the walls `polycam` gave it, and it has to keep its
+                # place in the file so the texture manifest still points at the
+                # walls it was written against.
+                emptied.append(lv.name)
 
-        # --- then rename ------------------------------------------------------
+    for lv in model.levels:
         for r in lv.rooms:
             area = mapping.get(r.name)
             if not area:
-                unmapped.append(r.name)
+                # A room with no name at all cannot be mapped either, and it is
+                # still a room the plan will carry -- named here so the report
+                # can sort them together rather than raising on a None.
+                unmapped.append(r.name or "<unnamed>")
                 continue
             r.scanner_name = r.name
             r.ha_area = area
             r.name = area
             renamed += 1
 
-    return renamed, merged, unmapped
+    return Applied(renamed, merged, unmapped, crossed, emptied, unapplied)
 
 
 def main():
@@ -205,18 +381,39 @@ def main():
     if not mapping:
         raise SystemExit(f"No rooms mapping for capture {args.capture!r} in {args.project}")
 
-    renamed, merged, unmapped = apply(model, mapping, merges)
+    try:
+        done = apply(model, mapping, merges)
+    except ValueError as bad:
+        # A declaration this cannot carry out is the reader's to fix, and a
+        # traceback tells them nothing about which line of project.yaml it was.
+        raise SystemExit(f"\n{bad}") from None
     save_model(model, args.out)
 
     print(f"\nwrote {args.out}")
-    print(f"  merged {merged} group(s), renamed {renamed} room(s)")
+    print(f"  merged {done.merged} group(s), renamed {done.renamed} room(s)")
+    for one in done.crossed:
+        print(f"  {one.survivor!r} spanned {list(one.bands)}, filed on "
+              f"{one.onto!r} -- the lowest band it touches")
+    for band in done.emptied:
+        print(f"  band {band!r} gave its floor away and now holds walls only; "
+              f"it keeps its place in the file")
     for lv in model.levels:
         for r in lv.rooms:
             src = r.merged_from or r.scanner_name
             area = polygon_of(r).area / 10_000
             print(f"    {str(r.name):<16} {area:6.1f} m2   <- {src}")
-    if unmapped:
-        print(f"\n  UNMAPPED (still carrying scanner names): {sorted(set(unmapped))}")
+    if done.unapplied:
+        print("\n  MERGES THAT DID NOTHING (fewer than two of their rooms exist "
+              "in this capture):")
+        for group in done.unapplied:
+            print(f"    {group}")
+        print("  Check the spelling against the scanner names above. A merge "
+              "that matches nothing")
+        print("  leaves the open plan split, and the only symptom is a light "
+              "bound to half a room.")
+    if done.unmapped:
+        print(f"\n  UNMAPPED (still carrying scanner names): "
+              f"{sorted(set(done.unmapped))}")
         print("  Add them to rooms." + args.capture + " in project.yaml.")
 
 

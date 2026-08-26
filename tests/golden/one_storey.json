@@ -127,7 +127,8 @@
           "width": 79.99999999999999
         }
       ],
-      "registration": null
+      "registration": null,
+      "from_level": null
     }
   ],
   "captures": []

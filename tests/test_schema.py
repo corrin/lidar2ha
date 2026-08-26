@@ -170,3 +170,13 @@ def test_a_reason_survives_the_round_trip_to_disk(tmp_path):
     back = load_model(path).levels[0].rooms[0]
     assert back.source == "midlevel_fixtures"
     assert back.provisional_reason == ["the best source is a fixtures pass"]
+
+
+def test_a_level_written_before_from_level_existed_still_loads():
+    """Every capture already on disk was written without it. A required field
+    would stop all of them loading, which is why a new field here is optional
+    with a default."""
+    level = Level.model_validate({"name": "Floor 1", "ceiling_height_cm": 250.0})
+
+    assert level.from_level is None, (
+        "absent means 'this level was never split', not an error")
