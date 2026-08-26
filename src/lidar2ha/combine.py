@@ -1287,8 +1287,11 @@ def score_room(cand: Candidate, group: Group, cands: list[Candidate], *,
     wall, enclosure = wall_support(cand.poly, own_tree, wall_gap_cm * CM_TO_M)
     # Siblings are the OTHER captures' rooms over this same floor. Only they can
     # say a ceiling reading is short, because only they measured the same space.
+    # BY ORIGIN: two storeys of one walk are one observation, so one of them
+    # confirming the other's ceiling is the capture agreeing with itself.
+    mine = origin_of(cand.capture)
     siblings = [cands[i].room for i in group.members
-                if cands[i].capture != cand.capture]
+                if origin_of(cands[i].capture) != mine]
     signals: dict[str, float | None] = {
         "agreement": agreement(cand.poly, others_tree),
         "ceiling": ceiling_plausibility(cand.room, siblings),
@@ -1390,7 +1393,11 @@ def provisional_for(group: Group, winner: str, score: float, margin: float | Non
     what makes it provisional is that a fixture pass is the only thing that has
     ever seen it, and no cutoff on a number can express that.
     """
-    role = next(c.role for c in cands if c.capture == winner)
+    # BY THE GROUP'S OWN ROOMS, which cannot be empty: `winner` is an export
+    # and `Candidate.capture` an entry key, so matching the two directly found
+    # nothing and raised `StopIteration` the first time a capture declared per
+    # storey won anything.
+    role = cands[group.per_capture[winner][0]].role
     reasons = []
     if role != "geometry":
         reasons.append(f"the best source is a {role} pass, whose geometry was "
@@ -1570,8 +1577,10 @@ def uncovered_floor(cands: list[Candidate], chosen: list[int],
             slivers += 1
             continue
         point = piece.representative_point()
-        others = sorted({c.capture for c in cands
-                         if c.capture != cand.capture
+        # Named by export, so a capture's second storey is not reported as
+        # another witness to ground only that capture saw.
+        others = sorted({origin_of(c.capture) for c in cands
+                         if origin_of(c.capture) != origin_of(cand.capture)
                          and c.poly.intersection(piece).area * CM2_TO_M2 >= min_piece_m2})
         fragments.append(Fragment(float(area), (float(point.x), float(point.y)),
                                   cand.capture, cand.label, others))
@@ -1699,7 +1708,9 @@ def name_suggestions(cands: list[Candidate], chosen: list[int], *,
             continue
         places = []
         for other in named:
-            if other.capture == cand.capture:
+            # A capture's own other storey is not independent evidence of what
+            # its room is: the suggestion would be the capture citing itself.
+            if origin_of(other.capture) == origin_of(cand.capture):
                 continue
             share = cand.poly.intersection(other.poly).area / cand.poly.area
             if share >= REPORT_CONTAINMENT:
