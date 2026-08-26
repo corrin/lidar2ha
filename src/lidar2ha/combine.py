@@ -1056,7 +1056,12 @@ def group_rooms(cands: list[Candidate], *, edge: float = EDGE_CONTAINMENT,
     for i in range(n):
         for j in range(i + 1, n):
             frac, inter_m2 = containment(cands[i].poly, cands[j].poly)
-            contradiction = (cands[i].capture == cands[j].capture
+            # BY ORIGIN, not by entry key. A capture declared per storey
+            # appears as `id [storey]`, and two of its storeys laying one floor
+            # twice is the same contradiction as one storey doing it -- on the
+            # real house a 3.1 m2 and a 10.2 m2 view of one hallway, overlapping
+            # 99% of the smaller, compared unequal and walked past this guard.
+            contradiction = (origin_of(cands[i].capture) == origin_of(cands[j].capture)
                              and inter_m2 > self_overlap_m2)
             if contradiction:
                 selves.append((i, j, inter_m2))
@@ -1082,7 +1087,12 @@ def group_rooms(cands: list[Candidate], *, edge: float = EDGE_CONTAINMENT,
     for members in buckets.values():
         per_capture: dict[str, list[int]] = {}
         for i in sorted(members):
-            per_capture.setdefault(cands[i].capture, []).append(i)
+            # The unit of decision is a capture's ENTIRE view of the group,
+            # so two storeys of one walk are one partition. Keyed by entry they
+            # were two, which let a capture corroborate itself into
+            # `one_to_one` and made its glimpse of a room compete with its own
+            # view of the whole.
+            per_capture.setdefault(origin_of(cands[i].capture), []).append(i)
         inside = set(members)
         mine = [s for s in selves if s[0] in inside and s[1] in inside]
         groups.append(Group(
@@ -1229,7 +1239,7 @@ def partitioning(cand: Candidate, group: Group, cands: list[Candidate], *,
     matters: a room nobody else has seen cannot be shown to fuse anything, which
     is not the same as being known not to. `role` stands in only there.
     """
-    others = [c for c in group.per_capture if c != cand.capture]
+    others = [c for c in group.per_capture if c != origin_of(cand.capture)]
     if not others:
         return None
     worst = 1.0
@@ -1423,7 +1433,10 @@ def capture_order(decisions: list[Decision], cands: list[Candidate],
             won.setdefault(decision.winner, []).extend(decision.winner_rooms)
 
     def key(name: str) -> tuple[int, float]:
-        rooms = won.get(name)
+        # `won` is keyed by origin because a group is won by a capture, while
+        # walls are offered per ENTRY -- every storey of a winning capture
+        # inherits its place in the order.
+        rooms = won.get(origin_of(name))
         if not rooms:
             return (1, -0.0)
         return (0, -partition_score(rooms, cands, scores)[0])

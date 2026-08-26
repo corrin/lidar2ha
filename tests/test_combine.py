@@ -243,6 +243,44 @@ def cand(index, capture, room, role="geometry") -> Candidate:
                      area_m2=poly.area * 1e-4)
 
 
+def test_two_storeys_of_one_capture_laying_one_floor_twice_is_a_self_overlap():
+    """`combine` already refuses to let a capture contradict itself -- emitting
+    both of its overlapping rooms lays that floor twice. The test is
+    `cands[i].capture == cands[j].capture`, and per-capture storeys made that
+    string an ENTRY key, so one walk's `[Floor 1 (710cm)]` and `[Floor 3]`
+    compared unequal and the guard never fired.
+
+    Measured on the real house: a 3.1 m2 view of an upstairs hallway and a
+    10.2 m2 view of the SAME hallway, from one capture, overlapping 3.07 m2 --
+    99% of the smaller. Both were emitted, and the 3.1 m2 one won the group.
+    """
+    whole = cand(0, "walk [Floor 3]", square(0, 0, 400, name="hallway"))
+    glimpse = cand(1, "walk [Floor 1 (710cm)]", square(0, 0, 200, name="hallway"))
+    other = cand(2, "other_capture", square(0, 0, 390, name="hallway"))
+
+    groups = group_rooms([whole, glimpse, other])
+    assert len(groups) == 1, "all three describe one piece of floor"
+    group = groups[0]
+
+    assert group.self_overlaps, (
+        "one capture's two storeys overlapping 4 m2 is that capture "
+        "contradicting itself, whichever storey each room came from")
+    assert set(group.per_capture) == {"walk", "other_capture"}, (
+        f"two entries of one export are one observation, got {sorted(group.per_capture)}")
+
+
+def test_a_capture_seen_through_one_entry_is_still_one_capture():
+    """The guard above must not fire on two DIFFERENT captures overlapping --
+    that is the ordinary case combine exists to adjudicate, and treating it as
+    a contradiction would make every group tangled."""
+    a = cand(0, "capture_a", square(0, 0, 400, name="hallway"))
+    b = cand(1, "capture_b", square(0, 0, 390, name="hallway"))
+
+    group = group_rooms([a, b])[0]
+    assert not group.self_overlaps, "if this fails the test above proves nothing"
+    assert set(group.per_capture) == {"capture_a", "capture_b"}
+
+
 def test_iou_would_miss_the_fused_room(combined):
     """The predicate is `intersection / min(area)` and NOT IoU, and this is the
     measurement that decides it. The fixture pass fused four rooms into one; by
