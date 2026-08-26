@@ -153,7 +153,7 @@ def test_a_merge_across_two_polycam_levels_is_refused():
         polygon_of(model.levels[1].rooms[0])) > 1000, (
         "if these overlap the union is harmless and the test proves nothing")
 
-    with pytest.raises(ValueError, match="one room in each of two frames"):
+    with pytest.raises(ValueError, match="not on the level its other rooms are on"):
         apply(model, {"A": "living_room"}, [["A", "B"]])
 
 
@@ -213,7 +213,7 @@ def test_two_declarations_naming_one_room_between_them_are_refused():
     model = model_with(square("Kitchen", 0, 300), square("Dining", 300, 600),
                        square("Pantry", 600, 900))
 
-    with pytest.raises(CannotMerge, match="one group only"):
+    with pytest.raises(CannotMerge, match="named by two `merge:` groups"):
         apply(model, {"Kitchen": "kitchen"},
               [["Kitchen", "Dining"], ["Kitchen", "Pantry"]])
 
@@ -316,7 +316,7 @@ def test_a_declaration_spanning_a_band_and_another_cluster_is_refused_whole():
                    ("F1 (480cm)", "0:F1", 480, [square("Dining", 300, 600)], []),
                    ("Floor 2", None, 250, [square("Snug", 9000, 9300)], []))
 
-    with pytest.raises(CannotMerge, match="one room in each of two frames"):
+    with pytest.raises(CannotMerge, match="not on the level its other rooms are on"):
         apply(model, {"Kitchen": "open_plan"}, [["Kitchen", "Dining", "Snug"]])
 
     assert [r.name for lv in model.levels for r in lv.rooms] == [
