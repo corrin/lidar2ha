@@ -111,6 +111,34 @@ def test_one_cluster_of_three_storeys_becomes_three_levels(tmp_path):
         "Floor 1 (240cm)", "Floor 1 (510cm)", "Floor 1 (780cm)"]
 
 
+def test_each_band_records_the_level_it_was_cut_from(tmp_path):
+    """`rooms` merges a room the split separated, and it may only do that
+    between bands cut from ONE Polycam level -- those come off one sheet and
+    share a frame, while Polycam's own levels are separate clusters that on one
+    house fit the same reference 17.36 m apart.
+
+    Recorded as a field rather than read back out of the `(510cm)` in the name,
+    because the name is a label and this is the fact.
+    """
+    dxf, csv = three_storeys_on_one_cluster(tmp_path / "cap")
+    run_polycam(dxf, csv, tmp_path / "out.json")
+
+    model = load_model(tmp_path / "out.json")
+    assert {lv.from_level for lv in model.levels} == {"Floor 1"}
+
+
+def test_an_unsplit_level_was_cut_from_nothing(tmp_path):
+    """None has to mean "never split", because that is what every capture
+    written before the field says -- so a level that was not split must not
+    claim itself as its own origin, which would make two unrelated levels of
+    one capture look like bands of each other."""
+    dxf, csv = one_storey(tmp_path / "cap")
+    run_polycam(dxf, csv, tmp_path / "out.json")
+
+    model = load_model(tmp_path / "out.json")
+    assert model.levels[0].from_level is None
+
+
 def test_the_split_is_announced_rather_than_done_quietly(tmp_path, capsys):
     """A capture silently gaining two levels is a capture whose owner cannot
     tell what happened to it."""

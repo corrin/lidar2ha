@@ -238,6 +238,12 @@ class Level(_Base):
     rooms: list[Room] = Field(default_factory=list)
     doors: list[Door] = Field(default_factory=list)
     registration: Registration | None = None
+    # The Polycam level this band was cut out of, when `polycam` split one
+    # level into ceiling bands. Bands of one Polycam level share a coordinate
+    # frame; Polycam's own levels do not -- measured on one house, two of them
+    # fit the same reference 17.36 m apart. `rooms` reads this to decide which
+    # levels a `merge:` may span.
+    from_level: str | None = None
 
 
 class Model(_Base):

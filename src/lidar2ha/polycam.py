@@ -495,18 +495,25 @@ def main():
                 # apart. `Floor N` is kept because it is a real field from the
                 # file -- it is simply where the sheet drew the room.
                 name = f"{label} ({centre * M_TO_CM:.0f}cm)"
+                cut_from = label
                 footprint = band_footprint(band_rooms)
                 wg_band = walls_touching(wg, footprint, args.band_reach_m)
                 dg_band = doors_touching(dg, footprint, args.band_reach_m)
             else:
-                name, wg_band, dg_band = label, wg, dg
+                name, cut_from, wg_band, dg_band = label, None, wg, dg
 
-            levels.append(_build_level(args, name, band_rooms, wg_band, dg_band))
+            levels.append(_build_level(args, name, band_rooms, wg_band, dg_band,
+                                       cut_from))
     _report(args, levels)
 
 
-def _build_level(args, name, rg, wg, dg):
-    """One Level from one storey's rooms, walls and doors."""
+def _build_level(args, name, rg, wg, dg, from_level=None):
+    """One Level from one storey's rooms, walls and doors.
+
+    `from_level` is the Polycam level this band was cut out of, and None when
+    the level was not split. `rooms` reads it to tell which levels share a
+    frame, so it is the fact rather than the `(480cm)` in the name.
+    """
 
     # A level's height is its tallest room -- anything less and a
     # double-height space is capped short.
@@ -530,6 +537,7 @@ def _build_level(args, name, rg, wg, dg):
 
     return Level(
         name=name,
+        from_level=from_level,
         ceiling_height_cm=h * M_TO_CM,
         # The DXF is 2D, so it carries no floor elevation. Filled in
         # separately from the mesh -- see mesh.py.
