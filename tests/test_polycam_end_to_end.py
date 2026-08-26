@@ -111,6 +111,37 @@ def test_one_cluster_of_three_storeys_becomes_three_levels(tmp_path):
         "Floor 1 (240cm)", "Floor 1 (510cm)", "Floor 1 (780cm)"]
 
 
+def test_each_band_records_the_cluster_it_was_cut_from_not_its_label(tmp_path):
+    """Two bands merge only if they came from one sheet cluster. Recording the
+    LABEL instead would group two clusters that a person happened to write
+    `Floor 1` on twice -- and `rooms` would then union rooms across the gap
+    between them, which is the 17.36 m polygon the refusal exists to prevent.
+
+    The label alone is not an identity: it is MTEXT off the sheet, and nothing
+    in the file makes it unique.
+    """
+    dxf, csv = three_storeys_on_one_cluster(tmp_path / "cap")
+    run_polycam(dxf, csv, tmp_path / "out.json")
+
+    model = load_model(tmp_path / "out.json")
+    origins = {lv.from_level for lv in model.levels}
+    assert origins == {"0:Floor 1"}, origins
+    assert all(str(lv.from_level).split(":", 1)[0].isdigit() for lv in model.levels), (
+        "the cluster index is what makes two same-named clusters tellable apart")
+
+
+def test_an_unsplit_level_was_cut_from_nothing(tmp_path):
+    """None has to mean "never split", because that is what every capture
+    written before the field says -- so a level that was not split must not
+    claim itself as its own origin, which would make two unrelated levels of
+    one capture look like bands of each other."""
+    dxf, csv = one_storey(tmp_path / "cap")
+    run_polycam(dxf, csv, tmp_path / "out.json")
+
+    model = load_model(tmp_path / "out.json")
+    assert model.levels[0].from_level is None
+
+
 def test_the_split_is_announced_rather_than_done_quietly(tmp_path, capsys):
     """A capture silently gaining two levels is a capture whose owner cannot
     tell what happened to it."""

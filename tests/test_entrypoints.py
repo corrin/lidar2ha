@@ -99,6 +99,49 @@ def test_rooms_main_runs(monkeypatch, tmp_path, model_path):
     assert named.levels[0].rooms[0].scanner_name == "Living Room"
 
 
+def test_rooms_main_reports_a_band_crossing_and_a_typo(monkeypatch, tmp_path, capsys):
+    """Six print branches were added to `main` and the existing smoke test
+    declares no `merge:` at all, so none of them ever ran -- which is exactly
+    the escape this file exists for: every unit test passing while a stage's
+    `main()` was broken on the input that reaches it.
+    """
+    from lidar2ha.schema import Level, Room, Wall, save_model
+
+    def sq(name, x0, x1, low, high):
+        return Room(name=name, points=[(x0, 0), (x1, 0), (x1, 300), (x0, 300)],
+                    ceiling_low_cm=low, ceiling_high_cm=high)
+
+    model = Model(source="x.dxf", levels=[
+        Level(name="Floor 1 (210cm)", from_level="0:Floor 1", ceiling_height_cm=800,
+              rooms=[sq("Living Room 1", 0, 400, 380, 800)],
+              walls=[Wall(x_start=0, y_start=0, x_end=400, y_end=0,
+                          thickness=10.0, height=800.0)]),
+        Level(name="Floor 1 (480cm)", from_level="0:Floor 1", ceiling_height_cm=480,
+              rooms=[sq("Living Room 2", 400, 700, 480, 480)],
+              walls=[Wall(x_start=400, y_start=0, x_end=700, y_end=0,
+                          thickness=10.0, height=480.0)])])
+    src = tmp_path / "banded.json"
+    save_model(model, src)
+
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        'rooms:\n  walk:\n    Living Room 1: lounge\n'
+        'merge:\n  walk:\n    - ["Living Room 1", "Living Room 2"]\n'
+        '    - ["Living Room 1", "Nonexistent"]\n', encoding="utf-8")
+
+    out = tmp_path / "named.json"
+    run(monkeypatch, rooms, src, project, "-o", out, "--capture", "walk")
+    printed = capsys.readouterr().out
+
+    assert "spanned" in printed, printed
+    assert "walls only" in printed, "the emptied band has to be named"
+    assert "Nonexistent" in printed, "and so does the declaration that did nothing"
+
+    named = load_model(out)
+    assert [len(lv.rooms) for lv in named.levels] == [1, 0]
+    assert len(named.levels) == 2, "the level count is a contract with the textures"
+
+
 def test_seams_main_runs(monkeypatch, tmp_path, model_path):
     out = tmp_path / "split.json"
     run(monkeypatch, seams, model_path, "-o", out, "--room", "Living Room",
