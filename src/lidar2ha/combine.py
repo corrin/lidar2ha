@@ -31,7 +31,8 @@ fixture pass -- go re-scan it" is the thing that was impossible to say before.
 WHAT THIS DELIBERATELY DOES NOT DO
 ----------------------------------
 * No averaging, ever. Two plans of one room disagree by ~17 cm median; blending
-  them matches neither wall. Selection is per room and takes the room whole.
+  them matches neither wall. Selection takes a GROUP of rooms sharing floor
+  whole, from one capture -- see `partition_score` for why not room by room.
 * No handedness search. Mirroring is a property of the DXF export, so two plans
   from one scanner share it -- letting the fit choose invents a reflected
   building to paper over a poor overlap. `compare` refuses this too.

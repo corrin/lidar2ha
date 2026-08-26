@@ -160,7 +160,7 @@ registration   model+mesh   -> per-level Registration
 textures_*     model+mesh   -> per-wall or tiled textures
 rooms          model+yaml   -> scanner names replaced by HA area ids, open plan merged
 whichlevel     model+levels -> which storey of a capture is which level, or a refusal
-combine        many models  -> one level, geometry selected per room + a work list
+combine        many models  -> one level, geometry per shared-floor group + a work list
 seams / split  model+yaml   -> a fused room cut into the rooms it is used as
 ceilings       model+mesh   -> each room's ceiling measured off the mesh, or unseen
 fixtures       fixture mesh -> bright compact clusters, with crops
