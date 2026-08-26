@@ -495,7 +495,12 @@ def main():
                 # apart. `Floor N` is kept because it is a real field from the
                 # file -- it is simply where the sheet drew the room.
                 name = f"{label} ({centre * M_TO_CM:.0f}cm)"
-                cut_from = label
+                # THE CLUSTER INDEX, not the label. `rooms` groups bands by
+                # this to decide which levels share a frame, and a label is
+                # only what somebody wrote on the sheet -- two clusters given
+                # the same one would be grouped together and merged across the
+                # gap between them, which is the union this exists to prevent.
+                cut_from = f"{i}:{label}"
                 footprint = band_footprint(band_rooms)
                 wg_band = walls_touching(wg, footprint, args.band_reach_m)
                 dg_band = doors_touching(dg, footprint, args.band_reach_m)

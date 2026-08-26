@@ -111,20 +111,23 @@ def test_one_cluster_of_three_storeys_becomes_three_levels(tmp_path):
         "Floor 1 (240cm)", "Floor 1 (510cm)", "Floor 1 (780cm)"]
 
 
-def test_each_band_records_the_level_it_was_cut_from(tmp_path):
-    """`rooms` merges a room the split separated, and it may only do that
-    between bands cut from ONE Polycam level -- those come off one sheet and
-    share a frame, while Polycam's own levels are separate clusters that on one
-    house fit the same reference 17.36 m apart.
+def test_each_band_records_the_cluster_it_was_cut_from_not_its_label(tmp_path):
+    """Two bands merge only if they came from one sheet cluster. Recording the
+    LABEL instead would group two clusters that a person happened to write
+    `Floor 1` on twice -- and `rooms` would then union rooms across the gap
+    between them, which is the 17.36 m polygon the refusal exists to prevent.
 
-    Recorded as a field rather than read back out of the `(510cm)` in the name,
-    because the name is a label and this is the fact.
+    The label alone is not an identity: it is MTEXT off the sheet, and nothing
+    in the file makes it unique.
     """
     dxf, csv = three_storeys_on_one_cluster(tmp_path / "cap")
     run_polycam(dxf, csv, tmp_path / "out.json")
 
     model = load_model(tmp_path / "out.json")
-    assert {lv.from_level for lv in model.levels} == {"Floor 1"}
+    origins = {lv.from_level for lv in model.levels}
+    assert origins == {"0:Floor 1"}, origins
+    assert all(str(lv.from_level).split(":", 1)[0].isdigit() for lv in model.levels), (
+        "the cluster index is what makes two same-named clusters tellable apart")
 
 
 def test_an_unsplit_level_was_cut_from_nothing(tmp_path):
