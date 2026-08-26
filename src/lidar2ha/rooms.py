@@ -191,7 +191,7 @@ def band_groups(model: Model) -> list[list[Level]]:
     return groups
 
 
-def _union_of(members: list[Room], group: list[str]) -> Room:
+def _union_of(members: list[Room], group: list[str], names: list[str]) -> Room:
     """The verbatim merge: union the members, survivor takes the extremes.
 
     Unchanged from before ceiling bands existed, and called by both passes so
@@ -218,7 +218,10 @@ def _union_of(members: list[Room], group: list[str]) -> Room:
     survivor.ceiling_high_cm = high
     survivor.ceiling_low_cm = low
     survivor.sloped = high is not None and low is not None and high - low > 15
-    survivor.merged_from = list(group)
+    # THE ROOMS ACTUALLY UNIONED, not the declaration. Recording the group
+    # made provenance assert a union that never happened whenever part of
+    # the group lived somewhere this merge could not reach.
+    survivor.merged_from = list(names)
     return survivor
 
 
@@ -294,26 +297,42 @@ def apply(model: Model, mapping: dict, merges: list) -> Applied:
     if refusals:
         raise CannotMerge("\n".join(refusals))
 
-    # --- pass 1: inside one level, unchanged --------------------------------
+    # Snapshotted BEFORE anything merges, so a level pass 1 empties is still
+    # seen to have been emptied, and a room that leaves can be accounted for.
+    populated = {id(lv) for lv in model.levels if lv.rooms}
+    started = {id(r): str(r.name) for lv in model.levels for r in lv.rooms}
+
+    # --- pass 1: inside one level -------------------------------------------
     applied: set[int] = set()
     for lv in model.levels:
-        by_scanner = {r.name: r for r in lv.rooms if r.name}
+        # Last wins, which is what this map has always done.
+        by_scanner = {str(r.name): r for r in lv.rooms if r.name}
 
-        consumed: set[str] = set()
+        # BY IDENTITY, and the map follows the model. Consumed by NAME, a
+        # second declaration re-merged a room the first had already eaten and
+        # put the second survivor's own name into the consumed set -- deleting
+        # it too. Two ordinary-looking `merge:` lines took every room in a
+        # level, 27 m2, while the report read `merged 2 group(s)`.
+        consumed: set[int] = set()
         for gi, group in enumerate(merges):
-            members = [by_scanner[n] for n in group if n in by_scanner]
+            names = [n for n in group if n in by_scanner]
+            members = [by_scanner[n] for n in names]
             if len(members) < 2:
                 continue
-            survivor = _union_of(members, group)
-            consumed.update(n for n in group if n != survivor.name)
+            survivor = _union_of(members, group, names)
+            for name, room in zip(names, members, strict=True):
+                if room is not survivor:
+                    consumed.add(id(room))
+                    if by_scanner.get(name) is room:
+                        del by_scanner[name]
+            by_scanner[str(survivor.name)] = survivor
             applied.add(gi)
             merged += 1
 
-        lv.rooms = [r for r in lv.rooms if r.name not in consumed]
+        lv.rooms = [r for r in lv.rooms if id(r) not in consumed]
 
     # --- pass 2: across the bands of one cluster ----------------------------
     groups = band_groups(model)
-    populated = {id(lv) for lv in model.levels if lv.rooms}
     for gi, group in enumerate(merges):
         if gi in applied:
             continue
@@ -329,7 +348,8 @@ def apply(model: Model, mapping: dict, merges: list) -> Applied:
         if len(paired) < 2:
             continue
 
-        survivor = _union_of([r for _, r in paired], group)
+        survivor = _union_of([r for _, r in paired], group,
+                             [n for n in group if n in placed])
         was = next(lv for lv, r in paired if r is survivor)
         # THE LOWEST BAND, which is what `polycam` already does with a shaft: a
         # volume spanning bands belongs at the bottom of it, not in whichever
@@ -367,6 +387,24 @@ def apply(model: Model, mapping: dict, merges: list) -> Applied:
     # A declaration that merged nowhere used to do nothing and say nothing, so
     # a typo left the open plan split with a light bound to half a room.
     unapplied = [list(g) for gi, g in enumerate(merges) if gi not in applied]
+
+    # NO ROOM LEAVES WITHOUT SAYING SO. Every room that arrived is either
+    # still here or named in a survivor's `merged_from`. Three separate bugs
+    # in this function deleted floor in silence -- a name consumed twice, a
+    # survivor eaten by the group after it, a level nobody reported -- and
+    # each was found by a reader counting square metres afterwards. This
+    # catches the whole class at the point of damage.
+    left = {id(r) for lv in model.levels for r in lv.rooms}
+    named = {n for lv in model.levels for r in lv.rooms for n in r.merged_from}
+    vanished = sorted({name for rid, name in started.items()
+                       if rid not in left and name not in named})
+    if vanished:
+        raise CannotMerge(
+            f"merging removed {vanished} from the model and no surviving "
+            f"room names {'them' if len(vanished) > 1 else 'it'} in "
+            f"`merged_from`. That is floor disappearing rather than floor "
+            f"being joined, and it is most often two `merge:` groups naming "
+            f"one room between them. Declare each room in one group only")
 
     for lv in model.levels:
         for r in lv.rooms:

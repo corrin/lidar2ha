@@ -200,21 +200,34 @@ def test_a_room_sharing_a_name_with_a_consumed_one_is_not_deleted():
         f"the upper band's own rooms survive the merge below it, got {upper}")
 
 
-def test_overlapping_declarations_do_not_place_one_room_twice():
-    """The scanner-name map was not updated after a room moved band, so a
-    second group naming that room appended the SAME object again. It survives
-    `save_model`, and the plugin sums sources sharing a name -- so the room is
-    drawn twice and its lights are doubled, forever, silently."""
-    model = banded(
-        ("F1 (380cm)", "0:F1", 400, [square("Kitchen", 0, 300)], []),
-        ("F1 (480cm)", "0:F1", 480, [square("Dining", 300, 600),
-                                     square("Pantry", 600, 900)], []))
+def test_two_declarations_naming_one_room_between_them_are_refused():
+    """Every attempt at this stage has mangled overlapping groups a different
+    way -- the room placed twice, the second group silently skipped, and once
+    every room in the level deleted while the report read `merged 2 group(s)`.
+    They are refused now, by an invariant rather than by a rule for each shape:
+    a room that leaves must be named in some survivor's `merged_from`.
 
-    apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Dining"], ["Kitchen", "Pantry"]])
+    `[[Kitchen, Dining], [Kitchen, Pantry]]` is how a reader writes what they
+    mean by `[Kitchen, Dining, Pantry]`, so the message says that.
+    """
+    model = model_with(square("Kitchen", 0, 300), square("Dining", 300, 600),
+                       square("Pantry", 600, 900))
 
-    slots = [r for lv in model.levels for r in lv.rooms]
-    assert len({id(r) for r in slots}) == len(slots), (
-        f"one Room object in two places: {[r.name for r in slots]}")
+    with pytest.raises(CannotMerge, match="one group only"):
+        apply(model, {"Kitchen": "kitchen"},
+              [["Kitchen", "Dining"], ["Kitchen", "Pantry"]])
+
+
+def test_a_room_eaten_by_a_merge_is_always_named_by_its_survivor():
+    """The invariant's other half: an ordinary merge must not trip it. If it
+    did, every merge in every project would refuse and the guard would be
+    turned off within the day."""
+    model = model_with(square("Kitchen", 0, 400), square("Office 1", 400, 700))
+
+    done = apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Office 1"]])
+
+    assert done.merged == 1
+    assert model.levels[0].rooms[0].merged_from == ["Kitchen", "Office 1"]
 
 
 def test_every_impossible_merge_is_named_and_not_only_the_first():
