@@ -254,7 +254,8 @@ lidar2ha whichlevel unknown_registered.json --project project.yaml --write
 # 5d. OPTIONAL, when a level was scanned more than once: merge the captures.
 #     Geometry is SELECTED, never averaged -- two plans of one room disagree by
 #     ~17 cm and blending matches neither wall -- so the best-scoring capture
-#     takes each room whole and the room records which one it came from.
+#     takes a whole group of rooms sharing floor, and each room records which
+#     capture it came from.
 #     The work list is the other half of the output: which rooms only a fixture
 #     pass has ever seen, where the captures disagree about the layout, and any
 #     floor a capture saw that the model does not contain.
@@ -449,13 +450,14 @@ corroborated, declared, or never photographed.
 - **Windows are missing.** LiDAR passes through glass. Add them by hand in Sweet Home 3D.
 - **Scan every level at least three times.** Captures of *adjacent* spaces share no frame
   and cannot be merged at all; captures of the *same* level can, and `combine` selects the
-  best source for each room rather than averaging — two plans of one room disagree by ~17 cm
-  and a blend matches neither wall. But a capture that does not overlay is **discarded**,
-  not folded in with a caveat, and with only two captures nothing can say which of them is
-  at fault. A third identifies the odd one out immediately. On this house that mattered: the
-  capture the whole mid-level model had been built from turned out to be the worst of its
-  three, and only the third scan revealed it. When you go back to rescan a room, rescan a
-  room you already have as well, so the new capture has common ground to overlay onto.
+  best source for each patch of floor rather than averaging — two plans of one room disagree
+  by ~17 cm and a blend matches neither wall. But a capture that does not overlay is
+  **discarded**, not folded in with a caveat, and with only two captures nothing can say
+  which of them is at fault. A third identifies the odd one out immediately. On this house
+  that mattered: the capture the whole mid-level model had been built from turned out to be
+  the worst of its three, and only the third scan revealed it. When you go back to rescan a
+  room, rescan a room you already have as well, so the new capture has common ground to
+  overlay onto.
   What `combine` does not yet do is composite textures across captures, which is the case
   for rescanning that pays best. A single fixture pass may span several geometry captures;
   `placefixtures` takes as many models as you give it and sends each fitting to whichever
