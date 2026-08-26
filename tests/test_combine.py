@@ -237,10 +237,91 @@ def square(x0, y0, side, name="r", **kw) -> Room:
                                    (x0 + side, y0 + side), (x0, y0 + side)], **kw)
 
 
+def rect(x0, y0, w, h, name="r", **kw) -> Room:
+    """A room that is not square. A corridor never is, and the areas that
+    decide these tests come from real ones."""
+    return Room(name=name, points=[(x0, y0), (x0 + w, y0),
+                                   (x0 + w, y0 + h), (x0, y0 + h)], **kw)
+
+
 def cand(index, capture, room, role="geometry") -> Candidate:
     poly = Polygon(room.points)
     return Candidate(index=index, capture=capture, role=role, room=room, poly=poly,
                      area_m2=poly.area * 1e-4)
+
+
+def test_two_storeys_of_one_capture_laying_one_floor_twice_is_a_self_overlap():
+    """`combine` already refuses to let a capture contradict itself -- emitting
+    both of its overlapping rooms lays that floor twice. The test is
+    `cands[i].capture == cands[j].capture`, and per-capture storeys made that
+    string an ENTRY key, so one walk's `[Floor 1 (710cm)]` and `[Floor 3]`
+    compared unequal and the guard never fired.
+
+    THE MEASURED CASE: one walk's 10.2 m2 view of an upstairs hallway and its
+    own 3.1 m2 view of the SAME hallway, overlapping 3.07 m2 -- 99% of the
+    smaller -- against another capture's 9.8 m2 of it. Both were emitted, and
+    the 3.1 m2 one won the group.
+
+    The areas are the house's; the shapes are not. This repo is public and the
+    plan does not go in it, so the rectangles below carry the measurements that
+    decide the test -- the areas and the containment -- and nothing else.
+    """
+    whole = cand(0, "walk [Floor 3]", rect(0, 0, 340, 300, name="hallway"))
+    glimpse = cand(1, "walk [Floor 1 (710cm)]", rect(0, 0, 310, 100, name="hallway"))
+    other = cand(2, "other_capture", rect(0, 0, 327, 300, name="hallway"))
+
+    assert round(whole.area_m2, 1) == 10.2 and round(glimpse.area_m2, 1) == 3.1
+    contained = glimpse.poly.intersection(whole.poly).area / glimpse.poly.area
+    assert contained > 0.98, (
+        "the glimpse has to sit inside the whole, or this is two rooms and not "
+        "one capture seeing one room twice")
+
+    groups = group_rooms([whole, glimpse, other])
+    assert len(groups) == 1, "all three describe one piece of floor"
+    group = groups[0]
+
+    assert group.self_overlaps, (
+        "one capture's two storeys overlapping 3 m2 is that capture "
+        "contradicting itself, whichever storey each room came from")
+    assert set(group.per_capture) == {"walk", "other_capture"}, (
+        f"two entries of one export are one observation, got {sorted(group.per_capture)}")
+
+
+def test_a_storey_declared_capture_can_win_a_group():
+    """`decide` reports the winner's role, and looked it up with
+    `c.capture == winner`. Keying `per_capture` by origin made `winner` an
+    export id while `Candidate.capture` stays an entry key, so the lookup found
+    nothing and `next()` raised `StopIteration` -- crashing stage 4 the first
+    time a capture declared per storey wins anything.
+
+    It survived the real house only because the walk lost every group it was
+    in. Nothing about that is a property of the code.
+    """
+    from lidar2ha.combine import Score, decide
+
+    cands = [cand(0, "walk [Floor 3]", rect(0, 0, 340, 300, name="hall")),
+             cand(1, "walk [Floor 1 (710cm)]", rect(0, 0, 310, 100, name="hall"))]
+    group = group_rooms(cands)[0]
+    assert list(group.per_capture) == ["walk"], (
+        "if the winner is already an entry key this test proves nothing")
+
+    scores = {i: Score(total=0.8, signals={}, missing=[]) for i in (0, 1)}
+    decision = decide(group, cands, scores)
+
+    assert decision.winner == "walk"
+    assert decision.winner_rooms == [0, 1], "the capture's whole view of the group"
+
+
+def test_a_capture_seen_through_one_entry_is_still_one_capture():
+    """The guard above must not fire on two DIFFERENT captures overlapping --
+    that is the ordinary case combine exists to adjudicate, and treating it as
+    a contradiction would make every group tangled."""
+    a = cand(0, "capture_a", square(0, 0, 400, name="hallway"))
+    b = cand(1, "capture_b", square(0, 0, 390, name="hallway"))
+
+    group = group_rooms([a, b])[0]
+    assert not group.self_overlaps, "if this fails the test above proves nothing"
+    assert set(group.per_capture) == {"capture_a", "capture_b"}
 
 
 def test_iou_would_miss_the_fused_room(combined):
