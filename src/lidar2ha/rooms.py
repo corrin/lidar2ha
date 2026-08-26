@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -304,6 +305,7 @@ def apply(model: Model, mapping: dict, merges: list) -> Applied:
 
     # --- pass 1: inside one level -------------------------------------------
     applied: set[int] = set()
+    fused: set[int] = set()
     for lv in model.levels:
         # Last wins, which is what this map has always done.
         by_scanner = {str(r.name): r for r in lv.rooms if r.name}
@@ -326,6 +328,7 @@ def apply(model: Model, mapping: dict, merges: list) -> Applied:
                     if by_scanner.get(name) is room:
                         del by_scanner[name]
             by_scanner[str(survivor.name)] = survivor
+            fused.add(id(survivor))
             applied.add(gi)
             merged += 1
 
@@ -375,6 +378,7 @@ def apply(model: Model, mapping: dict, merges: list) -> Applied:
             tuple(dict.fromkeys(lv.name for lv in sorted(
                 (lv for lv, _ in paired), key=levels.index))),
             target.name))
+        fused.add(id(survivor))
         applied.add(gi)
         merged += 1
 
@@ -394,10 +398,17 @@ def apply(model: Model, mapping: dict, merges: list) -> Applied:
     # survivor eaten by the group after it, a level nobody reported -- and
     # each was found by a reader counting square metres afterwards. This
     # catches the whole class at the point of damage.
-    left = {id(r) for lv in model.levels for r in lv.rooms}
-    named = {n for lv in model.levels for r in lv.rooms for n in r.merged_from}
-    vanished = sorted({name for rid, name in started.items()
-                       if rid not in left and name not in named})
+    #
+    # COUNTED, not matched by name. A set of names cannot see the second
+    # `Bedroom` go when the first was merged, and Polycam repeats labels within
+    # a level. A survivor accounts for the rooms in its `merged_from` -- which
+    # includes itself -- and every other room accounts only for itself.
+    arrived = Counter(started.values())
+    accounted: Counter[str] = Counter()
+    for lv in model.levels:
+        for r in lv.rooms:
+            accounted.update(r.merged_from if id(r) in fused else [str(r.name)])
+    vanished = sorted(n for n, count in arrived.items() if count > accounted[n])
     if vanished:
         raise CannotMerge(
             f"merging removed {vanished} from the model and no surviving "
