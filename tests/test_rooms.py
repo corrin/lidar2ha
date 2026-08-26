@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from lidar2ha.rooms import Crossed, apply, polygon_of
+from lidar2ha.rooms import CannotMerge, Crossed, apply, polygon_of
 from lidar2ha.schema import Level, Model, Room, Wall
 
 
@@ -253,6 +253,86 @@ def test_a_room_with_no_name_is_reported_rather_than_crashing_the_report():
     done = apply(model, {"Kitchen": "kitchen"}, [])
 
     assert sorted(set(done.unmapped)) == ["<unnamed>"]
+
+
+def test_a_typo_beside_a_repeated_label_does_not_refuse():
+    """Polycam gives every unlabelled room its floor's label, so one name on
+    two storeys is routine. Counting that as "one room in each of two frames"
+    refused 376 of 3000 ordinary captures -- 268 of them for a declaration
+    naming a room that is not in the model at all, where the answer is "check
+    the spelling" and not a hard exit.
+
+    A band has to be involved before frames mean anything.
+    """
+    model = Model(source="x.dxf", levels=[
+        Level(name="Floor 1", ceiling_height_cm=250,
+              rooms=[square("Hallway", 0, 400), square("Kitchen", 400, 700)]),
+        Level(name="Floor 2", ceiling_height_cm=250,
+              rooms=[square("Hallway", 0, 400)])])
+
+    done = apply(model, {"Hallway": "hall"}, [["Hallway", "Kitcen"]])
+
+    assert done.merged == 0
+    assert done.unapplied == [["Hallway", "Kitcen"]], "the typo is what to say"
+
+
+def test_duplicate_names_choose_the_same_room_as_they_always_did():
+    """Which of two same-named rooms a merge takes was decided by a dict
+    comprehension -- the LAST one wins. Building the map with `setdefault`
+    instead silently reversed it, and 21 of 3000 ordinary captures lost floor:
+    the union then spanned two rooms that do not touch, the far piece was
+    dropped as "disjoint", and the note blamed the geometry rather than the
+    choice."""
+    model = model_with(square("Bedroom", 0, 300),
+                       square("Hallway", 1500, 1800),
+                       square("Bedroom", 1800, 2100))
+
+    apply(model, {"Bedroom": "bedroom"}, [["Bedroom", "Hallway"]])
+
+    areas = sorted(round(polygon_of(r).area / 1e4, 1) for r in model.levels[0].rooms)
+    assert areas == [9.0, 18.0], (
+        f"the second Bedroom is the one that merges, and no floor is lost: {areas}")
+
+
+def test_a_declaration_spanning_a_band_and_another_cluster_is_refused_whole():
+    """Refusing only when NO level holds two names let a three-room
+    declaration be HALF applied: two rooms merged across bands while the third,
+    in another Polycam cluster, stayed where it was -- and `merged_from` named
+    it anyway, so the provenance asserted a union that never happened."""
+    model = banded(("F1 (240cm)", "0:F1", 400, [square("Kitchen", 0, 300)], []),
+                   ("F1 (480cm)", "0:F1", 480, [square("Dining", 300, 600)], []),
+                   ("Floor 2", None, 250, [square("Snug", 9000, 9300)], []))
+
+    with pytest.raises(CannotMerge, match="one room in each of two frames"):
+        apply(model, {"Kitchen": "open_plan"}, [["Kitchen", "Dining", "Snug"]])
+
+    assert [r.name for lv in model.levels for r in lv.rooms] == [
+        "Kitchen", "Dining", "Snug"], "a refused run leaves the model alone"
+
+
+def test_the_emptied_band_is_reported_whichever_way_it_was_declared():
+    """The report was written from a set the move had already emptied, so the
+    same model, merged the same way, said it or not depending on which room the
+    reader happened to type first."""
+    for order in (["Kitchen", "Dining"], ["Dining", "Kitchen"]):
+        model = banded(("F1 (240cm)", "0:F1", 400, [square("Kitchen", 0, 300)], []),
+                       ("F1 (480cm)", "0:F1", 480, [square("Dining", 300, 600)], []))
+        done = apply(model, {order[0]: "open_plan"}, [order])
+        assert done.emptied == ["F1 (480cm)"], f"declared {order}: {done.emptied}"
+
+
+def test_a_broken_room_polygon_is_not_blamed_on_the_declaration():
+    """`main` catches the refusal to give a sentence instead of a traceback.
+    Catching bare `ValueError` also caught shapely's complaint about a
+    degenerate polygon and reported a broken ROOM as a bad `merge:` line, with
+    the traceback suppressed so nothing said which room."""
+    model = model_with(square("Kitchen", 0, 400))
+    model.levels[0].rooms.append(Room(name="Sliver", points=[(0, 0), (1, 1)]))
+
+    with pytest.raises(ValueError) as raised:
+        apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Sliver"]])
+    assert not isinstance(raised.value, CannotMerge), (
+        "a geometry error is not a declaration this stage refuses")
 
 
 def test_a_capture_with_no_bands_merges_exactly_as_before():
