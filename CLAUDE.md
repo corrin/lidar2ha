@@ -8,7 +8,7 @@ This project is driven by **uv**. `uv.lock` and `.python-version` are part of th
 repo — do not delete them as build artefacts.
 
 ```bash
-uv run pytest -q                    # 517 tests, ~6 min -- not seconds
+uv run pytest -q                    # 500+ tests, ~6 min -- not seconds
 uv run pytest tests/test_ha.py -q
 uv run pytest -q -k zha_group       # one test by name
 uv run pytest -q -m java            # needs Sweet Home 3D + a JDK
