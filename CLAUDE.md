@@ -8,7 +8,7 @@ This project is driven by **uv**. `uv.lock` and `.python-version` are part of th
 repo — do not delete them as build artefacts.
 
 ```bash
-uv run pytest -q                    # 313 tests, ~15 s
+uv run pytest -q                    # 500+ tests, ~6 min -- not seconds
 uv run pytest tests/test_ha.py -q
 uv run pytest -q -k zha_group       # one test by name
 uv run pytest -q -m java            # needs Sweet Home 3D + a JDK
@@ -162,6 +162,7 @@ rooms          model+yaml   -> scanner names replaced by HA area ids, open plan 
 whichlevel     model+levels -> which storey of a capture is which level, or a refusal
 combine        many models  -> one level, geometry selected per room + a work list
 seams / split  model+yaml   -> a fused room cut into the rooms it is used as
+ceilings       model+mesh   -> each room's ceiling measured off the mesh, or unseen
 fixtures       fixture mesh -> bright compact clusters, with crops
 placefixtures  + geometry   -> those clusters in named rooms, optionally differenced
 contactsheet   + crops      -> the sheet a human approves
@@ -321,6 +322,19 @@ multiple sources sharing a name**. Consequences that drive most of `lights.py`:
 
 An entity's **own** area beats its device's. Resolving device-first files every
 integration-native group wherever its coordinator is plugged in.
+
+**Which entity drives which fitting is not in the geometry.** A room with four
+downlights on two switches looks identical to one with four on one, so nothing
+measured can separate them and the only place the answer exists is in the
+owner's head. `lights.pairing` in project.yaml is where they write it down:
+area -> entity_id -> the plan-cm points of the fittings it drives.
+
+A declaration is matched to a detected fitting within `PAIRING_MATCH_CM`, and
+one that cannot be honoured -- nothing near the point, or two fittings equally
+close within `PAIRING_AMBIGUOUS_RATIO` -- is neither dropped nor placed on the
+guess. It goes back in with the undeclared entities and is reported, because a
+house is declared one room at a time and a half-declared room must not lose its
+other half.
 
 ## Test style
 
