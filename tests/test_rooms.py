@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from lidar2ha.rooms import Crossed, apply, polygon_of
+from lidar2ha.rooms import (
+    CannotMerge,
+    Crossed,
+    apply,
+    band_groups,
+    polygon_of,
+)
 from lidar2ha.schema import Level, Model, Room, Wall
 
 
@@ -153,7 +159,7 @@ def test_a_merge_across_two_polycam_levels_is_refused():
         polygon_of(model.levels[1].rooms[0])) > 1000, (
         "if these overlap the union is harmless and the test proves nothing")
 
-    with pytest.raises(ValueError, match="one room in each of two frames"):
+    with pytest.raises(ValueError, match="not on the level its other rooms are on"):
         apply(model, {"A": "living_room"}, [["A", "B"]])
 
 
@@ -180,41 +186,34 @@ def test_a_name_repeated_on_an_unrelated_level_does_not_refuse():
         "the unrelated room of the same name is untouched")
 
 
-def test_a_room_sharing_a_name_with_a_consumed_one_is_not_deleted():
-    """Rooms were removed by NAME across the whole band group, so a room on
-    another band that merely shared a scanner name with a consumed one was
-    deleted -- 18 m2 of floor gone while the report read `merged=1` and named
-    nothing at all."""
-    model = banded(
-        ("F1 (380cm)", "0:F1", 400, [square("Living Room", 0, 400),
-                                     square("Office 1", 400, 600)], []),
-        ("F1 (480cm)", "0:F1", 480, [square("Office 1", 900, 1500),
-                                     square("Study", 1500, 1800)], []))
+def test_two_declarations_naming_one_room_between_them_are_refused():
+    """Every attempt at this stage has mangled overlapping groups a different
+    way -- the room placed twice, the second group silently skipped, and once
+    every room in the level deleted while the report read `merged 2 group(s)`.
+    They are refused now, by an invariant rather than by a rule for each shape:
+    a room that leaves must be named in some survivor's `merged_from`.
 
-    apply(model, {"Living Room": "lounge", "Study": "study"},
-          [["Living Room", "Office 1"]])
+    `[[Kitchen, Dining], [Kitchen, Pantry]]` is how a reader writes what they
+    mean by `[Kitchen, Dining, Pantry]`, so the message says that.
+    """
+    model = model_with(square("Kitchen", 0, 300), square("Dining", 300, 600),
+                       square("Pantry", 600, 900))
 
-    upper = [r.name for r in model.levels[1].rooms]
-    assert "Office 1" in upper or "study" in upper
-    assert len(model.levels[1].rooms) == 2, (
-        f"the upper band's own rooms survive the merge below it, got {upper}")
+    with pytest.raises(CannotMerge, match="named by two `merge:` groups"):
+        apply(model, {"Kitchen": "kitchen"},
+              [["Kitchen", "Dining"], ["Kitchen", "Pantry"]])
 
 
-def test_overlapping_declarations_do_not_place_one_room_twice():
-    """The scanner-name map was not updated after a room moved band, so a
-    second group naming that room appended the SAME object again. It survives
-    `save_model`, and the plugin sums sources sharing a name -- so the room is
-    drawn twice and its lights are doubled, forever, silently."""
-    model = banded(
-        ("F1 (380cm)", "0:F1", 400, [square("Kitchen", 0, 300)], []),
-        ("F1 (480cm)", "0:F1", 480, [square("Dining", 300, 600),
-                                     square("Pantry", 600, 900)], []))
+def test_a_room_eaten_by_a_merge_is_always_named_by_its_survivor():
+    """The invariant's other half: an ordinary merge must not trip it. If it
+    did, every merge in every project would refuse and the guard would be
+    turned off within the day."""
+    model = model_with(square("Kitchen", 0, 400), square("Office 1", 400, 700))
 
-    apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Dining"], ["Kitchen", "Pantry"]])
+    done = apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Office 1"]])
 
-    slots = [r for lv in model.levels for r in lv.rooms]
-    assert len({id(r) for r in slots}) == len(slots), (
-        f"one Room object in two places: {[r.name for r in slots]}")
+    assert done.merged == 1
+    assert model.levels[0].rooms[0].merged_from == ["Kitchen", "Office 1"]
 
 
 def test_every_impossible_merge_is_named_and_not_only_the_first():
@@ -253,6 +252,193 @@ def test_a_room_with_no_name_is_reported_rather_than_crashing_the_report():
     done = apply(model, {"Kitchen": "kitchen"}, [])
 
     assert sorted(set(done.unmapped)) == ["<unnamed>"]
+
+
+def test_a_typo_beside_a_repeated_label_does_not_refuse():
+    """Polycam gives every unlabelled room its floor's label, so one name on
+    two storeys is routine. Counting that as "one room in each of two frames"
+    refused 376 of 3000 ordinary captures -- 268 of them for a declaration
+    naming a room that is not in the model at all, where the answer is "check
+    the spelling" and not a hard exit.
+
+    A band has to be involved before frames mean anything.
+    """
+    model = Model(source="x.dxf", levels=[
+        Level(name="Floor 1", ceiling_height_cm=250,
+              rooms=[square("Hallway", 0, 400), square("Kitchen", 400, 700)]),
+        Level(name="Floor 2", ceiling_height_cm=250,
+              rooms=[square("Hallway", 0, 400)])])
+
+    done = apply(model, {"Hallway": "hall"}, [["Hallway", "Kitcen"]])
+
+    assert done.merged == 0
+    assert done.unapplied == [["Hallway", "Kitcen"]], "the typo is what to say"
+
+
+def test_a_merge_naming_a_label_two_rooms_share_is_refused():
+    """Which of two same-named rooms a merge takes was decided by file
+    position, and every rule tried deleted the other one's floor on some real
+    capture: `main` takes the first, the pre-band code the last, and the two
+    disagree on 21 of 3000 ordinary captures. Polycam gives every unlabelled
+    room its floor's label, so two rooms sharing one is its ordinary output.
+
+    Neither pick is defensible, so neither is made.
+    """
+    model = model_with(square("Bedroom", 0, 300),
+                       square("Hallway", 300, 600),
+                       square("Bedroom", 600, 900))
+
+    with pytest.raises(CannotMerge, match="names 2 rooms"):
+        apply(model, {"Bedroom": "bedroom"}, [["Bedroom", "Hallway"]])
+
+    assert len(model.levels[0].rooms) == 3, "and nothing is touched on the way out"
+
+
+def test_a_room_on_another_band_is_not_deleted_with_the_one_it_shares_no_name_with():
+    """Rooms were removed by NAME across the whole band group, so a room on
+    another band that merely shared a scanner name with a consumed one was
+    deleted -- 18 m2 of floor gone while the report read `merged=1` and named
+    nothing at all."""
+    model = banded(
+        ("F1 (380cm)", "0:F1", 400, [square("Living Room", 0, 400),
+                                     square("Office 1", 400, 600)], []),
+        ("F1 (480cm)", "0:F1", 480, [square("Snug", 900, 1500),
+                                     square("Study", 1500, 1800)], []))
+
+    apply(model, {"Living Room": "lounge", "Study": "study"},
+          [["Living Room", "Office 1"]])
+
+    assert len(model.levels[1].rooms) == 2, (
+        f"the upper band keeps its own rooms: "
+        f"{[r.name for r in model.levels[1].rooms]}")
+
+
+def test_a_declaration_spanning_a_band_and_another_cluster_is_refused_whole():
+    """Refusing only when NO level holds two names let a three-room
+    declaration be HALF applied: two rooms merged across bands while the third,
+    in another Polycam cluster, stayed where it was -- and `merged_from` named
+    it anyway, so the provenance asserted a union that never happened."""
+    model = banded(("F1 (240cm)", "0:F1", 400, [square("Kitchen", 0, 300)], []),
+                   ("F1 (480cm)", "0:F1", 480, [square("Dining", 300, 600)], []),
+                   ("Floor 2", None, 250, [square("Snug", 9000, 9300)], []))
+
+    with pytest.raises(CannotMerge, match="not on the level its other rooms are on"):
+        apply(model, {"Kitchen": "open_plan"}, [["Kitchen", "Dining", "Snug"]])
+
+    assert [r.name for lv in model.levels for r in lv.rooms] == [
+        "Kitchen", "Dining", "Snug"], "a refused run leaves the model alone"
+
+
+def test_the_emptied_band_is_reported_whichever_way_it_was_declared():
+    """The report was written from a set the move had already emptied, so the
+    same model, merged the same way, said it or not depending on which room the
+    reader happened to type first."""
+    for order in (["Kitchen", "Dining"], ["Dining", "Kitchen"]):
+        model = banded(("F1 (240cm)", "0:F1", 400, [square("Kitchen", 0, 300)], []),
+                       ("F1 (480cm)", "0:F1", 480, [square("Dining", 300, 600)], []))
+        done = apply(model, {order[0]: "open_plan"}, [order])
+        assert done.emptied == ["F1 (480cm)"], f"declared {order}: {done.emptied}"
+
+
+def test_a_broken_room_polygon_is_not_blamed_on_the_declaration():
+    """`main` catches the refusal to give a sentence instead of a traceback.
+    Catching bare `ValueError` also caught shapely's complaint about a
+    degenerate polygon and reported a broken ROOM as a bad `merge:` line, with
+    the traceback suppressed so nothing said which room."""
+    model = model_with(square("Kitchen", 0, 400))
+    model.levels[0].rooms.append(Room(name="Sliver", points=[(0, 0), (1, 1)]))
+
+    with pytest.raises(ValueError) as raised:
+        apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Sliver"]])
+    assert not isinstance(raised.value, CannotMerge), (
+        "a geometry error is not a declaration this stage refuses")
+
+
+def test_a_group_half_glued_in_one_band_is_finished_across_the_others():
+    """Pass 1 glues what it can inside a level and pass 2 glues the rest across
+    the bands. Guarded on "did pass 1 touch this group" instead of "is anything
+    of it still unglued", pass 2 was switched off for the whole cluster the
+    moment pass 1 fired -- so the remaining room sat on a sibling band,
+    unjoined, with `unapplied` quiet because the group had applied and nothing
+    missing for the invariant to count. 189 of 6000 banded models, silent.
+    """
+    model = banded(
+        ("F1 (240cm)", "0:F1", 400, [square("Kitchen", 0, 300),
+                                     square("Dining", 300, 600)], []),
+        ("F1 (480cm)", "0:F1", 480, [square("Snug", 600, 900)], []))
+
+    done = apply(model, {"Kitchen": "open_plan"}, [["Kitchen", "Dining", "Snug"]])
+
+    assert [[r.name for r in lv.rooms] for lv in model.levels] == [["open_plan"], []]
+    assert model.levels[0].rooms[0].merged_from == ["Kitchen", "Dining", "Snug"], (
+        "glued twice, and the first pass's members stay in the record")
+    assert polygon_of(model.levels[0].rooms[0]).area == 900 * 300
+    assert done.unapplied == [] and done.emptied == ["F1 (480cm)"]
+
+
+def test_rooms_that_share_no_edge_are_refused_rather_than_half_kept():
+    """Keeping the largest piece and dropping the rest was the largest single
+    source of floor going quietly: two rooms that share no edge are not one
+    room, so approximating the union throws a whole room away."""
+    model = model_with(square("Kitchen", 0, 300), square("Far", 4000, 4300))
+
+    with pytest.raises(CannotMerge, match="separate pieces"):
+        apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Far"]])
+
+
+def test_an_offcut_smaller_than_a_sliver_is_dropped_with_a_note(capsys):
+    """Two scanned polygons meeting at a wall leave scanner residue, and
+    refusing on that would refuse ordinary captures. The line between the two
+    is a guess, which is why it is a flag."""
+    model = model_with(square("Kitchen", 0, 300), square("Nearly", 300, 600))
+    model.levels[0].rooms.append(square("Speck", 5000, 5010, y1=10))
+
+    apply(model, {"Kitchen": "kitchen"}, [["Kitchen", "Nearly", "Speck"]],
+          sliver_m2=1.0)
+
+    assert "dropping" in capsys.readouterr().out, "floor going is never silent"
+
+
+def test_two_levels_of_one_capture_that_was_never_split_cannot_be_glued():
+    """`band_groups` gives a level with no `from_level` a group of its own, and
+    that is what makes pass 2 unreachable for the 17 of 19 real captures
+    `polycam` never split. Grouped together, a merge would union rooms across
+    two unrelated storeys."""
+    model = Model(source="x.dxf", levels=[
+        Level(name="Floor 1", ceiling_height_cm=250, rooms=[square("Lounge", 0, 300)]),
+        Level(name="Floor 2", ceiling_height_cm=250, rooms=[square("Attic", 300, 600)])])
+
+    assert [len(g) for g in band_groups(model)] == [1, 1], (
+        "if these share a group the refusal below is not what is being tested")
+    with pytest.raises(CannotMerge, match="not on the level its other rooms"):
+        apply(model, {"Lounge": "lounge"}, [["Lounge", "Attic"]])
+
+
+def test_a_merge_written_without_its_dashes_is_refused():
+    """`cap: ["Kitchen", "Office 1"]` -- the dash forgotten -- iterated the
+    strings and produced groups of single CHARACTERS, which merged nothing and
+    exited 0. `projectlevels.parse_entries` refuses the same shape."""
+    model = model_with(square("Kitchen", 0, 400))
+
+    with pytest.raises(CannotMerge, match="list of scanner room names"):
+        apply(model, {"Kitchen": "kitchen"}, ["Kitchen", "Office 1"])
+    with pytest.raises(CannotMerge, match="LIST of groups"):
+        apply(model, {"Kitchen": "kitchen"}, "Kitchen")
+
+
+def test_a_refusal_halfway_through_leaves_the_model_untouched():
+    """The first group merges, the second is impossible. Working in place, the
+    caller was handed a half-merged model along with the error -- and the
+    invariant cannot help, because it can only fire after the damage."""
+    model = model_with(square("Kitchen", 0, 300), square("Office 1", 300, 600),
+                       square("Snug", 1000, 1300), square("Far", 5000, 5300))
+    before = [(r.name, polygon_of(r).area) for r in model.levels[0].rooms]
+
+    with pytest.raises(CannotMerge):
+        apply(model, {"Kitchen": "kitchen"},
+              [["Kitchen", "Office 1"], ["Snug", "Far"]])
+
+    assert [(r.name, polygon_of(r).area) for r in model.levels[0].rooms] == before
 
 
 def test_a_capture_with_no_bands_merges_exactly_as_before():

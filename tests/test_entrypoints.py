@@ -113,7 +113,8 @@ def test_rooms_main_reports_a_band_crossing_and_a_typo(monkeypatch, tmp_path, ca
 
     model = Model(source="x.dxf", levels=[
         Level(name="Floor 1 (210cm)", from_level="0:Floor 1", ceiling_height_cm=800,
-              rooms=[sq("Living Room 1", 0, 400, 380, 800)],
+              rooms=[sq("Living Room 1", 0, 400, 380, 800),
+                     sq("Study", 800, 1000, 240, 260)],
               walls=[Wall(x_start=0, y_start=0, x_end=400, y_end=0,
                           thickness=10.0, height=800.0)]),
         Level(name="Floor 1 (480cm)", from_level="0:Floor 1", ceiling_height_cm=480,
@@ -127,7 +128,7 @@ def test_rooms_main_reports_a_band_crossing_and_a_typo(monkeypatch, tmp_path, ca
     project.write_text(
         'rooms:\n  walk:\n    Living Room 1: lounge\n'
         'merge:\n  walk:\n    - ["Living Room 1", "Living Room 2"]\n'
-        '    - ["Living Room 1", "Nonexistent"]\n', encoding="utf-8")
+        '    - ["Study", "Studdy"]\n', encoding="utf-8")
 
     out = tmp_path / "named.json"
     run(monkeypatch, rooms, src, project, "-o", out, "--capture", "walk")
@@ -135,10 +136,10 @@ def test_rooms_main_reports_a_band_crossing_and_a_typo(monkeypatch, tmp_path, ca
 
     assert "spanned" in printed, printed
     assert "walls only" in printed, "the emptied band has to be named"
-    assert "Nonexistent" in printed, "and so does the declaration that did nothing"
+    assert "Studdy" in printed, "and so does the declaration that did nothing"
 
     named = load_model(out)
-    assert [len(lv.rooms) for lv in named.levels] == [1, 0]
+    assert [len(lv.rooms) for lv in named.levels] == [2, 0]
     assert len(named.levels) == 2, "the level count is a contract with the textures"
 
 
