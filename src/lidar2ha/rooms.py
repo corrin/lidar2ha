@@ -15,9 +15,11 @@ Two operations, and they are all that open plan needs here:
 
 Merging is a real union, not a bounding box: the shared edge dissolves, so the
 result is the actual outline of the combined space. Where the union leaves a
-sliver or a hole -- which happens when two scanner polygons abut imperfectly --
-the largest resulting piece wins and the rest is reported rather than silently
-dropped.
+sliver or a hole, the largest resulting piece USED to win. It does not now:
+rooms that share no edge are not one room, so a union coming out in separate
+pieces is refused rather than approximated -- that path was the largest source
+of floor quietly going missing. An offcut below `SLIVER_M2` is a scanner
+artefact and is still dropped, with a note.
 
 Usage:
     python -m lidar2ha.rooms model.json project.yaml -o named.json --capture upstairs
@@ -201,7 +203,6 @@ def band_groups(model: Model) -> list[list[Level]]:
 # larger gap -- which would mean the scan, not the declaration, is the problem.
 SLIVER_M2 = 0.5
 
-_OWN_LEVEL = "nothing -- a Polycam level of its own"
 
 
 def _union_of(members: list[Room], names: list[str], *,
@@ -305,6 +306,38 @@ def _refusals(merges: list[list[str]], groups: list[list[Level]]) -> list[str]:
         # the answer to that is the `unapplied` report, not a refusal: guarding
         # on the bare collision refused 376 of 3000 ordinary captures, because
         # Polycam repeats room labels across storeys as a matter of course.
+        if len(set(group)) < len(group):
+            dupe = next(x for x in group if group.count(x) > 1)
+            out.append(
+                f"merge {group} names {dupe!r} twice, which unions a room with "
+                f"itself and reports a merge that did not happen")
+            continue
+
+        # AMBIGUOUS BY LABEL. Where a name matches two rooms in the scope a
+        # merge can reach, no rule about which to take is defensible: `main`
+        # takes the first and the pre-band code the last, and each silently
+        # deletes the other's floor on captures the other handles. Polycam
+        # gives every unlabelled room its floor's label, so this is ordinary
+        # output rather than a corner -- and the reader can see which room they
+        # mean where the file cannot.
+        ambiguous = False
+        for levels in groups:
+            counts = Counter(str(r.name) for lv in levels for r in lv.rooms)
+            repeated = [n for n in group if counts[n] > 1]
+            if repeated:
+                out.append(
+                    f"merge {group} is ambiguous on "
+                    f"{[lv.name for lv in levels]}: "
+                    + ", ".join(f"{n!r} names {counts[n]} rooms" for n in repeated)
+                    + ". Two rooms carrying one scanner label cannot be told "
+                      "apart by name, and picking by position deletes the "
+                      "other one's floor. Give them different names in the "
+                      "capture")
+                ambiguous = True
+                break
+        if ambiguous:
+            continue
+
         held = _held_per_group(group, groups)
         best = max(range(len(groups)), key=lambda j: held[j], default=None)
         if best is None or not held[best]:
@@ -330,7 +363,11 @@ def _refusals(merges: list[list[str]], groups: list[list[Level]]) -> list[str]:
 
 def apply(model: Model, mapping: dict, merges: list, *,
           sliver_m2: float = SLIVER_M2) -> Applied:
-    """Rename and merge in place, saying what was refused as well as done.
+    """Rename and merge, saying what was refused as well as done.
+
+    `model.levels` is REPLACED rather than repaired -- see ATOMIC below -- so a
+    caller holding a `Level` or `Room` from before the call is left with an
+    object that is no longer in the model.
 
     TWO PASSES, AND THE SECOND CANNOT REACH AN ORDINARY CAPTURE. The first is
     the per-level merge as it was before ceiling bands existed; the second joins
@@ -368,8 +405,6 @@ def apply(model: Model, mapping: dict, merges: list, *,
     started = Counter(str(r.name) for lv in work.levels for r in lv.rooms)
 
     for levels in groups:
-        here: set[int] = set()
-
         # --- pass 1: inside one level ---------------------------------------
         for lv in levels:
             # Last wins, which is what this map has always done.
@@ -390,7 +425,6 @@ def apply(model: Model, mapping: dict, merges: list, *,
                             del by_scanner[name]
                 by_scanner[str(survivor.name)] = survivor
                 fused.add(id(survivor))
-                here.add(gi)
                 applied.add(gi)
                 merged += 1
             lv.rooms = [r for r in lv.rooms if id(r) not in consumed]
@@ -403,15 +437,23 @@ def apply(model: Model, mapping: dict, merges: list, *,
         if len(levels) < 2:
             continue
         for gi, group in enumerate(merges):
-            if gi in here:
-                continue
+            # WHETHER ANYTHING OF THIS GROUP IS STILL UNGLUED, not whether pass
+            # 1 touched it. Skipping a group pass 1 had merged anywhere left its
+            # remaining rooms on the sibling bands of the same cluster,
+            # unjoined, with `unapplied` quiet because the group had "applied"
+            # and nothing missing for the invariant to count.
             placed = {str(r.name): (lv, r) for lv in levels for r in lv.rooms if r.name}
             names = [n for n in group if n in placed]
             if len(names) < 2:
                 continue
             paired = [placed[n] for n in names]
 
+            prior = list(paired[0][1].merged_from)
             survivor = _union_of([r for _, r in paired], names, sliver_m2=sliver_m2)
+            # A room glued twice -- once inside its band, once across them --
+            # keeps the whole record. Overwritten, pass 1's members vanished
+            # from provenance while their floor stayed in the polygon.
+            survivor.merged_from = list(dict.fromkeys(prior + survivor.merged_from))
             was = next(lv for lv, r in paired if r is survivor)
             # THE LOWEST BAND, which is what `polycam` does with a shaft: a
             # volume spanning bands belongs at the bottom of it.
