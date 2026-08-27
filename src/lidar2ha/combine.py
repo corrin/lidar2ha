@@ -1998,20 +1998,55 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
         })
 
     for area in sorted((expected_areas or set()) - won_areas):
+        # WHICH ROOM IS STANDING ON IT, where one is. The third reading below is
+        # the common one -- a capture that fused this area with its neighbour
+        # won the group, so the floor is in the model inside another polygon --
+        # and `name_suggestions` has already measured exactly that. Left to join
+        # two rows of one report by eye, a reader records a scanned room as
+        # unscanned, which is how this area got reported that way four times.
+        stood_on_by: list[dict[str, Any]] = sorted(
+            ({"capture": s.capture, "room": s.room, "fraction": round(f, 3),
+              "verdict": s.verdict}
+             for s in naming for a, f in s.places if a == area),
+            key=lambda s: -float(s["fraction"]))
+        # WHAT TO DO ABOUT IT FOLLOWS THE VERDICT, not the fact of an overlap. A
+        # room covering this area because it fused two of them needs cutting; a
+        # room that simply IS this area, unmapped in the capture that won the
+        # group, needs a line in `rooms:`. Telling a reader to split the second
+        # one sends them to draw a boundary through a room that has none.
+        fused = any(s["verdict"] == "split" for s in stood_on_by)
         items.append({
             "kind": "area_with_no_source",
             "area": area,
+            "stood_on_by": stood_on_by,
             # THREE READINGS, and the wording has to carry all of them. As "either
             # never scanned or refused above" this was read as "never scanned" and
             # reported that way in three commit messages and on a dashboard,
             # while the room was in fact scanned, drawn, and swallowed by a
             # neighbouring polygon that had no reason to mention it.
-            "reasons": ["project.yaml maps this area on this level and no room "
-                        "carries it. It may never have been scanned, or its room "
-                        "may have been refused above -- or it may be inside "
-                        "another room, drawn as part of that room's polygon and "
-                        "so present in the model without a name of its own. Look "
-                        "at the plan before recording this one as unscanned"],
+            "reasons": [
+                "project.yaml maps this area on this level and no room carries "
+                "it. It may never have been scanned, or its room may have been "
+                "refused above -- or it may be inside another room, drawn as "
+                "part of that room's polygon and so present in the model "
+                "without a name of its own. Look at the plan before recording "
+                "this one as unscanned"
+                if not stood_on_by else
+                "project.yaml maps this area on this level and no room carries "
+                "it, but its floor IS in the model: "
+                + ", ".join(f"{s['capture']}/{s['room']} covers "
+                            f"{float(s['fraction']) * 100:.0f}% of it"
+                            for s in stood_on_by)
+                + (". That capture fused this area with its neighbour and won "
+                   "the group, so nothing was lost -- the room needs cutting "
+                   "apart, not re-scanning. See the `name_` row for it, and "
+                   "`python -m lidar2ha.seams`"
+                   if fused else
+                   ". That room is this area, in a capture whose `rooms:` "
+                   "mapping does not name it, and it won the group -- so the "
+                   "area is declared on a capture that lost. Add it to "
+                   "`rooms.<the winning capture>` in project.yaml. See the "
+                   "`name_` row for it")],
         })
     return items
 
