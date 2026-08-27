@@ -275,7 +275,7 @@ Three traps, all paid for once already:
   is circular, it partly measures how much the capture is being used as the
   yardstick. Not by its friendliest single pairing either: agreeing well with
   exactly one other capture is not agreement with the level, and it let
-  `nathan_bedroom`, which lands 65 deg out on a hallway, read 7.9 cm.
+  `boy_bedroom`, which lands 65 deg out on a hallway, read 7.9 cm.
   Measured over twelve captures on three storeys, the averaged figure separates
   2.5-4.3 cm from 14.7-29.2 cm where the best pairing gave 2.6-4.5 against
   7.9-28.2. Three traps in the averaging itself, all paid for:

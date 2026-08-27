@@ -96,7 +96,7 @@ CM2_TO_M2 = 1e-4
 #
 #     good   scan6_fixtures->scan4  2.6cm   midlevel_fixtures->scan7  3.5cm
 #            scan7->midlevel        4.4cm   scan8->scan4              4.5cm
-#     bad    midlevel->scan7       10.5cm   nathan_bedroom->scan7    18.9cm
+#     bad    midlevel->scan7       10.5cm   boy_bedroom->scan7    18.9cm
 #            scan3->scan9          27.6cm   scan5->scan9             31.4cm
 #
 # Nothing measured sits between 4.5 and 10.5, so 5 cm is a wide gap rather than
@@ -105,7 +105,7 @@ CM2_TO_M2 = 1e-4
 #
 # This is a BOUND ON THE CHOSEN CANDIDATE, not the decision procedure. A scalar
 # over nearest-neighbour distances cannot catch a capture placed on the wrong
-# walls -- nathan_bedroom sits 65 degrees out at 100% coverage, every point near
+# walls -- boy_bedroom sits 65 degrees out at 100% coverage, every point near
 # some reference point, just the wrong ones. Deciding which basin is right is a
 # separate job; this only insists the winner actually lands.
 MAX_MEDIAN_CM = 5.0
@@ -254,7 +254,7 @@ REFERENCE_TOLERANCE = 2.0
 # outlier. Reported, never refused: the bad captures measured here still supply
 # rooms nothing else has. Against the averaged walls the outliers sit 8.1x and
 # 8.8x out while everything that agrees stays inside 1.72x, so this sits in a
-# gap rather than near an edge. The tightest case was `nathan_bedroom`, which
+# gap rather than near an edge. The tightest case was `boy_bedroom`, which
 # cleared the old figure by a hair at 2.26x and clears this one at 4.3x.
 OUTLIER_RATIO = 2.0
 
@@ -461,7 +461,7 @@ def off_grid_deg(theta_deg: float, source: Level, target: Level) -> float | None
     complementary rather than redundant. Measured:
 
         good overlays                    0.28 - 0.57 deg off grid
-        nathan_bedroom (wrong basin)    14.46          <- only this catches it
+        boy_bedroom (wrong basin)    14.46          <- only this catches it
         scan3, scan5   (wrong basin)    32.93, 39.42   <- only this catches it
         midlevel       (right basin)     0.41          <- only the error bound
 
@@ -756,7 +756,7 @@ def fits_onto_consensus(levels: Mapping[str, Level],
         do not     consensus 14.7-29.2 cm    best pairing 7.9-28.2 cm
 
     The 5 cm bound moves from a 4.5-to-7.9 gap into a 4.3-to-14.7 one. What
-    closed the old gap was `nathan_bedroom`, which lands 65 deg out on a hallway
+    closed the old gap was `boy_bedroom`, which lands 65 deg out on a hallway
     and reads 7.9 cm against its friendliest partner: agreeing well with exactly
     one other capture was enough, and against the averaged walls it reads 14.7.
 
