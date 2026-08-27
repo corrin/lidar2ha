@@ -608,6 +608,68 @@ def test_an_area_the_project_maps_but_nobody_won_is_named(trio):
     assert [w["area"] for w in missing] == ["conservatory"]
 
 
+def test_a_missing_area_names_the_room_standing_on_it(trio):
+    """"Look at the plan" is advice this stage can already act on.
+
+    An area goes missing most often because a capture that fused it with its
+    neighbour won the group -- so the room IS in the model, drawn as part of
+    another polygon, and the row reads as though the space was never scanned.
+    `name_suggestions` has already worked out which room stands on it and by how
+    much, and leaving the reader to join two rows of one report by eye is how a
+    scanned room gets recorded as unscanned. It happened on this house, three
+    times in commit messages and once on a dashboard.
+    """
+    named = named_house(trio)
+    declared = {r.ha_area for m in named.values() for lv in m.levels
+                for r in lv.rooms if r.ha_area}
+    result = combining.combine(named, expected_areas=declared)
+    missing = {w["area"]: w for w in result.worklist
+               if w["kind"] == "area_with_no_source"}
+
+    assert "hallway" in missing, "if this fails the fixture stopped losing an area"
+    stood_on = missing["hallway"]["stood_on_by"]
+    assert [s["room"] for s in stood_on] == ["Other 1"]
+    assert stood_on[0]["capture"] == "midlevel_fixtures"
+    assert stood_on[0]["fraction"] == pytest.approx(0.66, abs=0.02)
+
+
+def test_a_missing_area_a_capture_simply_did_not_map_is_not_sent_to_seams():
+    """One room standing on the whole area is not a fusion, and cutting is wrong.
+
+    It is the same room, in a capture whose `rooms:` mapping happens not to name
+    it, which then won the group -- so the area is declared on a capture that
+    lost. Told to split it, a reader goes to draw a boundary through a room that
+    has none.
+
+    Driven through `worklist` directly: making a specific capture win a specific
+    group is what the rest of this module is about, and it is not what this
+    asserts.
+    """
+    looks_like = combining.Naming(capture="scan9", room="Other 4", area_m2=8.0,
+                                  verdict="looks_like", places=[("wardrobe", 0.94)])
+    items = combining.worklist([], [], {}, [], [looks_like],
+                               expected_areas={"wardrobe"})
+    row = next(w for w in items if w["kind"] == "area_with_no_source")
+
+    assert row["stood_on_by"] == [{"capture": "scan9", "room": "Other 4",
+                                   "fraction": 0.94, "verdict": "looks_like"}]
+    assert "rooms.<the winning capture>" in row["reasons"][0]
+    assert "seams" not in row["reasons"][0]
+
+
+def test_an_area_nothing_stands_on_says_so_rather_than_nothing(trio):
+    """The field has to separate "swallowed" from "never scanned".
+
+    Defaulting to an empty list on both makes the new evidence indistinguishable
+    from its absence, which is the reading the row's own wording exists to stop.
+    """
+    result = combining.combine(trio, expected_areas={"conservatory"})
+    missing = [w for w in result.worklist if w["kind"] == "area_with_no_source"]
+
+    assert [w["area"] for w in missing] == ["conservatory"]
+    assert missing[0]["stood_on_by"] == []
+
+
 def test_a_room_only_the_reference_saw_still_reaches_the_output(combined):
     """Union runs both ways. The reference's pantry stands on floor no other
     capture reached, and must survive exactly as the fixture pass's bathroom
