@@ -143,6 +143,35 @@ def test_rooms_main_reports_a_band_crossing_and_a_typo(monkeypatch, tmp_path, ca
     assert len(named.levels) == 2, "the level count is a contract with the textures"
 
 
+def test_rooms_main_reports_a_merge_wanting_two_areas(monkeypatch, tmp_path, capsys):
+    """A print branch in `main()` that no test reaches is a branch that crashes.
+
+    This file exists for exactly that: every unit test passing while a stage's
+    `main()` was broken on the input that reaches it.
+    """
+    def sq(name, x0, x1):
+        return Room(name=name, points=[(x0, 0), (x1, 0), (x1, 300), (x0, 300)])
+
+    src = tmp_path / "two_areas.json"
+    save_model(Model(source="x.dxf", levels=[
+        Level(name="Ground", ceiling_height_cm=250,
+              rooms=[sq("Other 4", 0, 300), sq("Kitchen", 300, 600),
+                     sq("Dining Room", 600, 900)])]), src)
+
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        'rooms:\n  walk:\n    Kitchen: kitchen\n    Dining Room: dining\n'
+        'merge:\n  walk:\n    - ["Other 4", "Kitchen", "Dining Room"]\n',
+        encoding="utf-8")
+
+    run(monkeypatch, rooms, src, project, "-o", tmp_path / "named.json",
+        "--capture", "walk")
+    printed = capsys.readouterr().out
+
+    assert "TWO AREAS AT ONCE" in printed
+    assert "'dining', 'kitchen'" in printed
+
+
 def test_seams_main_runs(monkeypatch, tmp_path, model_path):
     out = tmp_path / "split.json"
     run(monkeypatch, seams, model_path, "-o", out, "--room", "Living Room",

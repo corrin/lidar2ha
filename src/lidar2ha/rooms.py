@@ -154,6 +154,9 @@ class Applied(NamedTuple):
     crossed: list[Crossed]
     emptied: list[str]
     unapplied: list[list[str]]
+    # (survivor name, the areas its members ask for) where a merged room's own
+    # name is unmapped and the rooms it was made from name more than one area.
+    ambiguous: list[tuple[str, list[str]]]
 
 
 class CannotMerge(ValueError):
@@ -399,6 +402,7 @@ def apply(model: Model, mapping: dict, merges: list, *,
     unmapped: list[str] = []
     crossed: list[Crossed] = []
     emptied: list[str] = []
+    ambiguous: list[tuple[str, list[str]]] = []
     applied: set[int] = set()
     fused: set[int] = set()
     populated = {id(lv) for lv in work.levels if lv.rooms}
@@ -448,7 +452,12 @@ def apply(model: Model, mapping: dict, merges: list, *,
                 continue
             paired = [placed[n] for n in names]
 
-            prior = list(paired[0][1].merged_from)
+            # FROM EVERY PAIRED ROOM, not the first. Pass 1's survivor is
+            # whichever of the group came first on ITS OWN band, which need not
+            # be the first of them here -- and reading one room's record dropped
+            # the other's names from provenance, which the accounting invariant
+            # below then reported as this stage losing floor.
+            prior = [n for _, r in paired for n in r.merged_from]
             survivor = _union_of([r for _, r in paired], names, sliver_m2=sliver_m2)
             # A room glued twice -- once inside its band, once across them --
             # keeps the whole record. Overwritten, pass 1's members vanished
@@ -507,6 +516,25 @@ def apply(model: Model, mapping: dict, merges: list, *,
     for lv in work.levels:
         for r in lv.rooms:
             area = mapping.get(r.name)
+            if not area and r.merged_from:
+                # A MERGED ROOM ANSWERS TO EVERY NAME IT WAS MADE FROM. The
+                # survivor keeps the first of them present, which is decided by
+                # the order the group was written and by which band each room
+                # landed on -- neither of which the reader connects to `rooms:`.
+                # Taken from its own name alone, a group written the other way
+                # round yields one correct polygon with a scanner label and no
+                # identity, and `unmapped` reads exactly as it does for a room
+                # nobody declared.
+                wanted = sorted({mapping[n] for n in r.merged_from
+                                 if mapping.get(n)})
+                if len(wanted) > 1:
+                    # One polygon cannot be in two areas. Whichever were taken,
+                    # half the room's lights would bind to a space they are not
+                    # in, so this is reported and left unnamed rather than
+                    # decided.
+                    ambiguous.append((str(r.name), wanted))
+                elif wanted:
+                    area = wanted[0]
             if not area:
                 # A room with no name cannot be mapped either, and it is still a
                 # room the plan carries -- named so the report can sort them.
@@ -518,7 +546,8 @@ def apply(model: Model, mapping: dict, merges: list, *,
             renamed += 1
 
     model.levels = work.levels
-    return Applied(renamed, merged, unmapped, crossed, emptied, unapplied)
+    return Applied(renamed, merged, unmapped, crossed, emptied, unapplied,
+                   ambiguous)
 
 
 def main():
@@ -568,6 +597,15 @@ def main():
               "that matches nothing")
         print("  leaves the open plan split, and the only symptom is a light "
               "bound to half a room.")
+    if done.ambiguous:
+        print("\n  MERGED INTO TWO AREAS AT ONCE (left unnamed):")
+        for survivor, areas in done.ambiguous:
+            print(f"    {survivor!r} was made from rooms mapped to "
+                  f"{areas}")
+        print("  A merge makes one polygon, and one polygon is in one area. "
+              "Whichever were\n  taken, half the room's lights would bind to a "
+              "space they are not in -- so map\n  the survivor itself, or stop "
+              "merging rooms that belong to different areas.")
     if done.unmapped:
         print(f"\n  UNMAPPED (still carrying scanner names): "
               f"{sorted(set(done.unmapped))}")

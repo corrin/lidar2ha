@@ -520,3 +520,98 @@ def test_a_merge_group_naming_one_present_room_is_left_alone_but_reported():
     assert done.merged == 0, "a group with nothing to merge into should be a no-op"
     assert model.levels[0].rooms[0].merged_from == []
     assert done.unapplied == [["Kitchen", "Office 1"]]
+
+
+def test_a_merge_keeps_its_area_when_the_survivor_is_not_the_mapped_room():
+    """The survivor's own label decides whether the room gets an identity.
+
+    `_union_of` keeps the FIRST name in the group that is present, and nothing
+    connects that choice to which name `rooms:` maps -- so a group written in
+    the other order produces one correct polygon carrying a scanner label and no
+    `ha_area`, forever, with `unmapped` reading exactly as it does when the room
+    genuinely was not declared. Reordering the group is a fix nobody can be
+    expected to find.
+    """
+    model = model_with(square("Other 4", 0, 300), square("Living Room", 300, 600))
+
+    done = apply(model, {"Living Room": "lounge"}, [["Other 4", "Living Room"]])
+
+    room = model.levels[0].rooms[0]
+    assert polygon_of(room).area == 600 * 300, "the union itself must be intact"
+    assert room.ha_area == "lounge"
+    assert room.name == "lounge"
+    assert done.unmapped == []
+
+
+def test_the_mapped_name_is_taken_across_the_bands_of_one_cluster():
+    """The same thing, on the shape that made it reachable.
+
+    Two bands of one Polycam level, joined by pass 2. Before ceiling bands
+    existed these were two rooms on two levels and the mapped one was renamed on
+    its own; now they are one room, correctly, and the name that carries the
+    mapping can be the one that loses.
+    """
+    model = banded(
+        ("F1 (210cm)", "0:F1", 800, [square("Other 4", 0, 400, low=380, high=800)], []),
+        ("F1 (480cm)", "0:F1", 480, [square("Living Room", 400, 700, low=480, high=480)], []))
+
+    done = apply(model, {"Living Room": "lounge"}, [["Other 4", "Living Room"]])
+
+    assert [[r.name for r in lv.rooms] for lv in model.levels] == [["lounge"], []]
+    assert model.levels[0].rooms[0].ha_area == "lounge"
+    assert done.unmapped == []
+
+
+def test_a_survivor_whose_members_want_different_areas_is_not_guessed():
+    """Two areas for one polygon cannot both be right, and picking is silent.
+
+    The room is one room after the merge, so the declaration contradicts itself
+    -- and whichever area were taken, half the room's lights would be bound to a
+    space they are not in, with nothing on screen to say so.
+    """
+    model = model_with(square("Other 4", 0, 300), square("Kitchen", 300, 600),
+                       square("Dining Room", 600, 900))
+
+    done = apply(model, {"Kitchen": "kitchen", "Dining Room": "dining"},
+                 [["Other 4", "Kitchen", "Dining Room"]])
+
+    room = model.levels[0].rooms[0]
+    assert room.ha_area is None
+    assert done.ambiguous == [("Other 4", ["dining", "kitchen"])]
+
+
+def test_the_survivor_s_own_mapping_still_wins_over_its_members():
+    """A group whose first room IS mapped must not change behaviour at all.
+
+    That is every capture already working, and reaching for `merged_from` where
+    the room's own name answers would quietly re-decide them.
+    """
+    model = model_with(square("Kitchen", 0, 300), square("Office 1", 300, 600))
+
+    apply(model, {"Kitchen": "kitchen", "Office 1": "office"},
+          [["Kitchen", "Office 1"]])
+
+    assert model.levels[0].rooms[0].ha_area == "kitchen"
+
+
+def test_a_group_glued_in_two_passes_accounts_for_every_room_it_named():
+    """Pass 2 reads pass 1's provenance off the FIRST paired room.
+
+    Pass 1's survivor is whichever of the group came first on ITS band, which
+    need not be that one -- so a three-name group split across bands loses the
+    third name from `merged_from`, and the accounting invariant then aborts the
+    whole stage telling the reader to report a bug. The floor is all there; only
+    the record of a name went.
+    """
+    model = banded(
+        ("F1 (240cm)", "0:F1", 400, [square("Attic", 0, 300)], []),
+        ("F1 (480cm)", "0:F1", 480, [square("Kitchen", 300, 600),
+                                     square("Dining", 600, 900)], []))
+
+    done = apply(model, {"Kitchen": "open_plan"},
+                 [["Attic", "Kitchen", "Dining"]])
+
+    survivor = model.levels[0].rooms[0]
+    assert polygon_of(survivor).area == 900 * 300
+    assert sorted(survivor.merged_from) == ["Attic", "Dining", "Kitchen"]
+    assert done.unmapped == []

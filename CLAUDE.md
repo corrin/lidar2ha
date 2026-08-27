@@ -188,6 +188,17 @@ after `combine`, and its coordinates are plan centimetres in the combined
 model's own frame -- which `combine` writes with the anchor's registration, so
 there is exactly one frame and one mesh to measure against.
 
+A MERGED ROOM ANSWERS TO EVERY NAME IT WAS MADE FROM. The survivor of a merge
+keeps the first name in the group that is present, which is decided by the order
+the group was written and by which ceiling band each room landed on -- and
+nothing connects either to which name `rooms:` maps. Resolved from the
+survivor's own name alone, `["Other 4", "Living Room"]` with `Living Room`
+mapped produced one correct 30 m2 polygon carrying a scanner label and no
+`ha_area`, and `unmapped` read exactly as it does for a room nobody declared. So
+the rename falls back to `merged_from`, and reordering the group is not a fix
+anybody has to find. Where the members name more than one area it is reported
+and left unnamed: a merge makes one polygon and one polygon is in one area.
+
 The boundary is a DECLARATION, and mesh evidence corroborates it rather than
 authorising it. `thresholds.boundary_support` returns three answers -- a step or
 flooring change found, a floor measured and continuous, or a strip never
