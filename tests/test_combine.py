@@ -831,6 +831,23 @@ def test_a_name_is_suggested_and_never_written(trio):
         assert room.ha_area is None, "a suggestion was written into the model"
 
 
+def test_an_area_a_capture_arrived_with_survives_being_chosen(trio):
+    """The counterpart to the test above, and the load-bearing half.
+
+    Selection rebuilds nothing -- `combine` copies the winning Room whole and
+    overrides four provenance fields -- but only the negative was ever asserted,
+    so a rebuild that enumerated fields would have passed the suite and left
+    every room in the house unbindable while the geometry stayed perfect.
+    """
+    result = combining.combine(named_house(trio))
+    won = {r.ha_area for r in result.model.levels[0].rooms if r.ha_area}
+
+    assert "kitchen" in won and "living_room" in won
+    for room in result.model.levels[0].rooms:
+        if room.ha_area:
+            assert room.name == room.ha_area, "identity and label disagree"
+
+
 def test_the_suggestion_reaches_the_work_list_with_what_to_do(trio):
     """A verdict with no instruction is another thing to look up."""
     result = combining.combine(named_house(trio))
