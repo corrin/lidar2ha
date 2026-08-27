@@ -21,7 +21,7 @@ from shapely.geometry import Polygon
 
 from conftest import synthetic_floor
 from lidar2ha.schema import Level, Model, Registration, Room, load_model
-from lidar2ha.seams import apply, sections_of, split_room
+from lidar2ha.seams import apply, report, sections_of, split_room
 
 
 def rect(x0, y0, x1, y1) -> Polygon:
@@ -286,6 +286,64 @@ def test_a_provisional_parent_makes_provisional_pieces():
     for room in model.levels[0].rooms:
         assert room.provisional
         assert "won by a fixture pass" in room.provisional_reason
+
+
+def unmapped() -> Model:
+    """The same room as `fused`, but one `rooms` never found a mapping for.
+
+    That is the ordinary state of an open plan: the fusion is the architecture,
+    so there is no single area to write against it in `rooms:`, and the room
+    reaches `split` carrying the scanner's own label. `find_room` still finds it
+    by `name`.
+    """
+    return Model(source="synthetic.dxf", levels=[
+        Level(name="Mid Level", ceiling_height_cm=250, rooms=[
+            Room(name="Living Room",
+                 points=[(0, 0), (400, 0), (400, 300), (0, 300)],
+                 source="scan7 [Floor 1 (210cm)]", score=0.81)])])
+
+
+UNMAPPED_DECLARATION = dict(DECLARATION, room="Living Room")
+
+
+def test_pieces_of_an_unmapped_parent_carry_no_area():
+    """`ha_area` is what `lights` binds by, and `name` looks exactly like it.
+
+    A piece named `kitchen` with `ha_area` unset renders in the right place with
+    the right outline and can never take a light. Nothing downstream can tell it
+    from one that worked.
+    """
+    model = unmapped()
+    apply(model, [UNMAPPED_DECLARATION], level_name="Mid Level")
+
+    pieces = model.levels[0].rooms
+    assert [r.name for r in pieces] == ["kitchen", "lounge"], \
+        "if this fails the cut itself is broken and the test proves nothing"
+    assert [r.ha_area for r in pieces] == [None, None]
+
+
+def test_a_cut_that_names_nothing_says_so(capsys):
+    """The failure above is invisible in the model and in the geometry.
+
+    The report is the only place it can surface, and `split` prints the piece
+    names either way -- so a run that produced two rooms no light will ever
+    reach reads exactly like one that worked.
+    """
+    report(apply(unmapped(), [UNMAPPED_DECLARATION], level_name="Mid Level"))
+    out = capsys.readouterr().out
+
+    assert "no ha_area" in out
+    assert "kitchen" in out and "lounge" in out
+    # The remedy is one line of project.yaml, under the capture that supplied
+    # the room -- and the entry key is not the capture id.
+    assert "scan7" in out and "[Floor 1 (210cm)]" not in out.split("rooms:")[-1]
+
+
+def test_a_cut_of_a_named_parent_says_nothing(capsys):
+    """A warning on every ordinary split is a warning nobody reads."""
+    report(apply(fused(), [DECLARATION], level_name="Mid Level"))
+
+    assert "no ha_area" not in capsys.readouterr().out
 
 
 def test_a_declaration_naming_no_room_is_refused():

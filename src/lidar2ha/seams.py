@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +46,7 @@ from shapely.ops import split as shapely_split
 from shapely.ops import unary_union
 
 from .placefixtures import plan_cm_to_mesh_m
+from .projectlevels import origin_of
 from .rooms import Placed, covered_rooms, polygon_of
 from .schema import Level, Model, Registration, Room, load_model, save_model
 from .thresholds import FloorSample, Support, boundary_support
@@ -291,6 +293,14 @@ class Cut:
     room: str
     tiling: Tiling
     edges: list[Edge] = field(default_factory=list)
+    # Whether the room being cut carried an `ha_area`. The pieces inherit one
+    # only if it did, so a cut of an unmapped parent produces rooms named like
+    # areas that no light can ever bind to -- and the geometry, the model and
+    # the piece list all look correct. `parent_source` is the entry key of the
+    # capture that supplied the room, which is where the missing `rooms:` line
+    # goes.
+    parent_named: bool = True
+    parent_source: str | None = None
 
 
 def shared_edge(a: Polygon, b: Polygon) -> tuple[tuple[float, float],
@@ -486,7 +496,9 @@ def apply(model: Model, declarations: list[dict], *,
 
             lv.rooms = [r for r in lv.rooms if r is not target] + new_rooms
             cuts.append(Cut(lv.name, wanted, tiling,
-                            boundaries_of(tiling.pieces, lv.registration, floor)))
+                            boundaries_of(tiling.pieces, lv.registration, floor),
+                            parent_named=bool(target.ha_area),
+                            parent_source=target.source))
 
     return cuts
 
@@ -589,6 +601,19 @@ def report(cuts: list[Cut]) -> None:
                   f"   {len(piece.poly.exterior.coords) - 1:>2} pts")
             for reason in piece.reasons:
                 print(f"     provisional: {reason}")
+        if not cut.parent_named:
+            names = ", ".join(p.name for p in cut.tiling.pieces)
+            capture = origin_of(cut.parent_source) if cut.parent_source else None
+            print(f"  {cut.room!r} carries no ha_area, so neither does any piece "
+                  f"of it.\n  {names} are named and will render, and `lights` "
+                  "binds by ha_area, so no\n  entity can ever reach them. The "
+                  "parent needs a mapping for the pieces to\n  inherit one, and "
+                  "which area it names does not matter -- the pieces\n  replace "
+                  "it:\n"
+                  "    rooms:\n"
+                  f"      {capture or '<capture>'}:\n"
+                  f"        {json.dumps(cut.room)}: "
+                  f"{cut.room.lower().replace(' ', '_')}")
 
         for edge in cut.edges:
             pair_of = " | ".join(edge.between)
