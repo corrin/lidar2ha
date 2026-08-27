@@ -153,6 +153,27 @@ def test_rooms_without_an_ha_area_are_not_indexed():
     assert set(room_index(model)) == {"kitchen"}
 
 
+def test_a_room_with_no_ha_area_is_reported_not_merely_skipped():
+    """`room_index` drops it, and until now the only check was "are they all".
+
+    So a house where `rooms:` missed one room, or where `split` cut a parent it
+    had missed, placed every other light and said nothing at all -- and a room
+    that renders correctly and can never be lit looks like one that worked.
+    """
+    model = model_with(Room(name="Living Room", points=SQUARE), room("kitchen"))
+    lights, report = build_lights(model, [light("light.a", "kitchen")])
+
+    assert lights, "if this fails nothing was placed and the test proves nothing"
+    assert report.rooms_without_areas == ["Living Room"]
+
+
+def test_a_room_that_has_an_area_is_not_reported_as_lacking_one():
+    """A line printed on every ordinary house is a line nobody reads."""
+    _, report = build_lights(model_with(room("kitchen")), [light("light.a", "kitchen")])
+
+    assert report.rooms_without_areas == []
+
+
 def test_a_light_is_placed_in_its_own_area_on_the_right_level():
     model = Model(source="x.dxf", levels=[
         Level(name="Ground", ceiling_height_cm=250, rooms=[room("hall")]),

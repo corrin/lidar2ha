@@ -152,6 +152,12 @@ class Report:
     check: list[tuple[str, str]] = field(default_factory=list)         # entity, why
     areas_without_rooms: set[str] = field(default_factory=set)
     rooms_without_lights: list[str] = field(default_factory=list)
+    # The mirror of `areas_without_rooms`, and the harder half to see: a room
+    # with no `ha_area` is not in the index at all, so it cannot be skipped,
+    # reported dark, or counted -- it renders, correctly, and no entity can ever
+    # be placed in it. Named by whatever it does carry, which is the scanner's
+    # label, or a `split:` section name where the cut parent was never mapped.
+    rooms_without_areas: list[str] = field(default_factory=list)
     duplicate_names: dict[str, list[str]] = field(default_factory=dict)
     # (area, fittings, entities) where measured positions were used.
     measured: list[tuple[str, int, int]] = field(default_factory=list)
@@ -492,6 +498,9 @@ def build_lights(
 
     lit = set(wanted)
     report.rooms_without_lights = sorted(a for a in rooms if a not in lit)
+    report.rooms_without_areas = [
+        str(r.name or r.scanner_name or "<unnamed>")
+        for level in model.levels for r in level.rooms if not r.ha_area]
     return lights, report
 
 
@@ -567,6 +576,14 @@ def print_report(report: Report, lights: list[Light]) -> None:
         print(f"\n  AREAS WITH NO ROOM: {sorted(report.areas_without_rooms)}")
         print("    Either that space was not scanned, or its room needs the area id")
         print("    in project.yaml under rooms.<capture>.")
+
+    if report.rooms_without_areas:
+        print(f"\n  ROOMS WITH NO AREA ({len(report.rooms_without_areas)}): "
+              f"{report.rooms_without_areas}")
+        print("    These render, and no entity can ever be placed in them -- lights")
+        print("    are bound by ha_area, not by name. Either `rooms:` never mapped")
+        print("    them, or they are the pieces of a `split:` whose parent was not")
+        print("    mapped, in which case the split report named it.")
 
     if report.rooms_without_lights:
         print(f"\n  ROOMS WITH NO LIGHTS: {report.rooms_without_lights}")
