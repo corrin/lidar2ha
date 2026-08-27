@@ -201,6 +201,10 @@ python -m lidar2ha.registration home.json mesh.obj -o registered.json
 python -m lidar2ha.textures_project registered.json mesh.obj -o walltex
 
 # 5. give rooms their HA area names, merging open-plan splits
+#    A merged room answers to every name it was made from, so a `merge:` group
+#    needs only ONE of its rooms mapped and the order it is written in does not
+#    matter.  Map two of them to different areas and the survivor is reported
+#    and left unnamed -- one polygon is in one area.
 python -m lidar2ha.rooms registered.json project.yaml -o named.json --capture upstairs
 
 # 5b. OPTIONAL, from a fixture pass: find the real fittings, put them in rooms,
