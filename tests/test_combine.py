@@ -831,21 +831,41 @@ def test_a_name_is_suggested_and_never_written(trio):
         assert room.ha_area is None, "a suggestion was written into the model"
 
 
+def all_named(trio) -> dict[str, Model]:
+    """Every capture through `rooms`, not just the anchor.
+
+    `named_house` maps `scan7` alone, which is the capture that anchors -- so a
+    selection that kept an area only where the winner was the reference would
+    look identical there. On a real project `rooms:` names every capture.
+    """
+    areas = {"Laundry": "laundry", "Kitchen": "kitchen", "Living Room": "living_room",
+             "Dining Room": "dining", "Other 1": "hallway", "Other 2": "pantry",
+             "Other 3": "laundry", "Other 4": "pantry", "Office": "boy_alcove",
+             "Bedroom": "boy_bedroom", "Bathroom": "mid_level_toilet"}
+    return {name: model.model_copy(update={"levels": [
+        lv.model_copy(update={"rooms": [
+            r.model_copy(update={"ha_area": areas.get(str(r.name)),
+                                 "scanner_name": r.name,
+                                 "name": areas.get(str(r.name), r.name)})
+            for r in lv.rooms]}) for lv in model.levels]})
+        for name, model in trio.items()}
+
+
 def test_an_area_a_capture_arrived_with_survives_being_chosen(trio):
     """The counterpart to the test above, and the load-bearing half.
 
     Selection rebuilds nothing -- `combine` copies the winning Room whole and
-    overrides four provenance fields -- but only the negative was ever asserted,
-    so a rebuild that enumerated fields would have passed the suite and left
-    every room in the house unbindable while the geometry stayed perfect.
+    overrides four provenance fields -- and only the negative is asserted
+    elsewhere, so a rebuild that enumerated fields passes the rest of the suite
+    and leaves every room in the house unbindable while the geometry stays
+    perfect. Asserted across captures, because a rule that kept the area only
+    for the anchor would be invisible on a fixture that names the anchor alone.
     """
-    result = combining.combine(named_house(trio))
-    won = {r.ha_area for r in result.model.levels[0].rooms if r.ha_area}
+    result = combining.combine(all_named(trio))
+    won = {r.source for r in result.model.levels[0].rooms if r.ha_area}
 
-    assert "kitchen" in won and "living_room" in won
-    for room in result.model.levels[0].rooms:
-        if room.ha_area:
-            assert room.name == room.ha_area, "identity and label disagree"
+    assert "scan7" in won, "the anchor's rooms did not survive at all"
+    assert won - {"scan7"}, "no room won by another capture kept its area"
 
 
 def test_the_suggestion_reaches_the_work_list_with_what_to_do(trio):

@@ -14,9 +14,11 @@ quite fit the scanned polygon it is cutting.
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 import pytest
+import yaml
 from shapely.geometry import Polygon
 
 from conftest import synthetic_floor
@@ -278,6 +280,35 @@ def test_provenance_survives_the_cut():
     assert kitchen.ha_area == "kitchen"
 
 
+def test_a_piece_keeps_the_scanner_rooms_its_floor_was_fused_from():
+    """A room can be merged by `rooms` and then cut by `split`.
+
+    `merged_from` is the record of which scanner rooms the floor actually came
+    from, and dropping it at the cut leaves a piece whose provenance starts
+    halfway through -- `split_from` names the fused parent, and nothing then
+    says the parent was itself two scanner rooms.
+    """
+    model = fused(merged_from=["Living Room", "Dining Room"])
+    apply(model, [DECLARATION], level_name="Mid Level")
+
+    for room in model.levels[0].rooms:
+        assert room.merged_from == ["Living Room", "Dining Room"]
+
+
+def test_a_piece_is_not_born_sloped():
+    """The parent's range is one number standing for two spaces.
+
+    Carrying `sloped` forward asserts a rake nothing measured on the piece, and
+    `lights` hangs a fitting at the high end of a room it believes is raked.
+    """
+    model = fused(sloped=True)
+    apply(model, [DECLARATION], level_name="Mid Level")
+
+    assert model.levels[0].rooms, "if nothing was cut the test proves nothing"
+    for room in model.levels[0].rooms:
+        assert not room.sloped
+
+
 def test_a_provisional_parent_makes_provisional_pieces():
     """Cutting a room up does not improve the scan it came from."""
     model = fused(provisional=True, provisional_reason=["won by a fixture pass"])
@@ -289,12 +320,13 @@ def test_a_provisional_parent_makes_provisional_pieces():
 
 
 def unmapped() -> Model:
-    """The same room as `fused`, but one `rooms` never found a mapping for.
+    """A room `rooms` found no mapping for, on the storey of a whole-house walk.
 
-    That is the ordinary state of an open plan: the fusion is the architecture,
-    so there is no single area to write against it in `rooms:`, and the room
-    reaches `split` carrying the scanner's own label. `find_room` still finds it
-    by `name`.
+    The ordinary state of an open plan: nobody writes a `rooms:` line for a
+    fused room, because the fusion is the architecture and no one area is the
+    answer -- so it reaches `split` carrying the scanner's own label and
+    `find_room` matches it by `name`. `source` is an entry key rather than a
+    bare capture id, which is what the remedy has to be keyed by.
     """
     return Model(source="synthetic.dxf", levels=[
         Level(name="Mid Level", ceiling_height_cm=250, rooms=[
@@ -333,17 +365,59 @@ def test_a_cut_that_names_nothing_says_so(capsys):
     out = capsys.readouterr().out
 
     assert "no ha_area" in out
-    assert "kitchen" in out and "lounge" in out
+    # In the WARNING, not in the piece listing above it, which prints them
+    # whatever happened. Asserting on the whole output proves nothing here.
+    warning = out.split("no ha_area")[-1]
+    assert "kitchen" in warning and "lounge" in warning
     # The remedy is one line of project.yaml, under the capture that supplied
     # the room -- and the entry key is not the capture id.
     assert "scan7" in out and "[Floor 1 (210cm)]" not in out.split("rooms:")[-1]
 
 
+def test_the_remedy_pastes_in_at_the_top_level(capsys):
+    """A block emitted indented nests under whatever `rooms:` precedes it.
+
+    PyYAML reads the result without complaint, `mapping.get` then matches
+    nothing, and the reader has followed the printed instruction exactly. The
+    same trap is why `whichlevel` emits its `levels:` block at column 0.
+    """
+    report(apply(unmapped(), [UNMAPPED_DECLARATION], level_name="Mid Level"))
+    after = capsys.readouterr().out.split("\nrooms:\n")[-1]
+    block = itertools.takewhile(bool, after.splitlines())
+
+    declared = yaml.safe_load("rooms:\n" + "\n".join(block))
+    assert declared == {"rooms": {"scan7": {"Living Room": "living_room"}}}
+
+
 def test_a_cut_of_a_named_parent_says_nothing(capsys):
     """A warning on every ordinary split is a warning nobody reads."""
     report(apply(fused(), [DECLARATION], level_name="Mid Level"))
+    out = capsys.readouterr().out
 
-    assert "no ha_area" not in capsys.readouterr().out
+    assert "kitchen" in out, "if the report printed nothing this proves nothing"
+    assert "no ha_area" not in out
+
+
+def test_a_cut_of_a_piece_offers_no_rooms_line_to_add(capsys):
+    """A second declaration can name a piece the first one made.
+
+    That piece exists in no capture, so a `rooms:` line naming it matches
+    nothing -- and `rooms` reports rooms with no mapping, never mappings with no
+    room, so following the remedy would do nothing and say nothing.
+    """
+    model = unmapped()
+    apply(model, [UNMAPPED_DECLARATION], level_name="Mid Level")
+    capsys.readouterr()
+
+    report(apply(model, [{"room": "kitchen", "sections": [
+        {"name": "pantry", "box": [[0, 0], [100, 300]]},
+        {"name": "scullery", "box": [[100, 0], [200, 300]]}]}],
+        level_name="Mid Level"))
+    out = capsys.readouterr().out
+
+    assert "no ha_area" in out, "if this fails the test proves nothing"
+    assert "\nrooms:\n" not in out
+    assert "'Living Room'" in out, "the room to map instead has to be named"
 
 
 def test_a_declaration_naming_no_room_is_refused():

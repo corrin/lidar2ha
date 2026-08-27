@@ -155,9 +155,11 @@ class Report:
     # The mirror of `areas_without_rooms`, and the harder half to see: a room
     # with no `ha_area` is not in the index at all, so it cannot be skipped,
     # reported dark, or counted -- it renders, correctly, and no entity can ever
-    # be placed in it. Named by whatever it does carry, which is the scanner's
-    # label, or a `split:` section name where the cut parent was never mapped.
-    rooms_without_areas: list[str] = field(default_factory=list)
+    # be placed in it.
+    # (level, label, source), because the label alone cannot find the room: it
+    # is the scanner's own, and Polycam repeats a label across storeys as a
+    # matter of course, so a bare list reads `['Bedroom', 'Bedroom']`.
+    rooms_without_areas: list[tuple[str, str, str]] = field(default_factory=list)
     duplicate_names: dict[str, list[str]] = field(default_factory=dict)
     # (area, fittings, entities) where measured positions were used.
     measured: list[tuple[str, int, int]] = field(default_factory=list)
@@ -498,9 +500,13 @@ def build_lights(
 
     lit = set(wanted)
     report.rooms_without_lights = sorted(a for a in rooms if a not in lit)
-    report.rooms_without_areas = [
-        str(r.name or r.scanner_name or "<unnamed>")
-        for level in model.levels for r in level.rooms if not r.ha_area]
+    # `name` before `scanner_name`, because the case worth telling apart is a
+    # `split:` piece: it carries the section name a person wrote and its
+    # parent's scanner label, and reporting the label collapses every piece of
+    # one cut into the same line.
+    report.rooms_without_areas = sorted(
+        (level.name, r.name or r.scanner_name or "<unnamed>", r.source or "-")
+        for level in model.levels for r in level.rooms if not r.ha_area)
     return lights, report
 
 
@@ -578,8 +584,9 @@ def print_report(report: Report, lights: list[Light]) -> None:
         print("    in project.yaml under rooms.<capture>.")
 
     if report.rooms_without_areas:
-        print(f"\n  ROOMS WITH NO AREA ({len(report.rooms_without_areas)}): "
-              f"{report.rooms_without_areas}")
+        print(f"\n  ROOMS WITH NO AREA ({len(report.rooms_without_areas)}):")
+        for level, label, source in report.rooms_without_areas:
+            print(f"    {level:<18} {label:<24} {source}")
         print("    These render, and no entity can ever be placed in them -- lights")
         print("    are bound by ha_area, not by name. Either `rooms:` never mapped")
         print("    them, or they are the pieces of a `split:` whose parent was not")

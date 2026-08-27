@@ -272,7 +272,10 @@ lidar2ha combine "Mid Level" --project project.yaml   # same, via project.yaml
 #     two spaces, which is the whole reason to split, so measure them after.
 #     They inherit an `ha_area` only if the room being cut had one, so map the
 #     parent under `rooms:` first -- which area it names does not matter, the
-#     pieces replace it.  Skip that and the pieces come out named, outlined and
+#     pieces replace it.  Map it under EVERY capture of that level, not only the
+#     one `split` names: `combine` picks a winner per room, and a re-shot capture
+#     winning it later drops the pieces' areas again with the split still
+#     succeeding.  Skip it and the pieces come out named, outlined and
 #     unbindable; `split` says so, and `lights --report` lists them again.
 python -m lidar2ha.preview midlevel_combined.json -o plan.png     # where are the rooms?
 python -m lidar2ha.floormap  scan7.obj -o floor                   # optional: the floor,

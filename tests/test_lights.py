@@ -22,6 +22,7 @@ from lidar2ha.lights import (
     load_fittings,
     place,
     pole_of,
+    print_report,
     room_index,
     valid_entity_id,
 )
@@ -153,25 +154,72 @@ def test_rooms_without_an_ha_area_are_not_indexed():
     assert set(room_index(model)) == {"kitchen"}
 
 
-def test_a_room_with_no_ha_area_is_reported_not_merely_skipped():
-    """`room_index` drops it, and until now the only check was "are they all".
+def unnamed_house() -> Model:
+    """One mapped room, and an unmapped one on each of two levels.
 
-    So a house where `rooms:` missed one room, or where `split` cut a parent it
-    had missed, placed every other light and said nothing at all -- and a room
-    that renders correctly and can never be lit looks like one that worked.
+    The upper one is a `split:` piece of a parent `rooms:` never mapped, which
+    is what carries a section name AND its parent's scanner label. The lower is
+    a plain scanner room. Both are called `Bedroom` by something, because
+    Polycam repeats a label across storeys as a matter of course.
     """
-    model = model_with(Room(name="Living Room", points=SQUARE), room("kitchen"))
-    lights, report = build_lights(model, [light("light.a", "kitchen")])
+    return Model(source="x.dxf", levels=[
+        Level(name="Ground", ceiling_height_cm=250, rooms=[
+            room("kitchen"),
+            Room(name="Bedroom", points=SQUARE, source="scan7")]),
+        Level(name="Upper", ceiling_height_cm=240, rooms=[
+            Room(name="wardrobe", scanner_name="Bedroom", split_from="Bedroom",
+                 points=SQUARE, source="scan9")])])
+
+
+def test_a_room_with_no_ha_area_is_reported_not_merely_skipped():
+    """`room_index` drops such a room, and the only check is "are they all".
+
+    A house where `rooms:` misses one room, or where `split` cuts a parent it
+    missed, places every other light and says nothing -- and a room that renders
+    correctly and can never be lit looks exactly like one that worked.
+    """
+    lights, report = build_lights(unnamed_house(), [light("light.a", "kitchen")])
 
     assert lights, "if this fails nothing was placed and the test proves nothing"
-    assert report.rooms_without_areas == ["Living Room"]
+    assert report.rooms_without_areas == [
+        ("Ground", "Bedroom", "scan7"), ("Upper", "wardrobe", "scan9")]
 
 
-def test_a_room_that_has_an_area_is_not_reported_as_lacking_one():
+def test_an_unreachable_room_is_named_by_its_own_label_not_its_parent_s():
+    """A `split:` piece carries the section name AND the parent's scanner label.
+
+    Reported by the label, every piece of one cut collapses to the same line --
+    `Bedroom, Bedroom` -- and the names a person wrote, which are the only way
+    to tell the pieces apart, are the ones that vanish.
+    """
+    _, report = build_lights(unnamed_house(), [light("light.a", "kitchen")])
+
+    labels = [label for _, label, _ in report.rooms_without_areas]
+    assert "wardrobe" in labels and "Bedroom" in labels
+
+
+def test_the_rooms_with_no_area_reach_the_printed_report(capsys):
+    """The field is not the deliverable; the report a person reads is.
+
+    Populating it and never printing it leaves the run looking exactly as silent
+    as it was, which is the whole failure.
+    """
+    lights, report = build_lights(unnamed_house(), [light("light.a", "kitchen")])
+    print_report(report, lights)
+    out = capsys.readouterr().out
+
+    assert "ROOMS WITH NO AREA" in out
+    assert "wardrobe" in out and "Upper" in out and "scan9" in out
+
+
+def test_a_room_that_has_an_area_is_not_reported_as_lacking_one(capsys):
     """A line printed on every ordinary house is a line nobody reads."""
-    _, report = build_lights(model_with(room("kitchen")), [light("light.a", "kitchen")])
+    lights, report = build_lights(model_with(room("kitchen")),
+                                  [light("light.a", "kitchen")])
+    print_report(report, lights)
 
     assert report.rooms_without_areas == []
+    assert "ROOMS WITH NO AREA" not in capsys.readouterr().out
 
 
 def test_a_light_is_placed_in_its_own_area_on_the_right_level():

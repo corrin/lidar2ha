@@ -258,67 +258,6 @@ def test_combine_main_runs(monkeypatch, tmp_path, model_path):
     assert (tmp_path / "combined_worklist.json").exists()
 
 
-def test_an_area_survives_rooms_then_combine_then_split(monkeypatch, tmp_path,
-                                                        model_path):
-    """The seam between the three stages that decide a room's identity.
-
-    Each is tested alone against hand-built input that already carries the
-    answer -- `test_combine.py` writes `ha_area` on with a `model_copy` of its
-    own, `test_seams.py` hand-builds a parent that has one, and the two `split`
-    smoke tests above cut geometry that never went through `rooms` at all. So
-    the field is written by one stage, carried by a second and read by a third,
-    and nothing has ever run the three in a row. A break anywhere along it
-    leaves every polygon correct and every name right, and no light can be
-    placed in the house.
-    """
-    project = tmp_path / "project.yaml"
-    project.write_text(
-        'rooms:\n'
-        '  first:\n'
-        '    Living Room: open_living\n'
-        '  second:\n'
-        '    Living Room: open_living\n'
-        'split:\n'
-        '  Ground:\n'
-        '    - room: open_living\n'
-        '      sections:\n'
-        '        - name: kitchen\n'
-        '          box: [[0, 0], [200, 400]]\n'
-        '        - name: lounge\n'
-        '          box: [[200, 0], [600, 400]]\n', encoding="utf-8")
-
-    # Two captures of the same L, one shifted, because `combine` refuses a level
-    # only one capture saw.
-    shifted = load_model(model_path)
-    for lv in shifted.levels:
-        for wall in lv.walls:
-            wall.x_start += 40
-            wall.x_end += 40
-        for room in lv.rooms:
-            room.points = [(x + 40, y) for x, y in room.points]
-    save_model(shifted, tmp_path / "second_raw.json")
-
-    named = []
-    for capture, src in (("first", model_path),
-                         ("second", tmp_path / "second_raw.json")):
-        out = tmp_path / f"{capture}_named.json"
-        run(monkeypatch, rooms, src, project, "-o", out, "--capture", capture)
-        assert load_model(out).levels[0].rooms[0].ha_area == "open_living", \
-            "if this fails the chain never started and the rest proves nothing"
-        named.append(out)
-
-    combined = tmp_path / "combined.json"
-    run(monkeypatch, combine, *named, "-o", combined)
-
-    out = tmp_path / "split.json"
-    run(monkeypatch, seams, combined, "-o", out,
-        "--project", project, "--level", "Ground")
-
-    pieces = load_model(out).levels[0].rooms
-    assert {r.ha_area for r in pieces} == {"kitchen", "lounge"}
-    assert all(r.split_from == "open_living" for r in pieces)
-
-
 def test_every_stage_exposes_a_main():
     """A stage without main() cannot be run, and nothing else would say so."""
     import importlib

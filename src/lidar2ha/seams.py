@@ -298,9 +298,12 @@ class Cut:
     # areas that no light can ever bind to -- and the geometry, the model and
     # the piece list all look correct. `parent_source` is the entry key of the
     # capture that supplied the room, which is where the missing `rooms:` line
-    # goes.
+    # goes; `parent_split_from` is set where the parent is ITSELF a piece of an
+    # earlier cut, and then no `rooms:` line can name it -- it exists in no
+    # capture, so the mapping has to go on the room at the top of the chain.
     parent_named: bool = True
     parent_source: str | None = None
+    parent_split_from: str | None = None
 
 
 def shared_edge(a: Polygon, b: Polygon) -> tuple[tuple[float, float],
@@ -485,10 +488,16 @@ def apply(model: Model, declarations: list[dict], *,
                     split_from=target.ha_area or target.name,
                     ceiling_high_cm=ceiling,
                     ceiling_low_cm=ceiling,
-                    # The geometry is the parent's, cut. How it was won and how
-                    # far to trust it are unchanged by where the line went.
+                    # `sloped` is NOT carried, for the reason the ceilings are
+                    # not: it describes a range one number is standing in for
+                    # across two spaces. A piece has no measured range until
+                    # `ceilings` gives it one.
+                    # The geometry is the parent's, cut. How it was won, how far
+                    # to trust it, and which scanner rooms were fused to make it
+                    # in the first place are unchanged by where the line went.
                     source=target.source,
                     score=target.score,
+                    merged_from=list(target.merged_from),
                     provisional=target.provisional or bool(piece.reasons),
                     provisional_reason=list(target.provisional_reason)
                     + list(piece.reasons),
@@ -498,7 +507,8 @@ def apply(model: Model, declarations: list[dict], *,
             cuts.append(Cut(lv.name, wanted, tiling,
                             boundaries_of(tiling.pieces, lv.registration, floor),
                             parent_named=bool(target.ha_area),
-                            parent_source=target.source))
+                            parent_source=target.source,
+                            parent_split_from=target.split_from))
 
     return cuts
 
@@ -591,6 +601,60 @@ def report_overlaps(model: Model, *, level_name: str | None = None) -> None:
           "audit\n    counting named areas cannot see it. Decide which is right.")
 
 
+def unbindable(cut: Cut) -> str:
+    """What a cut of a room carrying no `ha_area` produced, and the way out.
+
+    The pieces are named, outlined and unreachable: `lights` binds by `ha_area`
+    and they have none, so the model, the geometry and the piece list above all
+    read as a cut that worked.
+
+    THE BLOCK IS EMITTED AT COLUMN 0 and says where it goes, for `whichlevel`'s
+    reason -- it carries its own `rooms:` key, so pasting it underneath one
+    nests it, and PyYAML reads the result without complaint while the mapping
+    matches nothing. Both the capture id and the room name go through
+    `json.dumps`: an id can be a bare filename stem that YAML reads as a number,
+    and a room slugged to `yes` is read as a boolean and then fails to reload.
+
+    A parent that is itself a piece of an earlier cut gets no block, because no
+    `rooms:` line can name it. It exists in no capture, `rooms` reports rooms
+    with no mapping rather than mappings with no room, and the reader would
+    follow a remedy that silently does nothing.
+    """
+    names = ", ".join(p.name for p in cut.tiling.pieces)
+    head = (f"  {cut.room!r} carries no ha_area, so neither does any piece of "
+            f"it. Named and\n  outlined, {names} can never take a light.\n")
+    if cut.parent_split_from:
+        return head + (
+            f"  It is itself a piece of a cut of {cut.parent_split_from!r}, so "
+            f"no `rooms:` line can\n  name it -- no capture holds a room by "
+            f"that name. Map the room at the top\n  of the chain instead, and "
+            f"cut again from there.")
+
+    capture = origin_of(cut.parent_source) if cut.parent_source else None
+    return head + (
+        "  Map the parent; which area it names does not matter, since the "
+        "pieces replace\n  it. Merge this into project.yaml at the TOP level, "
+        "into the `rooms:` section\n  that is already there -- pasting it "
+        "underneath one nests it and the mapping\n  then matches nothing.\n\n"
+        "rooms:\n"
+        f"  {json.dumps(capture) if capture else '<capture>'}:\n"
+        f"    {json.dumps(cut.room)}: {json.dumps(_slug(cut.room))}\n")
+
+
+def _slug(name: str) -> str:
+    """A room name as a plausible Home Assistant area id.
+
+    A suggestion for a human to overwrite, not an identifier this relies on --
+    nothing downstream reads it back, and `rooms:` accepts whatever is written
+    there. An apostrophe closes up and every other non-alphanumeric becomes a
+    separator, so `Kid's Room` suggests `kids_room` rather than a name Home
+    Assistant will not take.
+    """
+    kept = "".join("" if c == "'" else c if c.isalnum() else " "
+                   for c in name.lower())
+    return "_".join(kept.split()) or "unnamed"
+
+
 def report(cuts: list[Cut]) -> None:
     for cut in cuts:
         whole = sum(p.poly.area for p in cut.tiling.pieces) / CM2_PER_M2
@@ -602,18 +666,7 @@ def report(cuts: list[Cut]) -> None:
             for reason in piece.reasons:
                 print(f"     provisional: {reason}")
         if not cut.parent_named:
-            names = ", ".join(p.name for p in cut.tiling.pieces)
-            capture = origin_of(cut.parent_source) if cut.parent_source else None
-            print(f"  {cut.room!r} carries no ha_area, so neither does any piece "
-                  f"of it.\n  {names} are named and will render, and `lights` "
-                  "binds by ha_area, so no\n  entity can ever reach them. The "
-                  "parent needs a mapping for the pieces to\n  inherit one, and "
-                  "which area it names does not matter -- the pieces\n  replace "
-                  "it:\n"
-                  "    rooms:\n"
-                  f"      {capture or '<capture>'}:\n"
-                  f"        {json.dumps(cut.room)}: "
-                  f"{cut.room.lower().replace(' ', '_')}")
+            print(unbindable(cut))
 
         for edge in cut.edges:
             pair_of = " | ".join(edge.between)
