@@ -146,6 +146,7 @@ def _explain(error: ValidationError, path: Path) -> str:
         lines.append("")
         lines.append("A key nothing reads does nothing and says nothing, which "
                      "is why this is an error.")
+        lines.append("If it is a note to yourself, make it a `#` comment.")
     return "\n".join(lines)
 
 

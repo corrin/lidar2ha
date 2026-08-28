@@ -93,3 +93,42 @@ def test_the_keys_the_template_writes_all_load(tmp_path):
     p = tmp_path / "project.yaml"
     p.write_text(PROJECT_YAML, encoding="utf-8")
     projectschema.load(p)
+
+
+def test_comments_and_commented_out_sections_survive(tmp_path):
+    """A project file is mostly comments -- `init` writes it that way, and the
+    notes people keep in it are the reason `validate` used to tolerate a key
+    nothing read. Comments are dropped by the YAML parser before the schema sees
+    anything, so they stay free; a note has to be a `#` comment rather than a
+    key, and the error says so."""
+    p = write(tmp_path, """
+        # My house. Notes to self live here.
+        # TODO: rescan the den, it measured 398cm and is nearer 7m
+
+        rooms:
+          ground_0823:              # the good ground pass
+            "Living Room": lounge   # the scanner called the hall this
+            "Bedroom": null         # ask me later
+
+        # split: not needed yet
+        #   "Ground Floor":
+        #     - room: open_living
+
+        lights:
+          exclude:
+            - light.landing_status  # indicator on a router
+    """)
+    project = projectschema.load(p)
+    assert project.rooms["ground_0823"]["Living Room"] == "lounge"
+    assert project.lights.exclude == ["light.landing_status"]
+
+
+def test_a_note_left_as_a_key_says_to_make_it_a_comment(tmp_path):
+    """The old check tolerated this deliberately, so anyone who took it up needs
+    telling where the note goes now."""
+    p = write(tmp_path, """
+        todo: rescan the den
+    """)
+    with pytest.raises(SystemExit) as exc:
+        projectschema.load(p)
+    assert "`#` comment" in str(exc.value)
