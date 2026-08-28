@@ -13,17 +13,42 @@ As far as I can find, nothing else writes a `.sh3d` at all. There are readers an
 a headless renderer, listed in [docs/SH3D-NOTES.md](docs/SH3D-NOTES.md), but no
 generator, and no published phone-scan-to-Home-Assistant workflow.
 
-Whether it's worth it depends on your house. Real-time cards like `floor3d-card`
-render without raytracing, so they can't do cross-floor light spill, and that
-spill is most of the reason to bother. If you've got a stairwell, a double-height
-space or open plan living, this is for you. If your house is a set of sealed
-boxes, use one of those and save yourself a fortnight.
-
 I built it because I wanted my house in Home Assistant and I didn't want to draw
 it by hand. I've only ever run it on my own house, so every threshold in it is a
 guess that happened to work once. Claude wrote essentially all of the code, and I
 supplied the house, the scans, and the judgement about whether each output was
 actually right.
+
+## This is probably not you
+
+It's for a house that's **multi-storey and open plan**. That's the case where
+light doesn't stay in the room you switched it on in: it goes up the stairwell
+and straight across the open plan, and a picture of the house lit only works if
+something actually simulates that.
+
+Mine is both. There's a stairwell, a double-height space with a mezzanine
+sticking into it, and a 46 m2 open plan that Polycam handed back as one polygon
+covering a living room, a dining room, a kitchen and an office.
+
+If your house is rooms with doors, on one floor, then light stays where you put
+it and there are three cheaper answers:
+
+1. **A flat 2D floorplan.** A `picture-elements` card over a drawing, or over a
+   screenshot of your builder's plans. An evening's work, no 3D, and it's what
+   most people should have.
+2. **A real-time 3D card.** [floor3d-card][floor3d] loads a model and is instant
+   and clickable. You still need a model from somewhere, but it doesn't have to
+   be Sweet Home 3D, and there's no render step to wait on.
+3. **Draw your house in Sweet Home 3D yourself**, then point the
+   [floor-plan plugin][plugin] at it. Identical output to this. For a simple
+   house it's the sensible option, because an afternoon of drawing beats a week
+   of scanning and everything downstream of it.
+
+The first two can't show light crossing a boundary at all: a 2D card lights one
+room at a time, and a real-time card renders without raytracing. The third can,
+because it's the same plugin doing the same render. It just means measuring and
+drawing a multi-storey open plan yourself, which is the job I was trying to get
+out of.
 
 ## What you need
 
@@ -47,6 +72,7 @@ offline forever. So get the toolchain working first, then start the clock.
 [sh3d]: https://www.sweethome3d.com/
 [plugin]: https://github.com/shmuelzon/home-assistant-floor-plan
 [temurin]: https://adoptium.net/
+[floor3d]: https://github.com/wodka/lovelace-floor3d-card
 
 ## What works
 
