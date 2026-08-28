@@ -404,6 +404,49 @@ merge:
 to the walk that made it, and another scan of the same room splits it somewhere
 else or not at all.
 
+### Every capture in a level needs a mapping — including the fixture passes
+
+This is the single most expensive thing to get wrong in the whole tutorial, so
+it gets its own heading.
+
+`combine` picks one capture to win each group of overlapping rooms, and **the
+winner's names are the ones that survive**. A capture with no `rooms:` entry
+keeps its scanner names, so if it wins, the area you carefully mapped on a
+*different* capture is gone — replaced by `Other 1`.
+
+Measured on a real house: three captures in `levels:` had no `rooms:` block, and
+`master_bedroom`, `girl_bedroom`, `sewing_room` and `boy_bedroom` all
+vanished from the model. They were correctly mapped on two other captures each.
+It made no difference.
+
+It is easy to miss because the failure is quiet in both directions. `rooms` does
+exit 1 for a capture you *run* it on with no mapping — but nothing makes you run
+it on every capture, and `combine` falls back to `<id>_registered.json` without
+comment. Worse, the file it falls back to may be a `_named.json` from an older
+mapping, which names nothing and looks identical to one that named everything.
+
+So check it rather than remembering it:
+
+```bash
+uv run lidar2ha validate --project project.yaml
+```
+
+```
+CAPTURE NOT NAMED  (3)
+  ground_geometry_0823-1038 is in `levels:` and has no `rooms:` entry
+  boy_bedroom_geometry_0823-1349 is in `levels:` and has no `rooms:` entry
+  upstairs_fixtures_0823-1216 is in `levels:` and has no `rooms:` entry
+```
+
+It exits non-zero, so it can gate a build. It also catches an area id that is
+really a capture id, a capture declared and used in no level, and a key nothing
+reads.
+
+**One trap in the trap.** A capture with a plan and **no mesh** never gets a
+`_registered.json`, so any loop of yours keyed on that file skips it silently —
+which is exactly how `boy_bedroom` was missed. Run `rooms` from
+`<id>_registered.json` where it exists and `<id>.json` where it does not.
+
 **What it looks like when it's wrong:** `rooms` exits 1 with *"No rooms mapping
 for capture X"*. Good — that is the failure you want. The bad case is the capture
 you never noticed had no mapping, because `combine` will then fall back to its
@@ -507,13 +550,118 @@ FLOOR NOT IN THE MODEL -- 1.5 m2 in 1 piece(s)
 A capture saw floor the combined model does not contain. That is either new ground
 worth keeping or, as here, the signature of the capture that is wrong.
 
+### When to stop
+
+Everything above tells you how to read the tables. This says what to do when
+they are bad, which is the part that is easy to skip — and skipping it is how a
+model with a 1 m² "basement" and half the house missing reached a live
+dashboard.
+
+**Stop and fix before going on if any of these is true:**
+
+| | why it is a stop |
+|---|---|
+| a room's `score` is below 0.70, or it is in the FLAGGED list | the geometry is the best available and still not good enough. Rendering it does not improve it |
+| a capture reads several times the best against the **averaged walls** | it disagrees with everything else on the level. Its rooms are in your model |
+| the naming table shows `SPLIT` or `LOOKS_LIKE` | an unnamed room won a group, and it is standing on an area you mapped. See Part 7 |
+| `lidar2ha coverage` is missing a room you know exists | that room is not in the render, whatever the render looks like |
+| a room's area is far from what Polycam measured | the CSV in every floor-plan zip has per-room floor areas. A room at a quarter of its measured size is not a room |
+
+None of these raise an error, and every one of them produced a plausible model
+that was wrong. The tool reports all of them; the discipline is reading it.
+
+**The check that costs nothing and catches most of it:**
+
+```bash
+uv run lidar2ha coverage --project project.yaml
+```
+
+```
+20 of 29 area(s) across 3 level(s) have geometry.
+
+Ground Level: 3 of 10 area(s), from ground_level_split.json
+  NO GEOMETRY -- not scanned, or the room needs this area id under `rooms.<capture>`:
+    den
+    downstairs_hallway
+    garage
+  NO AREA -- each needs a name in `rooms:`, a `split:`, or to be left as not-an-area:
+    downstairs_hallway             17.0 m2
+    den                            12.9 m2
+```
+
+Read those two lists together: `den` appears in both, so the room is there,
+correctly shaped, carrying no `ha_area`. That is a `rooms:` line, not a rescan.
+The same output tells you when an area legitimately spans storeys — a stairwell
+is one area and three floors, and that is not a fault.
+
 ---
 
-## Part 7 — Cut the rooms an open plan fuses
+## Part 7 — Finding the rooms Polycam fused, and cutting them
 
-There is no wall between the lounge end and the dining end, so **every** capture
-returns them as one polygon and no amount of rescanning separates them. The
-boundary is yours to declare.
+Writing a `split:` declaration is the easy half. Knowing that you need one is
+the part nobody documents, so that comes first.
+
+### First: is this actually open plan?
+
+Two different things look identical in the output and want opposite fixes.
+
+**Genuinely open plan.** There is no wall between the lounge end and the dining
+end, so **every** capture returns them as one polygon and no amount of
+rescanning separates them. `split:` is the only thing that can ever divide them,
+and the boundary is a declaration about how you use the house.
+
+**One capture that fused what others resolved.** A fixture pass is shot with
+geometry sacrificed on purpose and routinely lays one polygon over two rooms.
+If it wins the group, those two rooms are gone — but the other captures got it
+right, and a `split:` there would be writing into your config a claim about the
+*building* that is false. It would also become actively wrong the moment you
+replaced the bad capture.
+
+Tell them apart by asking **which captures resolve the room separately**:
+
+```bash
+uv run python -c "
+import json,sys
+for f in sys.argv[1:]:
+    m=json.load(open(f,encoding='utf-8'))
+    got=[r.get('ha_area') or r.get('name') for L in m['levels'] for r in L['rooms']]
+    print(f, [g for g in got if g in ('lounge','dining')] or 'NEITHER — fused')
+" exports/*/*_named.json
+```
+
+If **no capture** resolves them, it is open plan: declare the split. If **some
+do**, the fused one is a capture that should be losing, and cutting its polygon
+by hand papers over that.
+
+### Five ways the tool tells you
+
+All of these are printed already, and every one of them was read past at least
+once while writing this:
+
+1. **`combine`'s naming table says it outright.** This is the clearest signal
+   there is:
+
+   ```
+   SPLIT       upstairs_fixtures/Hallway 1  20.2 m2  sewing_room 47%  girl_bedroom 46%
+   LOOKS_LIKE  upstairs_fixtures/Other 1    18.1 m2  master_bedroom 99%
+   ```
+
+   `SPLIT` means one polygon is sitting on two areas you named. `LOOKS_LIKE`
+   means an unnamed room *is* an area you named, at that confidence.
+
+2. **`lidar2ha coverage` shows an area with no geometry** that you know exists.
+
+3. **`combine`'s `area_with_no_source` row** — `project.yaml` maps the area and
+   no room carries it.
+
+4. **An implausible area.** One 46 m² polygon covered a living room, a dining
+   room, a kitchen and an office. Compare against the per-room floor areas in
+   the CSV that ships in every floor-plan zip.
+
+5. **`preview`, read against the house you live in.** The cheapest check, and
+   the only one that catches a room being the wrong *shape*.
+
+### Then: read the coordinates off the preview
 
 ```bash
 uv run python -m lidar2ha.preview exports/ground_floor_combined.json -o plan.png
@@ -570,10 +718,36 @@ table.
   rather than quietly making the room smaller.
 - The pieces may come back in the **opposite order to `names:`**. Check the
   resulting bounds against a wall you know; areas alone will not tell you.
-- **One unresolvable declaration aborts the whole level.** If a `split:` entry
-  names a room that no longer exists — because a capture lost its `rooms:` mapping,
-  or `merge:` changed which capture won — you get no cuts at all on that level,
-  including the ones that were fine.
+- **A declaration that cannot be carried out is reported, and the rest still
+  run.** A stale name — because a capture lost its `rooms:` mapping, or `merge:`
+  changed which capture won — comes back under `DECLARED, AND NOT CUT` with the
+  reason. It used to abandon the whole level: one stale entry on a real house
+  cost three other cuts that were fine. A *malformed* declaration still stops
+  the run, because a `box` with three corners is a typo and not a judgement.
+
+**The pieces inherit `ha_area` only if the parent had one.** This is the trap
+that follows a split around, and it is silent: cut a room that carries no area
+and you get pieces that are named, outlined, and unreachable — `lights` binds by
+`ha_area`, so nothing can ever be placed in them. `split` says so:
+
+```
+'Living Room' carries no ha_area, so neither does any piece of it.
+```
+
+The fix is to map the parent, and *which* area it names does not matter, since
+the pieces replace it. If the parent is itself a piece of an earlier cut, no
+`rooms:` line can name it — go to the room at the top of the chain. On a real
+house this cost two of five ground-floor rooms their areas, and the remedy the
+project had settled on was re-running `rooms` over the split model with identity
+mappings:
+
+```bash
+uv run python -m lidar2ha.rooms exports/ground_floor_split.json project.yaml \
+    -o exports/ground_floor_split.json --capture ground_floor_split
+```
+
+That works, and it means `rooms:` has a second meaning — keyed by a *model*
+rather than a capture. Mapping the parent is the cleaner fix.
 
 The pieces come back with **no ceiling**, because one number standing for two
 spaces is the error the split exists to remove. Measure them:
@@ -582,6 +756,13 @@ spaces is the error the split exists to remove. Measure them:
 uv run python -m lidar2ha.ceilings exports/ground_floor_split.json \
     exports/<anchor>/mesh_obj/23_08_2026.obj -o exports/ground_floor_split.json
 ```
+
+**What you should see:** a height per piece, and a refusal where the scan could
+not see one. **What it looks like when it's wrong:** every room reporting the
+level's ceiling height, or a double-height space reading like a normal room —
+one real den measured 398 cm against a hand-measured ~7 m, because the scan was
+truncated rather than the room being short. `ceilings` says `NOT WRITTEN` when
+it is only a lower bound; believe it.
 
 ---
 
@@ -811,6 +992,8 @@ they differ.
 | `doctor` | `lidar2ha doctor` | your install, `uv.lock` | compiled Java cache |
 | `demo` | `lidar2ha demo DIR` | — | a whole demo project |
 | `init` | `lidar2ha init DIR` | — | `project.yaml`, `captures/`, `build/` |
+| `validate` | `lidar2ha validate` | `project.yaml`, `registry.json` | prints; **exits 1** so it can gate a build |
+| `coverage` | `lidar2ha coverage` | `project.yaml`, `registry.json`, the level models | prints which areas have geometry |
 | `polycam` | `python -m lidar2ha.polycam DXF --csv CSV` | DXF + CSV | `<id>.json` |
 | `mesh` | `python -m lidar2ha.mesh MESH` | `.obj` | prints floor candidates |
 | `registration` | `python -m lidar2ha.registration JSON MESH` | model + `.obj` | `_registered.json` |

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import zipfile
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -274,3 +275,51 @@ def test_every_room_of_the_level_is_seen_by_someone(project):
         assert any(len(c.sees) < len(level.rooms) for c in captures), (
             f"no capture on {level.name} skips a room, so `combine` never "
             "reports new ground and Part 6 cannot show it")
+
+
+def test_the_tutorial_names_the_two_gates_it_tells_you_to_run():
+    """Parts 4, 6 and 7 lean on `validate` and `coverage` by name.
+
+    A tutorial that tells you to run a command that does not exist is worse than
+    one that never mentions it, and the appendix is the reader's map of what
+    exists. This catches the pair going out of step -- a renamed command, or a
+    prose reference to one that was never built.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+
+    text = (Path(__file__).resolve().parents[1]
+            / "docs" / "TUTORIAL.md").read_text(encoding="utf-8")
+    named = {"validate", "coverage"}
+    assert all(f"lidar2ha {c}" in text for c in named)
+
+    listed = set(CliRunner().invoke(cli, ["--help"]).output.split())
+    missing = named - listed
+    assert not missing, f"the tutorial tells you to run {missing}, which do not exist"
+
+
+def test_the_tutorial_says_every_capture_in_a_level_needs_naming():
+    """The single most expensive thing to get wrong, and the one the tutorial
+    used to leave implicit. Three captures with no `rooms:` entry cost a real
+    house four rooms that were correctly mapped on two other captures each."""
+    text = (Path(__file__).resolve().parents[1]
+            / "docs" / "TUTORIAL.md").read_text(encoding="utf-8")
+    assert "Every capture in a level needs a mapping" in text
+    assert "fixture passes" in text, (
+        "the fixture passes are the ones people leave unmapped")
+
+
+def test_the_tutorial_distinguishes_open_plan_from_a_bad_capture():
+    """Two things look identical in the output and want opposite fixes.
+
+    Declaring a `split:` for a room that two captures already resolve writes a
+    claim about the BUILDING that is false, and goes wrong the moment the bad
+    capture is replaced. Part 7 has to make the reader ask which captures
+    resolve it before writing a line.
+    """
+    text = (Path(__file__).resolve().parents[1]
+            / "docs" / "TUTORIAL.md").read_text(encoding="utf-8")
+    part7 = text.split("## Part 7")[1].split("## Part 8")[0]
+    assert "is this actually open plan?" in part7.lower()
+    assert "NEITHER" in part7, "the test that tells them apart has to be runnable"
