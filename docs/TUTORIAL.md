@@ -5,8 +5,8 @@ Assistant that lights up when you tap a light. This is how I did mine.
 
 ## How it actually works
 
-It's a loop rather than a pipeline. You scan something, run it through, put it on
-your dashboard, and then go and look at it. Whatever's wrong tells you what to do
+You scan something, run it through, put it on your dashboard, and then go and
+look at it. Whatever's wrong tells you what to do
 next, which is either another scan or a line in `project.yaml`.
 
 `project.yaml` is where you tell it the things it can't work out on its own.
@@ -67,9 +67,8 @@ uv sync --all-extras
 uv run lidar2ha doctor
 ```
 
-`--all-extras` isn't optional. `paramiko` and `websockets` are extras, and a bare
-`uv sync` takes them out again, which loses you `deploy` and the Home Assistant
-registry.
+Use `--all-extras`. `paramiko` and `websockets` are extras, so a bare `uv sync`
+takes them out again and you lose `deploy` and the Home Assistant registry.
 
 You also need [Sweet Home 3D](https://www.sweethome3d.com/), the
 [floor-plan plugin][plugin], and a JDK 17+ ([Temurin](https://adoptium.net/)).
@@ -810,18 +809,18 @@ uv run python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 Give it every geometry capture the fixture pass walked through. One pass often
 spans two, and each fitting goes to whichever model contains it.
 
-You have to review this by hand, and not as a formality. Brightness can't tell a
+You have to review this by hand. Brightness can't tell a
 lit bulb from a sunlit window, they both saturate the sensor. Across 38 ground
 level candidates the luma range was 247.6 to 253.9 out of 255, so a 3 W cupboard
 LED and a 60 W pendant come out the same white. It finds windows. On one run it
 found a candle on a desk.
 
-`--daylight-mesh` gets rid of the windows properly, and it isn't a better
-threshold, it's a second capture. A window is bright in every capture and a fitting
-only when it's switched on, so differencing a fixture pass against an ordinary
-capture of the same rooms leaves you the fittings.
+`--daylight-mesh` gets the windows out for you, using a second capture. A window
+is bright in every capture and a fitting only when it's switched on, so
+differencing a fixture pass against an ordinary capture of the same rooms leaves
+you the fittings.
 
-There are three answers, not two: `fitting`, `window`, and `unseen`. An ordinary
+It gives three answers: `fitting`, `window`, and `unseen`. An ordinary
 capture photographs ceilings badly, because the camera meters for the room and
 nobody points a phone at a dark ceiling, so "never looked there" is common and it
 isn't evidence either way.
@@ -867,11 +866,11 @@ The plugin matches furniture by `name == entity_id`, and it sums multiple source
 that share a name. Everything odd about this stage comes from that:
 
 1. One switch driving six bulbs is six placements all carrying one entity id.
-   That's correct, not a workaround.
+   That is what the plugin wants.
 2. One entity spanning three floors is three placements.
-3. A group and its members placed together is the same bulbs twice. Since the
-   plugin sums them it's not an error, it's a room that renders slightly too
-   bright forever.
+3. A group and its members placed together is the same bulbs twice. The plugin
+   sums them, so nothing errors. You just get a room that renders slightly too
+   bright, forever.
 
 What you should see:
 

@@ -80,9 +80,8 @@ uv sync --all-extras
 uv run lidar2ha doctor
 ```
 
-`--all-extras` isn't optional. `paramiko` and `websockets` are extras, and a bare
-`uv sync` quietly removes them again, which takes `deploy` and the Home Assistant
-registry with it.
+Use `--all-extras`. `paramiko` and `websockets` are extras, so a bare `uv sync`
+takes them out again and you lose `deploy` and the Home Assistant registry.
 
 `doctor` finds Sweet Home 3D, the plugin and your JDK, then compiles the Java
 against your own installation and shows you the compiler's own errors. It also
@@ -100,9 +99,9 @@ Polycam packages yours. One of the eight is wrong about where the kitchen is, so
 
 ## How it goes
 
-It's a loop, not a pipeline. Scan a room, run it through, put it on your
-dashboard, and look at it. What you see tells you what to do next: a name in
-`project.yaml`, a boundary you need to declare, or another scan.
+It's a loop. Scan a room, run it through, put it on your dashboard, and look at
+it. What you see tells you what to do next: a name in `project.yaml`, a boundary
+you need to declare, or another scan.
 
 Two questions run through every lap:
 
