@@ -1,142 +1,63 @@
-# Your house, end to end
+# Your house, one lap at a time
 
-You have a dozen Polycam scans and you want a floorplan in Home Assistant that
-lights up when you tap a light. This is the whole path.
+You have a phone and an empty directory. By the end of this you have a floorplan
+in Home Assistant that lights up when you tap a light.
 
-It is long because the path is long. Every step has a **what you should see** and
-a **what it looks like when it's wrong**, and the numbers in them were measured on
-real captures rather than invented — the difference matters, because most failures
-here look exactly like success.
+## The shape of the work
 
-**You can run Parts 1–10 without a house.** `lidar2ha demo` writes eight captures
-of a building that does not exist, packaged the way Polycam packages yours. Every
-command below works on it. If you are reading to decide whether this is worth your
-weekend, do that first.
+This is a loop, not a pipeline:
 
-```bash
-uv run lidar2ha demo ~/demo-house
-cd ~/demo-house
-```
+> scan → run it through → put it on your dashboard → **look at it** → fix the
+> control file, or take another scan → round again
 
----
+The feedback is you, looking at your own house on your own dashboard. Every
+capture after the first is a response to something you saw. Every line of
+`project.yaml` is something you learned by looking, written down so it stays
+fixed — it is the control file, and it accumulates.
 
-## Part 0 — Getting your scans out of Polycam
+Two questions run through every lap, and telling them apart is the whole skill:
 
-### Two exports per capture, and only one right format for each
+- **Is this a bad scan?** Then rescan.
+- **Is this something true about the house that nothing has been told?** Then
+  write it in `project.yaml`.
 
-You have the scans. Before anything else you have to get them off Polycam, and
-the export picker is where this pipeline is most often lost — because the wrong
-format produces files that import cleanly, look fine, and are missing something
-you will not notice for days.
+Most people are working against Polycam's 7-day trial, because floor-plan export
+costs around $1,000 a year. That changes the order. **Everything that needs
+Polycam — scanning and exporting both — happens inside those seven days.**
+Everything else runs offline forever. So the first lap has to close on day one,
+while you can still act on what it tells you.
 
-Per capture, **two** exports. The picker is single-select, so you do them one at
-a time:
+Numbers below were measured on real captures. They are what makes the difference
+between a step working and a step looking like it worked.
 
-| Menu | Choose | You get | Why that one |
-|---|---|---|---|
-| Floor Plan | **Zip (all)** | `.dxf` + `.csv` (+ pdf, svg, png) | the DXF is the plan; **the CSV is the ceiling heights** |
-| Mesh | **OBJ** | `.obj` + `.mtl` + `textures/` | the atlas comes as real image files |
 
-Export settings: **Metric / Meters**, point density **High**, **Mesh up axis: Z**.
+## Where to go
 
-Floor-plan export is a paid Polycam tier. There is no way around that: the DXF is
-the only thing that carries room polygons.
+Lap 0 and Lap 1 are in order. After that, come back to the section that matches
+what you saw.
 
-### What the other formats cost you, measured
-
-Both wrong choices are easy to make, neither errors, and both were made on the
-house this was written from — three of its nineteen captures went out as
-`Floor Plan → DXF` and `Mesh → GLB` instead. Here is what that cost.
-
-**Floor Plan → DXF (without the CSV): every room gets a made-up ceiling.** The
-ceiling heights live in the CSV, not the DXF. With no CSV, `polycam` falls back to
-`--default-height`, which is 2.4 m. Those three captures against the rest:
-
-```
-ground_geometry_0823-1038   ceiling=520cm      <- Zip (all): real, varied heights
-mid_geometry_0823-1020      ceiling=470cm
-upstairs_geometry_0823-1058 ceiling=400cm
-
-ground_geometry_0823-2006   ceiling=240cm      <- DXF only: every room, every capture
-mid_geometry_0823-1810      ceiling=240cm
-upstairs_geometry_0823-1904 ceiling=240cm
-```
-
-Every room in all three is exactly 240 cm. A double-height stairwell and a laundry
-come out the same height, which is precisely the geometry that makes cross-floor
-light spill worth raytracing.
-
-`polycam` warns when it gets no heights, whether that is a `--csv` it could not
-parse or no `--csv` at all:
-
-```
-WARNING: no --csv given, and the DXF does not carry ceiling heights.
-         Falling back to 2.4 m for every room.
-```
-
-The warning scrolls past, though, and the model it writes is perfectly valid.
-The durable signal is the one above: uniform 240 cm across every room.
-
-**Mesh → GLB: no wall textures and no fitting detection.** A GLB is a valid mesh
-and registers fine, so it looks like a working capture. But trimesh gives glTF a
-`PBRMaterial`, whose atlas hangs off `.baseColorTexture` rather than `.image` —
-and `.image` is what `fixtures` and `textures_project` select geometry on:
-
-```
-OBJ capture: 2 geoms, material=SimpleMaterial, .image=set,  usable = 2/2
-GLB capture: 5 geoms, material=PBRMaterial,    .image=None, usable = 0/5
-```
-
-`textures_project` reports `coverage 0.0% -- skipped` for every wall and writes an
-empty manifest with exit status 0, which reads as *"this scan didn't see any
-walls"* when it means *"the loader could not find the atlas"*.
-
-So: **Zip (all)** and **OBJ**. If you have already exported the other way, you do
-not need to rescan — just re-export those captures from Polycam.
-
-### Downloads arrive named by date, not by capture
-
-Worth knowing before you click, because it decides how much sorting you do later:
-every download is named for the **capture date**, so a day's scanning gives you
-`23_08_2026.zip`, `23_08_2026 (1).zip`, `23_08_2026 (2).zip`, and the number is
-your browser's counter — the order you clicked, not which capture is which.
-
-The cheapest fix is free: **export one capture at a time and rename the two files
-the moment they land**, before you export the next. Part 3 is what you do if you
-did not.
-
-### Before you scan (or rescan)
-
-Nothing downstream repairs a bad capture, so if you are not finished — or the work
-list later tells you to go back:
-
-**Cover every mirror.** A scanner cannot tell a reflection from a room, so it
-builds a phantom copy of the space behind the wall. One 2.2 m room produced a
-5.55 m mesh in 882 disconnected pieces.
-
-**LiDAR, Space mode — never Floorplan mode.** Floorplan mode produces no mesh, and
-without a mesh there is no registration, no ceiling heights, no fitting positions
-and no textures. You get a plan you cannot place.
-
-**One continuous capture per wall-bounded volume**, not per Home Assistant area.
-Open doors, turn lights on, and accept that glass is invisible to LiDAR — windows
-will simply be missing and you add them by hand later.
-
-**Scan every level at least three times.** This is the one that sounds like
-over-caution and is not. Two captures that disagree cannot tell you which of them
-is wrong; a third identifies the odd one out immediately. On the house this was
-built for, the capture the entire mid-level model had been built from turned out
-to be the worst of its three, and only the third scan revealed it.
-
-**Then take a fixture pass per level.** A second, deliberately different capture:
-every light switched on, phone aimed at each fitting in turn. Geometry quality is
-sacrificed on purpose. What you are recording is where the lights physically
-are — and, more importantly, *how high they hang*, which nothing else can tell you
-and which the raytracer needs.
+| | |
+|---|---|
+| [Lap 0 — before you start the clock](#lap-0--before-you-start-the-clock) | install, `doctor`, the demo, your area ids |
+| [Lap 1 — one room on your dashboard today](#lap-1--one-room-on-your-dashboard-today) | scan settings, the two exports, the seven commands |
+| [Now scan the house](#now-scan-the-house) | how many passes, naming, staging, the seven-day list |
+| *"I don't know which storey is which"* | `whichlevel`, `levels:` |
+| *"My captures disagree about the layout"* | `combine` |
+| *"A room is missing, or has no name"* | `coverage`, `validate` |
+| *"Two rooms light up as one"* | `split:`, and whether you actually need it |
+| *"A room is the wrong height"* | `ceilings` |
+| *"The lights are in the wrong place"* | `fixtures`, pairing |
+| *"A room is too bright, or never lights"* | `lights`, groups, exclusions |
+| [The last lap](#the-last-lap) | full render, `--subdir`, the card |
+| [Appendix](#appendix--every-stage) | every stage, and what `project.yaml` will not tell you |
 
 ---
 
-## Part 1 — Install, and prove the toolchain
+# Lap 0 — before you start the clock
+
+No Polycam account yet. Nothing here can be lost.
+
+## Install, and prove the toolchain
 
 ```bash
 git clone https://github.com/corrin/lidar2ha && cd lidar2ha
@@ -144,9 +65,9 @@ uv sync --all-extras
 uv run lidar2ha doctor
 ```
 
-`--all-extras` is not optional. `paramiko` and `websockets` are extras and a bare
-`uv sync` removes them again, taking `deploy` and the Home Assistant registry with
-them.
+`--all-extras` is not optional. `paramiko` and `websockets` are extras, and a
+bare `uv sync` removes them again, taking `deploy` and the Home Assistant
+registry with them.
 
 You also need [Sweet Home 3D](https://www.sweethome3d.com/), the
 [floor-plan plugin][plugin], and a **JDK** 17+ ([Temurin](https://adoptium.net/)).
@@ -159,32 +80,30 @@ You also need [Sweet Home 3D](https://www.sweethome3d.com/), the
 Everything checks out.
 ```
 
-`doctor` does not check paths and stop. It **compiles the Java against your own
-Sweet Home 3D**, which is the only thing that catches a version mismatch — an
-earlier version that only looked at paths passed happily while the sources would
-not build.
+`doctor` compiles the Java against your own Sweet Home 3D. That is the step that
+catches a version mismatch; an earlier version only looked at paths, and passed
+happily while the sources would not build.
 
 **What it looks like when it's wrong:** `javac (JDK)` missing while `java` is
-found means you have a JRE. Sweet Home 3D bundles a runtime with no compiler, so
-"Java is installed" is not the same as "a JDK is installed".
+found means you have a JRE. Sweet Home 3D bundles a runtime with no compiler.
 
----
-
-## Part 2 — Make a project, and get your area ids first
+## Run the whole thing on a house that does not exist
 
 ```bash
-uv run lidar2ha init ~/my-house
-cd ~/my-house
+uv run lidar2ha demo ~/demo-house
+cd ~/demo-house
 ```
 
-That writes `project.yaml`, plus `captures/` and `build/`. Every section of the
-template is empty, and commented with what it declares and an example of the
-shape; the parts below fill them in in order.
+Eight captures of a two-storey building with a stairwell, packaged the way
+Polycam packages yours: two archives per capture, every file inside them sharing
+one name. One of the eight is wrong about where the kitchen is, so `combine` has
+something to catch — which you cannot rehearse on your own house until you have
+three passes of a level, by which point the trial is nearly over.
 
-**Now fetch your Home Assistant registry, before anything else.** This is out of
-order compared to how the stages are numbered, and it has to be: Part 4 asks you
-to write down which scanner room is which HA **area id**, and you cannot do that
-until you know what your area ids are.
+Every command in this document runs on it. A `registry.json` is included, so it
+needs no Home Assistant.
+
+## Fetch your area ids
 
 ```bash
 export HA_URL=http://homeassistant.local:8123
@@ -192,68 +111,220 @@ export HA_TOKEN=...        # Profile -> Long-lived access tokens
 uv run python -m lidar2ha.ha --refresh -o registry.json
 ```
 
-Put those two in a `.env` beside `project.yaml` instead if you prefer; it is
-already gitignored, which `project.yaml` is not — `ha_url` and `ha_token` are
-read from there too, but a long-lived access token is a house key. After this
-one fetch everything works from the cached
-`registry.json`, so the rest of the loop runs offline.
+The token needs an admin account: this reads the area, floor, device and entity
+registries. Put both in a `.env` beside `project.yaml` if you prefer — it is
+gitignored and `project.yaml` is not, and a long-lived token is a house key.
 
-**What you should see:** a count of areas, floors, devices and light entities, and
-a table classifying each `light.*`. Read it now — you will need it in Part 9.
+After this one fetch everything works from the cached `registry.json`, so the
+rest of the loop runs offline.
 
-> **On the demo:** skip this. `lidar2ha demo` writes a `registry.json` for you, so
-> every command below runs with no Home Assistant at all.
+**What you should see:** a count of areas, floors, devices and light entities,
+and a table classifying each `light.*`. Read it now. You are about to name rooms
+after these ids, and you will need the table again when you place entities.
 
 ---
 
-## Part 3 — Staging your captures
+# Lap 1 — one room on your dashboard today
 
-This is the part no other document covers and the part that costs the most. It is
-also where you can lose a capture without any error.
+Start the trial here. The goal is not a good model. It is to see your own room
+light up, so that you know what your scans look like when they work while you
+can still take more of them.
 
-### Every file in every archive has the same name
+## Before you scan
 
-Polycam names a download by **capture date**, not by capture. Fifteen captures
-shot on one day give you this:
+**Cover every mirror.** A scanner cannot tell a reflection from a room, so it
+builds a phantom copy of the space behind the wall. One 2.2 m room produced a
+5.55 m mesh in 882 disconnected pieces.
+
+**LiDAR, Space mode. Never Floorplan mode.** Floorplan mode produces no mesh, and
+without a mesh there is no registration, no ceiling heights, no fitting positions
+and no textures. You get a plan you cannot place.
+
+**Open interior doors, turn the lights on.** Glass is invisible to LiDAR, so
+windows will be missing and you add them by hand in Sweet Home 3D later.
+
+**One continuous capture per wall-bounded volume.** Not per Home Assistant area.
+A capture that walks several storeys is fine and common; it comes back as several
+levels and you say which is which later.
+
+Now scan one room. Any room with a light in it.
+
+## Two exports, and one right format for each
+
+The export picker is single-select, so this is two trips per capture:
+
+| Menu | Choose | You get | Why that one |
+|---|---|---|---|
+| Floor Plan | **Zip (all)** | `.dxf` + `.csv` (+ pdf, svg, png) | the DXF is the plan; **the CSV is the ceiling heights** |
+| Mesh | **OBJ** | `.obj` + `.mtl` + `textures/` | the atlas comes as real image files |
+
+Export settings: **Metric / Meters**, point density **High**, **Mesh up axis: Z**.
+
+Both wrong choices import cleanly and cost you something you will not notice for
+days. Three of one real house's nineteen captures went out this way.
+
+**Floor Plan → DXF, without the CSV: every room gets a made-up ceiling.**
 
 ```
-23_08_2026.zip        23_08_2026 (1).zip     23_08_2026 (2).zip   ...
+ground_geometry_0823-1038   ceiling=520cm      <- Zip (all): real, varied heights
+mid_geometry_0823-1020      ceiling=470cm
+upstairs_geometry_0823-1058 ceiling=400cm
+
+ground_geometry_0823-2006   ceiling=240cm      <- DXF only: every room, every capture
+mid_geometry_0823-1810      ceiling=240cm
+upstairs_geometry_0823-1904 ceiling=240cm
 ```
 
-and inside:
+240 cm is `--default-height`. A double-height stairwell and a laundry come out
+the same, which is the geometry that makes cross-floor light spill worth
+raytracing at all.
+
+**Mesh → GLB: no wall textures and no fitting detection.** A GLB registers fine,
+so it looks like a working capture. trimesh gives glTF a `PBRMaterial`, whose
+atlas hangs off `.baseColorTexture` rather than `.image`, and `.image` is what
+`fixtures` and `textures_project` select on:
+
+```
+OBJ capture: 2 geoms, material=SimpleMaterial, .image=set,  usable = 2/2
+GLB capture: 5 geoms, material=PBRMaterial,    .image=None, usable = 0/5
+```
+
+`textures_project` then reports `coverage 0.0% -- skipped` for every wall and
+exits 0, which reads as *"this scan saw no walls"* and means *"the loader could
+not find the atlas"*.
+
+Re-exporting fixes both, and only while you still have Polycam. After the trial
+ends your scans stay in the library and you cannot get them out.
+
+## Run it through
+
+Downloads are named by capture **date**, not by capture, so rename the two files
+as they land. Then:
+
+```bash
+ID=lounge_geometry_0823-1038
+mkdir -p exports/$ID && cd exports/$ID     # unpack the two archives here
+```
+
+```bash
+uv run python -m lidar2ha.polycam floorplan/plan.dxf --csv floorplan/plan.csv \
+    -o $ID.json
+uv run python -m lidar2ha.registration $ID.json mesh_obj/mesh.obj \
+    -o ${ID}_registered.json
+uv run python -m lidar2ha.rooms ${ID}_registered.json ../../project.yaml \
+    -o ${ID}_named.json --capture $ID
+```
+
+`rooms` needs to know which Home Assistant area this room is. Write it in
+`project.yaml` first, keyed by capture id, using the scanner's own name on the
+left and your area id on the right:
+
+```yaml
+rooms:
+  lounge_geometry_0823-1038:
+    "Living Room": lounge
+```
+
+The scanner guesses names and guesses badly. One real capture confidently
+labelled an entrance hall "Living Room" and "Dining Room", and returned an open
+kitchen as "Kitchen" plus "Office 1". You supply the truth.
+
+Then place the lights, build, render small, and ship it:
+
+```bash
+cd ../..
+uv run lidar2ha lights exports/$ID/${ID}_named.json --project project.yaml \
+    --registry registry.json -o exports/$ID/lights.json
+uv run lidar2ha build exports/$ID/${ID}_named.json -o exports/$ID/lounge.sh3d \
+    --project project.yaml --lights exports/$ID/lights.json
+uv run lidar2ha render exports/$ID/lounge.sh3d -o exports/$ID/render \
+    --project project.yaml --list
+uv run lidar2ha render exports/$ID/lounge.sh3d -o exports/$ID/render \
+    --project project.yaml --preview
+uv run lidar2ha deploy exports/$ID/render --project project.yaml --push --card
+```
+
+`--list` costs nothing and reports what the plugin detected. **Zero detected
+lights means the `lights` step failed** and there is nothing to render. Fix that
+before spending minutes on frames.
+
+`deploy` needs SSH to the machine running Home Assistant; on Home Assistant OS
+that is the Terminal & SSH add-on, where `/config` is mounted. Images have to
+land in `/config/www/floorplan/` because the plugin bakes `/local/floorplan/`
+into the card.
+
+## Look at it
+
+Paste the printed card into a dashboard. Tap the light.
+
+That is the loop closed. You now know what one of your captures looks like when
+it works, and every number below has something of yours to compare against.
+
+---
+
+# Now scan the house
+
+Still inside the seven days, and now you know what you are doing.
+
+## What to shoot
+
+**Three geometry captures of every storey.** Two captures that disagree cannot
+say which of them is wrong; a third identifies the odd one out immediately. On
+the house this was built for, the capture the entire mid-level model had been
+built from turned out to be the worst of its three, and only the third scan
+revealed it.
+
+**One fixture pass per storey.** A deliberately different capture: every light
+switched on, including ones Home Assistant cannot control, phone aimed at each
+fitting in turn. Geometry quality is sacrificed on purpose. What you are
+recording is where the fittings are and how high they hang, which nothing else
+can tell you and which the raytracer needs.
+
+**Level by level, finishing each one.** If you run out of days you want a
+complete ground floor, not a third of everything.
+
+## The seven-day list
+
+Inside the window, or never:
+
+- every geometry capture, three per storey
+- every fixture pass
+- **every export**, both formats, for all of them
+- re-exports of anything you got wrong
+
+Any time after, forever, offline: naming, combining, splitting, ceilings,
+fittings, lights, building, rendering, deploying, and every rescan-driven fix
+that does not need a new scan.
+
+## Give each capture a name and its own directory
+
+Polycam names a download by capture date. Fifteen captures on one day give you
+`23_08_2026.zip`, `23_08_2026 (1).zip`, `23_08_2026 (2).zip`, and the number is
+your browser's download counter — the order you clicked, not which capture is
+which. Inside, every file carries that same date name:
 
 ```
 23_08_2026 (13).zip  ->  23_08_2026.csv  23_08_2026.dxf  23_08_2026.pdf ...
 23_08_2026 (12).zip  ->  23_08_2026.mtl  23_08_2026.obj  textures/
 ```
 
-**Unpack two captures into one directory and the second silently overwrites the
-first.** No error. You find out much later, when a registration fits the wrong
-mesh. The number in the filename is your browser's download counter — it records
-the order you clicked, not which capture is which, and nothing pairs a plan
-archive with its mesh archive.
+**Unpack two captures into one directory and the second overwrites the first.**
+No error. You find out much later, when a registration fits the wrong mesh.
 
-So the archives are a puzzle before they are data. Tell them apart by size (a
-floor-plan zip is well under 1 MB, a mesh zip is 7–19 MB), then open each plan
-zip: the CSV lists the room names, which is usually enough to recognise the room
-you walked. Single-floor exports also carry a `Compass direction [deg]` you can
-use to group them.
+Export one capture at a time and rename both files the moment they land. If you
+did not, tell the archives apart by size — a floor-plan zip is well under 1 MB, a
+mesh zip is 7–19 MB — then open each plan zip, where the CSV lists room names.
 
-> `lidar2ha add-capture` would do all of this in one command. It is not
-> implemented, and it is the biggest ergonomic gap in the project.
+Name each capture `<where>_<what>_<MMDD-HHMM>`:
 
-### Give each capture a name and its own directory
-
-Name it `<where>_<what>_<MMDD-HHMM>`:
-
-- **where** — the smallest *true* scope: a level (`ground`, `mid`, `upstairs`), one
-  room, an outdoor place, or `unknown`. Never guess; `unknown` is a real answer and
-  Part 5 has a tool for resolving it.
+- **where** — the smallest *true* scope: a level (`ground`, `mid`, `upstairs`),
+  one room, an outdoor place, or `unknown`. Never guess. `unknown` is a real
+  answer and there is a tool for resolving it.
 - **what** — `geometry` or `fixtures`.
-- **when** — the Polycam capture time, so the id is its own cross-reference back to
-  the app, which labels captures by timestamp and nothing else.
+- **when** — the Polycam capture time, so the id cross-references back to the
+  app, which labels captures by timestamp and nothing else.
 
-Then one directory per capture, so identically-named files cannot collide:
+One directory each:
 
 ```
 my-house/
@@ -268,15 +339,18 @@ my-house/
 ```
 
 `combine` looks for a capture's model in `exports/<id>/`, then `captures/<id>/`,
-then the project root. `exports/` is the convention this document uses.
+then the project root.
 
-### Two traps in this directory, both of which have cost real time
+> `lidar2ha add-capture` would do all of this in one command. It is not
+> implemented, and it is the biggest ergonomic gap in the project — you pay this
+> by hand on every lap.
 
-**A capture directory fills up with things that look like inputs.** After a few
-runs it holds `walltex/`, `render/`, and — if you ever ran `export-glb --keep-obj`
-— a `gltf/` containing an `.obj` that is lidar2ha's *output*. A glob for `*.obj`
-finds it, because `gltf/` sorts before `mesh_obj/`. Registering a plan against the
-tool's own OBJ export produced this:
+**Two traps in this directory.**
+
+A capture directory fills up with things that look like inputs. After a few runs
+it holds `walltex/`, `render/`, and — if you ever ran `export-glb --keep-obj` — a
+`gltf/` containing an `.obj` that is lidar2ha's own output. A glob for `*.obj`
+finds it, because `gltf/` sorts before `mesh_obj/`:
 
 ```
 mesh wall points : 1,913          every other capture: 25,000 - 162,000
@@ -287,21 +361,16 @@ median error     : inf cm   coverage=0%
 The same capture against the right file is the best-registered in the house, at
 **1.0 cm and 100% coverage**. Always name the mesh explicitly.
 
-**A stale derived file wins over a corrected one.** `combine` prefers
+A stale derived file wins over a corrected one. `combine` prefers
 `<id>_named.json`, then `<id>_registered.json`, then `<id>.json`. A `_named.json`
-left over from an old mapping is taken in preference to everything else — and a
-`_named.json` that named *nothing* looks identical to one that named everything.
-They are regenerable build artefacts: if in doubt, delete them and re-run.
+left from an old mapping is taken ahead of everything else, and one that named
+*nothing* looks identical to one that named everything. They are regenerable: if
+in doubt, delete them and re-run.
 
-**What you should see:** one directory per capture, each with a `floorplan/` and a
-`mesh_obj/`, and no capture directory containing a mesh you did not put there.
+## Per capture: plan, register, name
 
----
-
-## Part 4 — Per capture: plan, register, name
-
-Three commands per capture, and no batch form, so for fifteen captures this is
-forty-five invocations. Write a loop.
+Three commands each, and no batch form, so fifteen captures is forty-five
+invocations. Write a loop.
 
 ```bash
 ID=ground_geometry_0823-1038
@@ -336,31 +405,18 @@ WARNING: Floor 1 holds 7 room(s) across 3 ceiling bands: 210cm x3, 480cm x1, 710
   Floor 3         walls= 17 rooms=4 doors=9
 ```
 
-That warning is not a problem — it is the whole-house walk being taken apart into
-storeys, and Part 5 is where you say which storey belongs to which level.
+That warning is the whole-house walk being taken apart into storeys. You say
+which storey belongs to which level below.
 
-**What it looks like when it's wrong:** every room reporting the same ceiling,
-and that ceiling being 240 cm.
-
-```
-  Floor 1    walls= 22 rooms=3 doors=3 ceiling=240cm
-      Bedroom         7 pts   ceiling 240cm
-      Hallway        13 pts   ceiling 240cm
-      Living Room    18 pts   ceiling 240cm
-```
-
-That is `--default-height`, and it means no CSV reached this command — either you
-did not pass `--csv`, or the capture was exported as a bare DXF (Part 0). A
-`WARNING` line above says so, but this is what it looks like once the warning has
-scrolled away. Compare against a capture that has a CSV: real heights vary room to
-room and run well past 240.
+**What it looks like when it's wrong:** every room reporting 240 cm. That is
+`--default-height`, and it means no CSV reached this command.
 
 ### `registration` — the plan and the mesh into one frame
 
 This is the weak link in the pipeline and the number to actually read.
 
-**What you should see:** median error of a few centimetres at 100% coverage.
-Measured across one real house, the good captures ran **1.0 to 3.4 cm**.
+**What you should see:** a few centimetres at 100% coverage. Across one real
+house the good captures ran **1.0 to 3.4 cm**.
 
 ```
   rotation      : 359.99 deg   mirror=False
@@ -375,57 +431,27 @@ Measured across one real house, the good captures ran **1.0 to 3.4 cm**.
   ** LOW COVERAGE: 89% of the plan found no wall within a metre.
 ```
 
-Anything in double figures is a capture to re-shoot or discard. And treat that
-`LOW COVERAGE` banner as the most useful line the tool prints: it is what catches
-the wrong-mesh mistake above. Check the mesh wall-point count and z range on the
-lines before it — a z range of hundreds of metres, or a point count two orders of
-magnitude below your other captures, means you fed it the wrong file.
+Anything in double figures is a capture to re-shoot or discard. `LOW COVERAGE` is
+what catches the wrong-mesh mistake above — check the mesh wall-point count and z
+range on the lines before it.
 
-### `rooms` — scanner names become HA area ids
+### Every capture in a level needs a mapping
 
-The scanner guesses room names, and guesses badly: one real capture confidently
-labelled an entrance hall "Living Room" and "Dining Room", and returned an open
-kitchen as "Kitchen" plus "Office 1". You supply the truth, per capture, in
-`project.yaml`:
-
-```yaml
-rooms:
-  ground_geometry_0823-1038:
-    "Living Room": open_living
-    "Office 1": kitchen          # many scanner rooms may share one area
-    "Bedroom": null              # null means "ask me later", and is not an error
-
-merge:
-  ground_geometry_0823-1038:
-    - ["Kitchen", "Office 1"]    # one volume this capture split in two
-```
-
-`merge:` is keyed **by capture** on purpose: a scanner's over-segmentation belongs
-to the walk that made it, and another scan of the same room splits it somewhere
-else or not at all.
-
-### Every capture in a level needs a mapping — including the fixture passes
-
-This is the single most expensive thing to get wrong in the whole tutorial, so
-it gets its own heading.
+Including the fixture passes, which are the ones people leave out.
 
 `combine` picks one capture to win each group of overlapping rooms, and **the
-winner's names are the ones that survive**. A capture with no `rooms:` entry
-keeps its scanner names, so if it wins, the area you carefully mapped on a
-*different* capture is gone — replaced by `Other 1`.
+winner's names survive**. A capture with no `rooms:` entry keeps its scanner
+names, so if it wins, the area you carefully mapped on a *different* capture is
+gone, replaced by `Other 1`.
 
 Measured on a real house: three captures in `levels:` had no `rooms:` block, and
-`master_bedroom`, `girl_bedroom`, `sewing_room` and `boy_bedroom` all
-vanished from the model. They were correctly mapped on two other captures each.
-It made no difference.
+`master_bedroom`, `girl_bedroom`, `sewing_room` and `boy_bedroom` all vanished
+from the model. Each was correctly mapped on two other captures. It made no
+difference.
 
-It is easy to miss because the failure is quiet in both directions. `rooms` does
-exit 1 for a capture you *run* it on with no mapping — but nothing makes you run
-it on every capture, and `combine` falls back to `<id>_registered.json` without
-comment. Worse, the file it falls back to may be a `_named.json` from an older
-mapping, which names nothing and looks identical to one that named everything.
-
-So check it rather than remembering it:
+The failure is quiet in both directions. `rooms` exits 1 for a capture you *run*
+it on with no mapping, but nothing makes you run it on every capture, and
+`combine` falls back without comment. So check:
 
 ```bash
 uv run lidar2ha validate --project project.yaml
@@ -442,23 +468,39 @@ It exits non-zero, so it can gate a build. It also catches an area id that is
 really a capture id, a capture declared and used in no level, and a key nothing
 reads.
 
-**One trap in the trap.** A capture with a plan and **no mesh** never gets a
-`_registered.json`, so any loop of yours keyed on that file skips it silently —
-which is exactly how `boy_bedroom` was missed. Run `rooms` from
-`<id>_registered.json` where it exists and `<id>.json` where it does not.
+**One trap inside the trap.** A capture with a plan and **no mesh** never gets a
+`_registered.json`, so a loop keyed on that file skips it silently — which is how
+`boy_bedroom` was missed. Run `rooms` from `<id>_registered.json` where it
+exists and `<id>.json` where it does not.
 
-**What it looks like when it's wrong:** `rooms` exits 1 with *"No rooms mapping
-for capture X"*. Good — that is the failure you want. The bad case is the capture
-you never noticed had no mapping, because `combine` will then fall back to its
-`_registered.json` and quietly contribute scanner-named rooms to your union.
+`merge:` is keyed by capture, and takes rooms one walk over-segmented:
+
+```yaml
+rooms:
+  ground_geometry_0823-1038:
+    "Living Room": open_living
+    "Office 1": kitchen          # many scanner rooms may share one area
+    "Bedroom": null              # null means "ask me later", and is not an error
+
+merge:
+  ground_geometry_0823-1038:
+    - ["Kitchen", "Office 1"]    # one volume this capture split in two
+```
+
+A scanner's over-segmentation belongs to the walk that made it. Another scan of
+the same room splits it somewhere else, or not at all.
 
 ---
 
-## Part 5 — Say which storeys belong to which level
+# The repairs
 
-A capture that walked the whole house holds several levels of its own, so which
+Each of these starts with something you saw. Each ends back at the dashboard.
+
+## "I don't know which storey of this capture is which"
+
+A capture that walked the whole house holds several levels of its own, so the
 level it belongs to is not a property of the capture. Declare it in
-`project.yaml`, keyed by the names of your Home Assistant floors:
+`project.yaml`, keyed by your Home Assistant floor names:
 
 ```yaml
 levels:
@@ -475,7 +517,7 @@ levels:
 ```
 
 **Always a list, even of one.** One capture can contribute several storeys to the
-same level — Polycam laid one walk of an upstairs across two sheet clusters, and
+same level: Polycam laid one walk of an upstairs across two sheet clusters, and
 naming a single storey per capture would have discarded 23 m² of it.
 
 If you do not know which storey is which, ask:
@@ -485,8 +527,8 @@ uv run lidar2ha whichlevel exports/unknown_.../unknown_..._registered.json \
     --project project.yaml --write
 ```
 
-It fits each of the capture's levels onto the levels you have already combined and
-**refuses rather than naming a weak winner** — a capture of somewhere undeclared
+It fits each of the capture's levels onto the levels you have already combined
+and refuses rather than naming a weak winner — a capture of somewhere undeclared
 still produces a least-bad row, and taking it would be a confident wrong answer.
 `--write` prints the block to paste, leaving refusals out.
 
@@ -495,25 +537,22 @@ Paste it at the **top level** of `project.yaml`. The printed block carries its o
 where `combine` never looks.
 
 Unlike the rest of the file, `levels:` is checked strictly: an unknown key, a
-missing `- `, a storey the capture does not have, or the same storey claimed twice
-are all errors that name themselves.
+missing `- `, a storey the capture does not have, or the same storey claimed
+twice are all errors that name themselves.
 
----
-
-## Part 6 — `combine`: align or discard
+## "My captures disagree about the layout"
 
 ```bash
 uv run lidar2ha combine "Ground Floor" --project project.yaml \
     -o exports/ground_floor_combined.json
 ```
 
-Two steps and no third branch: align the capture, or report it and discard it.
-There is no "align poorly and carry on".
+Align the capture, or report it and discard it. There is no third branch, and no
+"align poorly and carry on".
 
-**Read the second table, not the verdict column.** This is the single most
-important thing in this document. `combine` prints a per-capture fit against the
-chosen reference, and then a distance from the **averaged walls of every other
-capture**. They can disagree, and the second one is the one that decides:
+**Read the second table, not the verdict column.** `combine` prints a per-capture
+fit against the chosen reference, then a distance from the **averaged walls of
+every other capture**. They disagree, and the second one decides:
 
 ```
 capture                     rot      median  cover     p90  verdict
@@ -527,50 +566,46 @@ ground_geometry_0412-1145   180.67   2.6cm    100%   55.7cm  ok
 ```
 
 `ground_geometry_0412-1145` reads "ok" against the reference and is the worst
-thing on the level. Note its **p90 of 55.7 cm** against everyone else's 2.7–6.3:
-the tail is where a capture that is wrong about one room shows up, because the
-median is dominated by the rooms it got right.
+thing on the level. Its **p90 of 55.7 cm** against everyone else's 2.7–6.3 is
+where a capture that is wrong about one room shows up; the median is dominated by
+the rooms it got right.
 
 Measured over twelve captures on three storeys, the averaged figure separates
-**2.5–4.3 cm from 14.7–29.2 cm**, where judging by the friendliest single pairing
-gave 2.6–4.5 against 7.9–28.2 — good enough to let a capture that landed 65° out
-on top of a hallway read 7.9 cm.
+**2.5–4.3 cm from 14.7–29.2 cm**. Judging by the friendliest single pairing gave
+2.6–4.5 against 7.9–28.2, which let a capture that landed 65° out on top of a
+hallway read 7.9 cm.
 
 **Never reject on coverage.** Coverage is the fraction of the *source's* walls the
 reference explains, so a capture that sees a new room always scores lower. A 90%
 threshold once rejected the one capture containing a whole bathroom, at 88%.
 
-**What you should also read:** the work list.
+**Read the work list.**
 
 ```
 FLOOR NOT IN THE MODEL -- 1.5 m2 in 1 piece(s)
     1.5 m2 at (832, 525) cm  in ground_geometry_0412-1145/kitchen
 ```
 
-A capture saw floor the combined model does not contain. That is either new ground
-worth keeping or, as here, the signature of the capture that is wrong.
+A capture saw floor the combined model does not contain. Either new ground worth
+keeping, or — as here — the signature of the capture that is wrong.
 
-### When to stop
+### When to stop and fix
 
-Everything above tells you how to read the tables. This says what to do when
-they are bad, which is the part that is easy to skip — and skipping it is how a
-model with a 1 m² "basement" and half the house missing reached a live
-dashboard.
-
-**Stop and fix before going on if any of these is true:**
+Skipping this is how a model with a 1 m² "basement" and half the house missing
+reached a live dashboard.
 
 | | why it is a stop |
 |---|---|
 | a room's `score` is below 0.70, or it is in the FLAGGED list | the geometry is the best available and still not good enough. Rendering it does not improve it |
 | a capture reads several times the best against the **averaged walls** | it disagrees with everything else on the level. Its rooms are in your model |
-| the naming table shows `SPLIT` or `LOOKS_LIKE` | an unnamed room won a group, and it is standing on an area you mapped. See Part 7 |
+| the naming table shows `SPLIT` or `LOOKS_LIKE` | an unnamed room won a group, and it is standing on an area you mapped |
 | `lidar2ha coverage` is missing a room you know exists | that room is not in the render, whatever the render looks like |
 | a room's area is far from what Polycam measured | the CSV in every floor-plan zip has per-room floor areas. A room at a quarter of its measured size is not a room |
 
-None of these raise an error, and every one of them produced a plausible model
-that was wrong. The tool reports all of them; the discipline is reading it.
+None of these raise an error, and every one produced a plausible model that was
+wrong.
 
-**The check that costs nothing and catches most of it:**
+## "A room is missing, or has no name"
 
 ```bash
 uv run lidar2ha coverage --project project.yaml
@@ -589,35 +624,32 @@ Ground Level: 3 of 10 area(s), from ground_level_split.json
     den                            12.9 m2
 ```
 
-Read those two lists together: `den` appears in both, so the room is there,
+Read the two lists together. `den` appears in both, so the room is there,
 correctly shaped, carrying no `ha_area`. That is a `rooms:` line, not a rescan.
-The same output tells you when an area legitimately spans storeys — a stairwell
-is one area and three floors, and that is not a fault.
 
----
+The same output tells you when an area legitimately spans storeys. A stairwell is
+one area and three floors, and that is not a fault.
 
-## Part 7 — Finding the rooms Polycam fused, and cutting them
+## "Two rooms light up as one"
 
-Writing a `split:` declaration is the easy half. Knowing that you need one is
-the part nobody documents, so that comes first.
+Writing the declaration is the easy half. Knowing you need one is the hard half.
 
 ### First: is this actually open plan?
 
-Two different things look identical in the output and want opposite fixes.
+Two things look identical in the output and want opposite fixes.
 
 **Genuinely open plan.** There is no wall between the lounge end and the dining
-end, so **every** capture returns them as one polygon and no amount of
-rescanning separates them. `split:` is the only thing that can ever divide them,
-and the boundary is a declaration about how you use the house.
+end, so **every** capture returns them as one polygon and no amount of rescanning
+separates them. `split:` is the only thing that can divide them, and the boundary
+is a declaration about how you use the house.
 
 **One capture that fused what others resolved.** A fixture pass is shot with
-geometry sacrificed on purpose and routinely lays one polygon over two rooms.
-If it wins the group, those two rooms are gone — but the other captures got it
-right, and a `split:` there would be writing into your config a claim about the
-*building* that is false. It would also become actively wrong the moment you
-replaced the bad capture.
+geometry sacrificed on purpose and routinely lays one polygon over two rooms. If
+it wins the group, those two rooms are gone. The other captures got it right, and
+a `split:` there writes a claim about the *building* that is false — one that
+becomes actively wrong the moment you replace the bad capture.
 
-Tell them apart by asking **which captures resolve the room separately**:
+Ask which captures resolve the room separately:
 
 ```bash
 uv run python -c "
@@ -633,43 +665,34 @@ If **no capture** resolves them, it is open plan: declare the split. If **some
 do**, the fused one is a capture that should be losing, and cutting its polygon
 by hand papers over that.
 
-### Five ways the tool tells you
+### Five ways the tool already told you
 
-All of these are printed already, and every one of them was read past at least
-once while writing this:
-
-1. **`combine`'s naming table says it outright.** This is the clearest signal
-   there is:
+1. **`combine`'s naming table.**
 
    ```
    SPLIT       upstairs_fixtures/Hallway 1  20.2 m2  sewing_room 47%  girl_bedroom 46%
    LOOKS_LIKE  upstairs_fixtures/Other 1    18.1 m2  master_bedroom 99%
    ```
 
-   `SPLIT` means one polygon is sitting on two areas you named. `LOOKS_LIKE`
-   means an unnamed room *is* an area you named, at that confidence.
+   `SPLIT` means one polygon sits on two areas you named. `LOOKS_LIKE` means an
+   unnamed room *is* an area you named, at that confidence.
 
 2. **`lidar2ha coverage` shows an area with no geometry** that you know exists.
-
-3. **`combine`'s `area_with_no_source` row** — `project.yaml` maps the area and
-   no room carries it.
-
+3. **`combine`'s `area_with_no_source` row** — `project.yaml` maps the area and no
+   room carries it.
 4. **An implausible area.** One 46 m² polygon covered a living room, a dining
-   room, a kitchen and an office. Compare against the per-room floor areas in
-   the CSV that ships in every floor-plan zip.
+   room, a kitchen and an office. Compare against the CSV's per-room areas.
+5. **`preview`, read against the house you live in.** The only check that catches
+   a room being the wrong *shape*.
 
-5. **`preview`, read against the house you live in.** The cheapest check, and
-   the only one that catches a room being the wrong *shape*.
-
-### Then: read the coordinates off the preview
+### Then read the coordinates off the preview
 
 ```bash
 uv run python -m lidar2ha.preview exports/ground_floor_combined.json -o plan.png
 ```
 
-`plan.png` draws a metre grid labelled in centimetres for exactly this purpose.
-Read your coordinates off it — they are plan centimetres **in the combined model's
-own frame** — and write them into `project.yaml`:
+`plan.png` draws a metre grid labelled in centimetres. Coordinates are plan
+centimetres in the combined model's own frame:
 
 ```yaml
 split:
@@ -691,66 +714,51 @@ uv run lidar2ha split "Ground Floor" --project project.yaml \
 ```
 
 > **On the demo:** the declaration is already written, cutting `open_living` in
-> two at x=300. You should see
-> `open_living 23.8 m2 -> 2 pieces` with `lounge 11.85 m2` and `dining 11.95 m2`,
-> and the registry has a light in each end — which is the reason to cut it.
-> With no `split:` entry for the level, `split` refuses and prints a template to
-> paste rather than guessing where the boundary goes.
+> two at x=300. You should see `open_living 23.8 m2 -> 2 pieces` with
+> `lounge 11.85 m2` and `dining 11.95 m2`, and the registry has a light in each
+> end. With no `split:` entry for the level, `split` refuses and prints a
+> template rather than guessing where the boundary goes.
 
-`split:` is keyed **by level**, not by capture, and that asymmetry with `merge:` is
-deliberate: an open plan's fusion belongs to the building, so it is the same in
-every capture, and it runs after `combine` where there is exactly one frame to
-measure against.
+`split:` is keyed by **level** and `merge:` by capture. An open plan's fusion
+belongs to the building, so it is the same in every capture, and it runs after
+`combine` where there is exactly one frame to measure against.
 
 Add `--mesh` and the floor is asked whether it agrees — a step, or a change from
-wood to carpet. It reports and never decides: an unsupported boundary is not a
-wrong boundary, because the floor under a sofa end is the same floor as under the
-table.
+wood to carpet. It reports and never decides. The floor under a sofa end is the
+same floor as under the table, so an unsupported boundary is not a wrong one.
 
-**Rules that will bite you, each learned by hitting it:**
+**Rules that will bite you:**
 
-- Sections must be **disjoint**. A "rest of the room" box that spans the whole
-  room plus a smaller box inside it is refused — *"overlap by 5.37 m2"*. Trace the
+- Sections must be **disjoint**. A "rest of the room" box spanning the whole room
+  plus a smaller box inside it is refused — *"overlap by 5.37 m2"*. Trace the
   remainder as an `outline:`.
-- A section must lie **inside** the room being cut. A solid object like a kitchen
-  island is a *hole* in the polygon, not a piece of it, and cannot be split out.
-- Anything no section claims comes back flagged as *"N m2 traced by nobody"*
-  rather than quietly making the room smaller.
-- The pieces may come back in the **opposite order to `names:`**. Check the
-  resulting bounds against a wall you know; areas alone will not tell you.
+- A section must lie **inside** the room being cut. A kitchen island is a *hole*
+  in the polygon, not a piece of it.
+- Anything no section claims comes back flagged as *"N m2 traced by nobody"*.
+- The pieces may come back in the **opposite order to `names:`**. Check the bounds
+  against a wall you know; areas alone will not tell you.
 - **A declaration that cannot be carried out is reported, and the rest still
-  run.** A stale name — because a capture lost its `rooms:` mapping, or `merge:`
-  changed which capture won — comes back under `DECLARED, AND NOT CUT` with the
-  reason. It used to abandon the whole level: one stale entry on a real house
-  cost three other cuts that were fine. A *malformed* declaration still stops
-  the run, because a `box` with three corners is a typo and not a judgement.
+  run.** A stale name comes back under `DECLARED, AND NOT CUT` with the reason.
+  A *malformed* declaration still stops the run: a `box` with three corners is a
+  typo, not a judgement.
 
-**The pieces inherit `ha_area` only if the parent had one.** This is the trap
-that follows a split around, and it is silent: cut a room that carries no area
-and you get pieces that are named, outlined, and unreachable — `lights` binds by
-`ha_area`, so nothing can ever be placed in them. `split` says so:
+**The pieces inherit `ha_area` only if the parent had one**, and this trap is
+silent. Cut a room carrying no area and you get pieces that are named, outlined
+and unreachable — `lights` binds by `ha_area`, so nothing can ever be placed in
+them:
 
 ```
 'Living Room' carries no ha_area, so neither does any piece of it.
 ```
 
-The fix is to map the parent, and *which* area it names does not matter, since
-the pieces replace it. If the parent is itself a piece of an earlier cut, no
-`rooms:` line can name it — go to the room at the top of the chain. On a real
-house this cost two of five ground-floor rooms their areas, and the remedy the
-project had settled on was re-running `rooms` over the split model with identity
-mappings:
+Map the parent. Which area it names does not matter, since the pieces replace it.
+If the parent is itself a piece of an earlier cut, go to the room at the top of
+the chain. On a real house this cost two of five ground-floor rooms their areas.
 
-```bash
-uv run python -m lidar2ha.rooms exports/ground_floor_split.json project.yaml \
-    -o exports/ground_floor_split.json --capture ground_floor_split
-```
+## "A room is the wrong height"
 
-That works, and it means `rooms:` has a second meaning — keyed by a *model*
-rather than a capture. Mapping the parent is the cleaner fix.
-
-The pieces come back with **no ceiling**, because one number standing for two
-spaces is the error the split exists to remove. Measure them:
+Split pieces come back with **no ceiling**, because one number standing for two
+spaces is the error the split exists to remove.
 
 ```bash
 uv run python -m lidar2ha.ceilings exports/ground_floor_split.json \
@@ -758,15 +766,15 @@ uv run python -m lidar2ha.ceilings exports/ground_floor_split.json \
 ```
 
 **What you should see:** a height per piece, and a refusal where the scan could
-not see one. **What it looks like when it's wrong:** every room reporting the
-level's ceiling height, or a double-height space reading like a normal room —
-one real den measured 398 cm against a hand-measured ~7 m, because the scan was
-truncated rather than the room being short. `ceilings` says `NOT WRITTEN` when
-it is only a lower bound; believe it.
+not see one.
 
----
+**What it looks like when it's wrong:** every room reporting the level's ceiling
+height, or a double-height space reading like a normal room. One real den
+measured 398 cm against a hand-measured ~7 m, because the scan was truncated
+rather than the room being short. `ceilings` says `NOT WRITTEN` when it has only
+a lower bound. Believe it.
 
-## Part 8 — Find the fittings
+## "The lights are in the wrong place"
 
 Optional, and the difference between lights in roughly the right room and lights
 where they actually hang.
@@ -784,36 +792,48 @@ uv run python -m lidar2ha.placefixtures fixtures.json \
 uv run python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
 ```
 
-Pass every geometry capture the fixture pass walked through — one pass routinely
+Pass every geometry capture the fixture pass walked through. One pass routinely
 spans two, and each fitting is sent to whichever model contains it.
 
 **This step needs a human, and not as a formality.** Brightness cannot separate a
 lit bulb from a sunlit window: both saturate the sensor. Across 38 ground-level
-candidates the luma range was 247.6 to 253.9 out of 255 — a 3 W cupboard LED and a
-60 W pendant clip to the same white. The detector finds windows, and on one real
-run it found a candle burning on a desk.
+candidates the luma range was 247.6 to 253.9 out of 255 — a 3 W cupboard LED and
+a 60 W pendant clip to the same white. The detector finds windows, and on one run
+it found a candle burning on a desk.
 
-`--daylight-mesh` removes the windows mechanically rather than with a cleverer
-threshold: a window is bright in *every* capture, a fitting only when switched on,
-so differencing a fixture pass against an ordinary capture of the same rooms
-isolates the fittings. There are **three** answers, not two — `fitting`, `window`,
-and `unseen`, because an ordinary capture photographs ceilings badly and "the scan
-never looked there" is not evidence either way.
+`--daylight-mesh` removes the windows mechanically. A window is bright in *every*
+capture and a fitting only when switched on, so differencing a fixture pass
+against an ordinary capture of the same rooms isolates the fittings. There are
+**three** answers: `fitting`, `window`, and `unseen`. An ordinary capture
+photographs ceilings badly, and "the scan never looked there" is not evidence
+either way.
 
 **What you should see:** far more candidates than fittings, and far more fittings
 than entities. One upstairs has roughly 18 fittings and 5 `light.*` entities; the
-rest are dumb switches. Open `sheet.png` and read it top-down — likely windows are
-sorted to the bottom and outlined, so you can stop early.
+rest are dumb switches. Read `sheet.png` top-down — likely windows are sorted to
+the bottom and outlined, so you can stop early.
 
-**Why this is worth it:** a fitting's height. The fallback places a light at the
-room's ceiling minus 20 cm, which is wrong wherever a ceiling is not flat. In a
-double-height room with a mezzanine projecting into it, a fitting hanging under
-the projection at ~3 m gets placed near 6.8 m. Same room, same "ceiling height",
-four metres out.
+**Why it is worth it:** height. The fallback places a light at the room's ceiling
+minus 20 cm, which is wrong wherever a ceiling is not flat. In a double-height
+room with a mezzanine projecting into it, a fitting hanging under the projection
+at ~3 m gets placed near 6.8 m. Same room, same "ceiling height", four metres out.
 
----
+Which entity drives which fitting is not in the geometry. A room with four
+downlights on two switches looks identical to one with four on one switch, so
+write it down:
 
-## Part 9 — Place the entities
+```yaml
+lights:
+  pairing:
+    kitchen:
+      light.kitchen_west: [[485, 127]]
+      light.kitchen_east: [[620, 127]]
+```
+
+A declaration that cannot be honoured — nothing near the point, or two fittings
+equally close — goes back in with the undeclared entities and is reported.
+
+## "A room is too bright, or never lights, or the wrong one lights"
 
 ```bash
 uv run lidar2ha lights exports/ground_floor_split.json \
@@ -826,13 +846,13 @@ The floor-plan plugin matches furniture **by `name == entity_id`** and **sums
 multiple sources sharing a name**. Everything odd about this stage follows:
 
 - One switch driving six bulbs is six placements carrying one entity id. That is
-  correct, not a workaround.
+  correct.
 - One entity spanning three floors is three placements.
-- A group **and** its members placed together is the same bulbs twice — and
-  because the plugin sums them, that is not an error. It is a room that renders
-  quietly too bright, forever.
+- A group **and** its members placed together is the same bulbs twice. Because
+  the plugin sums them it raises no error: the room renders quietly too bright,
+  forever.
 
-**What you should see:** every entity accounted for, placed or named.
+**What you should see:**
 
 ```
 placed 6 light(s) in 4 room(s)
@@ -849,10 +869,13 @@ multi-gang switch — is screwed to a wall in the bathroom. **An entity's own ar
 beats its device's.** Resolving device-first files every integration-native group
 wherever its coordinator happens to be plugged in.
 
-Which is the other thing to handle. A ZHA group's entity hangs off the
-**coordinator** device rather than any lamp, which makes it mechanically
-detectable; Hue rooms and deCONZ groups expose neither a member list nor a
-coordinator and are flagged by name for you to judge. Exclude what you must:
+Groups are found three ways and the report says which found what. Home
+Assistant's own group helper lists its members, so those are exact. ZHA hangs a
+Zigbee group's entity off the **coordinator** device — the radio, not a lamp —
+and nothing else in the light domain lives there, which makes it a mechanical
+test: on this house it found four groups where the name heuristic found one of
+the same four. Hue rooms and deCONZ groups expose neither, and are flagged by
+name for you to judge.
 
 ```yaml
 lights:
@@ -863,32 +886,19 @@ lights:
     - light.pantry              # force one back in past the group filters
 ```
 
-Not every `light.*` is a light — status LEDs, indicator rings and controllers
+Not every `light.*` is a light. Status LEDs, indicator rings and controllers
 exposing sound channels all turn up in the light domain. They are placed and
 flagged rather than dropped, because a real fitting that merely looks like an
 indicator would otherwise vanish and leave a room dark for no visible reason.
 
-And **which entity drives which fitting is not in the geometry.** A room with four
-downlights on two switches looks identical to one with four on one switch. The
-only place that answer exists is in your head, so write it down:
-
-```yaml
-lights:
-  pairing:
-    kitchen:
-      light.kitchen_west: [[485, 127]]
-      light.kitchen_east: [[620, 127]]
-```
-
-A declaration that cannot be honoured — nothing near the point, or two fittings
-equally close — is neither dropped nor placed on a guess. It goes back in with the
-undeclared entities and is reported.
+Fittings with no entity are reported, never invented. Placing an uncontrollable
+light would render prettily and respond to nothing.
 
 ---
 
-## Part 10 — Build, render, deploy
+# The last lap
 
-`lights` must run before `build`: `build --lights` is the only thing that names
+`lights` must run before `build`. `build --lights` is the only thing that names
 objects after entity ids, and that naming is the sole signal the raytracer and
 any 3D card match on.
 
@@ -900,24 +910,20 @@ uv run lidar2ha build exports/ground_floor_split.json \
 ```
 
 **What you should see:** counts per level, then a `.sh3d` that reopens. `build`
-refuses to report success on an archive Sweet Home 3D will not read, and names any
-level whose elevation the mesh could not recover instead of defaulting it to zero.
+refuses to report success on an archive Sweet Home 3D will not read, and names
+any level whose elevation the mesh could not recover instead of defaulting it to
+zero.
 
-### Three gates, none of them optional
+## Three gates
 
 ```bash
-# 1. FREE. Reports what the plugin detected and what a render will cost.
 uv run lidar2ha render exports/ground_floor.sh3d -o exports/ground_floor_render \
-    --project project.yaml --list
-
-# 2. Minutes, at 640x360.
-uv run lidar2ha render ... --preview
-
-# 3. The real thing.
-uv run lidar2ha render ...
+    --project project.yaml --list       # free
+uv run lidar2ha render ... --preview    # minutes, at 640x360
+uv run lidar2ha render ...              # the real thing
 ```
 
-**Gate 1** costs nothing and answers the only question that matters at this point:
+**Gate 1** costs nothing:
 
 ```
   detected  : 6 light entities, 0 other
@@ -925,11 +931,11 @@ uv run lidar2ha render ...
   estimate  : about 6 min
 ```
 
-**Zero detected means Part 9 failed** — do not render past it.
+Zero detected means the `lights` step failed. Do not render past it.
 
-It also tells you what the render will cost, and the range is not small. The light
-mixing mode changes the frame count by five orders of magnitude, and nothing warns
-you. On one 21-light house at 640×360:
+It also prices the render, and the range is not small. The light mixing mode
+changes the frame count by five orders of magnitude, and nothing warns you. On
+one 21-light house at 640×360:
 
 | mixing | what it renders | frames | time |
 |---|---|---|---|
@@ -938,15 +944,16 @@ you. On one 21-light house at 640×360:
 | `FULL` | every combination in the house | 2,097,152 | 10 months |
 
 Keep `mixing: CSS`. Budget about 26 s a frame at 800×600; the machine barely
-matters, because it runs single-process on Sweet Home 3D's bundled 32-bit runtime.
+matters, because it runs single-process on Sweet Home 3D's bundled 32-bit
+runtime.
 
 **Gate 2** catches the two failures that produce perfectly-formed useless images.
-A **uniform white frame** is a picture of the sky — the camera yaw is wrong. A
+A **uniform white frame** is a picture of the sky: the camera yaw is wrong. A
 **blank frame produced in about a second** means quality slipped to `LOW`, which
-does not raytrace at all; it screenshots the GL view and returns nothing when
-there is no GL context.
+screenshots the GL view instead of raytracing and returns nothing when there is
+no GL context.
 
-### Deploy
+## Deploy
 
 ```bash
 uv run lidar2ha deploy exports/ground_floor_render --project project.yaml
@@ -963,29 +970,25 @@ deploy:
   port: 22
 ```
 
-Images must land at `/config/www/floorplan/` because the plugin hard-codes
-`/local/floorplan/` into the card it emits. **Use `--subdir <level>` once you have
-more than one storey**: every level's render produces a `base.png`, and without a
-subdirectory the second storey overwrites the first one's base frame while leaving
-the first one's per-light frames beside it, named after entity ids nothing in the
-new render owns. Those are reported, never deleted — they are somebody's working
-dashboard.
+**Use `--subdir <level>` once you have more than one storey.** Every level's
+render produces a `base.png`, and without a subdirectory the second storey
+overwrites the first one's base frame while leaving the first one's per-light
+frames beside it, named after entity ids nothing in the new render owns. Those
+are reported, never deleted — they are somebody's working dashboard.
 
-Finally, paste the printed card into your dashboard. Nothing in lidar2ha writes it
-for you.
+Paste the printed card into your dashboard. Nothing writes it for you.
 
-**If you republish an image and the dashboard does not change**, it is the cache,
-not the upload. `/local/...` is served with a long lifetime, so `deploy --card`
-writes a `?version=<hash>` into every image URL. Check the checksums before
-suspecting the transfer — the bytes are usually fine and the URL is the bug.
+**If you republish an image and the dashboard does not change**, it is the cache.
+`/local/...` is served with a long lifetime, so `deploy --card` writes a
+`?version=<hash>` into every image URL. Check the checksums before suspecting the
+transfer; the bytes are usually fine and the URL is the bug.
 
 ---
 
-## Appendix — every stage, and what it reads and writes
+# Appendix — every stage
 
-Two entry points exist and they are not interchangeable. `lidar2ha <cmd>` is the
-packaged CLI; `python -m lidar2ha.<stage>` is the stage module. Where both exist
-they differ.
+`lidar2ha <cmd>` is the packaged CLI; `python -m lidar2ha.<stage>` is the stage
+module. Where both exist they differ.
 
 | Stage | Invocation | Reads | Writes |
 |---|---|---|---|
@@ -1029,7 +1032,7 @@ Differences worth knowing:
   `_alignment.json`; the CLI takes a level name, resolves the paths from
   `project.yaml`, and does not.
 
-### One thing `project.yaml` will not tell you
+## One thing `project.yaml` will not tell you
 
 Apart from `levels:`, the project file is read leniently: every section is looked
 up with a plain `.get`, so **a misspelled or unrecognised key does nothing and

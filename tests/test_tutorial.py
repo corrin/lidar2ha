@@ -30,7 +30,7 @@ def project(tmp_path_factory):
 
 
 def _stage(project):
-    """Part 3: one directory per capture, so identical inner names cannot collide."""
+    """Staging: one directory per capture, so identical inner names cannot collide."""
     key = json.loads((project / "ANSWER_KEY.json").read_text(encoding="utf-8"))
     for entry in key["captures"]:
         for field, sub in (("floorplan_zip", "floorplan"), ("mesh_zip", "mesh_obj")):
@@ -42,7 +42,7 @@ def _stage(project):
 
 
 def test_every_archive_uses_the_same_inner_names(project):
-    """Part 3's trap has to be IN the demo, or the tutorial teaches it dry.
+    """The staging trap has to be IN the demo, or the tutorial teaches it dry.
 
     If the demo named files per capture, unpacking two into one directory would
     be harmless and the reader would never meet the thing that eats a capture.
@@ -137,7 +137,7 @@ def test_project_yaml_only_uses_keys_the_tool_reads(project):
 
 
 def test_registry_exercises_the_three_cases_lights_has_to_get_right(project):
-    """A tidy registry would exercise none of the branches Part 9 explains."""
+    """A tidy registry would exercise none of the branches the lights section explains."""
     registry = json.loads((project / "registry.json").read_text(encoding="utf-8"))
     devices = {d["id"]: d for d in registry["devices"]}
     entities = {e["entity_id"]: e for e in registry["entities"]}
@@ -158,7 +158,7 @@ def test_registry_exercises_the_three_cases_lights_has_to_get_right(project):
 
 @pytest.mark.tutorial
 def test_polycam_reads_every_demo_capture(project):
-    """Part 4's first command, on all eight. A capture that will not import is
+    """The first per-capture command, on all eight. A capture that will not import is
     not a tutorial you can follow."""
     from lidar2ha import polycam, schema
 
@@ -191,7 +191,7 @@ def _run_polycam(d, capture_id):
 
 @pytest.mark.tutorial
 def test_a_demo_capture_registers_the_way_the_tutorial_promises(project):
-    """Part 4 tells the reader to expect a few centimetres at 100% coverage.
+    """`registration` tells the reader to expect a few centimetres at 100% coverage.
 
     The first version of the demo mesh emitted one quad per wall, which gives
     the fitter two points per wall however long it is: it registered at 38 cm
@@ -225,11 +225,11 @@ def test_a_demo_capture_registers_the_way_the_tutorial_promises(project):
 
 @pytest.mark.tutorial
 def test_one_capture_disagrees_about_the_layout(project):
-    """Part 6 rests on there BEING an odd one out.
+    """The combine section rests on there BEING an odd one out.
 
     The disagreement must be non-rigid. A whole-capture rotation or offset is
     just another frame and registration removes it exactly, so a capture skewed
-    that way agrees with everyone and Part 6 has nothing to point at.
+    that way agrees with everyone and the combine section has nothing to point at.
     """
     wrong = [c for c in demo.CAPTURES if c.wrong_room]
     assert len(wrong) == 1, "exactly one capture should be wrong on purpose"
@@ -274,11 +274,11 @@ def test_every_room_of_the_level_is_seen_by_someone(project):
                 "capture(s); two that disagree cannot say which is wrong")
         assert any(len(c.sees) < len(level.rooms) for c in captures), (
             f"no capture on {level.name} skips a room, so `combine` never "
-            "reports new ground and Part 6 cannot show it")
+            "reports new ground and the combine section cannot show it")
 
 
 def test_the_tutorial_names_the_two_gates_it_tells_you_to_run():
-    """Parts 4, 6 and 7 lean on `validate` and `coverage` by name.
+    """The naming and combine sections lean on `validate` and `coverage` by name.
 
     A tutorial that tells you to run a command that does not exist is worse than
     one that never mentions it, and the appendix is the reader's map of what
@@ -300,9 +300,9 @@ def test_the_tutorial_names_the_two_gates_it_tells_you_to_run():
 
 
 def test_the_tutorial_says_every_capture_in_a_level_needs_naming():
-    """The single most expensive thing to get wrong, and the one the tutorial
-    used to leave implicit. Three captures with no `rooms:` entry cost a real
-    house four rooms that were correctly mapped on two other captures each."""
+    """Three captures with no `rooms:` entry cost a real house four rooms that
+    were correctly mapped on two other captures each. The tutorial used to leave
+    this implicit."""
     text = (Path(__file__).resolve().parents[1]
             / "docs" / "TUTORIAL.md").read_text(encoding="utf-8")
     assert "Every capture in a level needs a mapping" in text
@@ -315,11 +315,12 @@ def test_the_tutorial_distinguishes_open_plan_from_a_bad_capture():
 
     Declaring a `split:` for a room that two captures already resolve writes a
     claim about the BUILDING that is false, and goes wrong the moment the bad
-    capture is replaced. Part 7 has to make the reader ask which captures
+    capture is replaced. The section has to make the reader ask which captures
     resolve it before writing a line.
     """
     text = (Path(__file__).resolve().parents[1]
             / "docs" / "TUTORIAL.md").read_text(encoding="utf-8")
-    part7 = text.split("## Part 7")[1].split("## Part 8")[0]
-    assert "is this actually open plan?" in part7.lower()
-    assert "NEITHER" in part7, "the test that tells them apart has to be runnable"
+    section = (text.split('## "Two rooms light up as one"')[1]
+                   .split('## "A room is the wrong height"')[0])
+    assert "is this actually open plan?" in section.lower()
+    assert "NEITHER" in section, "the test that tells them apart has to be runnable"
