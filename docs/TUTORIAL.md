@@ -148,9 +148,9 @@ Use LiDAR mode, and Space rather than Floorplan. Floorplan mode gives you no mes
 and the mesh is where ceiling heights, fitting positions and textures come from.
 Without one you've got a plan you can't put anywhere.
 
-Then the obvious stuff: open the internal doors, turn the lights on. Don't worry
-about windows, LiDAR goes straight through glass so they won't be in the scan and
-you add them by hand in Sweet Home 3D at the end.
+Then the obvious stuff: open the internal doors, turn the lights on. Windows
+won't be in the scan at all, because LiDAR goes straight through glass, so you
+add them by hand in Sweet Home 3D at the end.
 
 You can scan whatever you like. One room, one floor, the whole house in one walk.
 It doesn't have to match your Home Assistant areas, and a walk over several
@@ -558,10 +558,10 @@ It either aligns a capture or reports it and throws it out. There's no middle
 option, and I'm fairly sure that's right, because there used to be one and it
 built my mid-level model out of the worst of its three captures.
 
-Read the second table, not the verdict column. `combine` prints each capture's fit
-against the reference it picked, and then its distance from the averaged walls of
-every other capture. Those two can disagree, and the second one is the one to
-believe:
+Read the second table rather than the verdict column. `combine` prints each
+capture's fit against the reference it picked, and then its distance from the
+averaged walls of every other capture. Those two can disagree, and the second one
+is the one to believe:
 
 ```
 capture                     rot      median  cover     p90  verdict
