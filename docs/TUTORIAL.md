@@ -542,6 +542,13 @@ uv run lidar2ha split "Ground Floor" --project project.yaml \
     -i exports/ground_floor_combined.json -o exports/ground_floor_split.json
 ```
 
+> **On the demo:** the declaration is already written, cutting `open_living` in
+> two at x=300. You should see
+> `open_living 23.8 m2 -> 2 pieces` with `lounge 11.85 m2` and `dining 11.95 m2`,
+> and the registry has a light in each end — which is the reason to cut it.
+> With no `split:` entry for the level, `split` refuses and prints a template to
+> paste rather than guessing where the boundary goes.
+
 `split:` is keyed **by level**, not by capture, and that asymmetry with `merge:` is
 deliberate: an open plan's fusion belongs to the building, so it is the same in
 every capture, and it runs after `combine` where there is exactly one frame to

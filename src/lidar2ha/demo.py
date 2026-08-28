@@ -646,13 +646,16 @@ def _download_index(capture: DemoCapture, kind: str) -> int:
 #   light.kitchen_group     hangs off the COORDINATOR device: a ZHA group, and
 #                           placing it with its members renders them twice
 #   light.landing_status    an indicator, not room lighting
-DEMO_AREAS = ["open_living", "hallway", "bathroom", "kitchen",
+# `open_living` is deliberately NOT here: it is the fused volume the scanner
+# returns, and the areas a person actually uses are its two ends. `split:`
+# cuts it into them, which is the whole reason that declaration exists.
+DEMO_AREAS = ["lounge", "dining", "hallway", "bathroom", "kitchen",
               "bedroom", "office", "landing"]
 
 _ENTITIES: list[dict[str, Any]] = [
-    {"entity_id": "light.living_west", "area_id": "open_living",
+    {"entity_id": "light.living_west", "area_id": "lounge",
      "device_id": "dev_bulb_1", "original_name": "Living West"},
-    {"entity_id": "light.living_east", "area_id": "open_living",
+    {"entity_id": "light.living_east", "area_id": "dining",
      "device_id": "dev_bulb_2", "original_name": "Living East"},
     # No area of its own: it has to fall back to its device's.
     {"entity_id": "light.bathroom_ceiling", "area_id": None,
@@ -676,8 +679,8 @@ _ENTITIES: list[dict[str, Any]] = [
 ]
 
 _DEVICES: list[dict[str, Any]] = [
-    {"id": "dev_bulb_1", "area_id": "open_living", "model": "LWB010"},
-    {"id": "dev_bulb_2", "area_id": "open_living", "model": "LWB010"},
+    {"id": "dev_bulb_1", "area_id": "lounge", "model": "LWB010"},
+    {"id": "dev_bulb_2", "area_id": "dining", "model": "LWB010"},
     {"id": "dev_bulb_3", "area_id": "bathroom", "model": "LWB010"},
     {"id": "dev_bulb_4", "area_id": "kitchen", "model": "TS0505B"},
     {"id": "dev_bulb_5", "area_id": "kitchen", "model": "TS0505B"},
@@ -741,7 +744,12 @@ def demo_project(name: str) -> str:
         "# The open volume the scanner cannot cut, because there is no wall in",
         "# it to cut on. Coordinates are plan centimetres in the COMBINED",
         "# model's frame -- read them off `python -m lidar2ha.preview`.",
-        "split: {}",
+        "# The seam is an infinite line, so two points anywhere on it will do.",
+        "split:",
+        '  "Ground Floor":',
+        "    - room: open_living",
+        "      seam: [[300, -50], [300, 450]]",
+        "      names: [lounge, dining]",
         "",
         "lights:",
         "  exclude:",
