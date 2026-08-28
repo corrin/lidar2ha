@@ -331,6 +331,44 @@ def demo(directory: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# validate
+# --------------------------------------------------------------------------- #
+
+
+@cli.command(name="validate")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("project.yaml"), show_default=True)
+@click.option("--registry", type=click.Path(path_type=Path),
+              default=Path("registry.json"), show_default=True,
+              help="the cached Home Assistant registry, to check area ids against")
+def validate_cmd(project: Path, registry: Path) -> None:
+    """Check project.yaml before a stage acts on it.
+
+    Exits non-zero when something will silently cost you a room, so it can gate
+    a build. Everything it reports is a failure that produced a plausible model
+    rather than an error.
+    """
+    import json
+
+    from .validate import check, report
+
+    settings = _project_settings(project)
+    cached = None
+    if registry.exists():
+        cached = json.loads(registry.read_text(encoding="utf-8"))
+    else:
+        click.echo(f"no {registry} -- area ids are not checked. "
+                   "`python -m lidar2ha.ha --refresh` writes one.\n")
+
+    found = check(settings, cached)
+    report(found)
+    # `unknown_key` is advisory: a note to yourself in the project file is a
+    # reasonable thing to keep, and failing on it would make the gate useless.
+    if any(f.kind != "unknown_key" for f in found):
+        raise SystemExit(1)
+
+
+# --------------------------------------------------------------------------- #
 # whichlevel
 # --------------------------------------------------------------------------- #
 

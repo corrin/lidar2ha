@@ -588,3 +588,53 @@ def test_whichlevel_with_nothing_to_compare_against_says_so(tmp_path, model_path
 
     assert done.returncode != 0
     assert "Nothing to compare against" in (done.stdout + done.stderr)
+
+
+def test_validate_cmd_gates_a_project_that_will_lose_a_room(tmp_path):
+    """The gate has to exit non-zero, or it cannot gate a build.
+
+    Every unit test of the checks lives in test_validate.py; this is the
+    entrypoint, which is the thing that passed while a stage's `main()` crashed
+    on every input.
+    """
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+
+    (tmp_path / "project.yaml").write_text(
+        "levels:\n  Ground: [a, b]\nrooms:\n  a:\n    Room: den\n",
+        encoding="utf-8")
+    (tmp_path / "registry.json").write_text(
+        json.dumps({"areas": [{"area_id": "den", "name": "Den"}]}),
+        encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "validate", "--project", str(tmp_path / "project.yaml"),
+        "--registry", str(tmp_path / "registry.json")])
+    assert result.exit_code == 1, result.output
+    assert "CAPTURE NOT NAMED" in result.output and "b" in result.output
+
+
+def test_validate_cmd_passes_a_clean_project(tmp_path):
+    """A gate that cries wolf gets ignored, which is worse than no gate."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+
+    (tmp_path / "project.yaml").write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    Room: den\n  b:\n    Room: den\n",
+        encoding="utf-8")
+    (tmp_path / "registry.json").write_text(
+        json.dumps({"areas": [{"area_id": "den", "name": "Den"}]}),
+        encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "validate", "--project", str(tmp_path / "project.yaml"),
+        "--registry", str(tmp_path / "registry.json")])
+    assert result.exit_code == 0, result.output
+    assert "nothing to report" in result.output
