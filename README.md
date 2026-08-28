@@ -18,8 +18,8 @@ What that means for you:
 
 - **It has been run against exactly one house.** Mine. Every default, threshold and
   heuristic here is tuned to one capture of one building in one scanning app.
-- **It is not a product.** There is no installer, no unified command, no test suite.
-- **It is a pile of scripts that work, plus a design for the thing they'd become.**
+- **It is not a product.** It is a `pip install .`, a `lidar2ha` command, 600-odd tests,
+  and a pile of stages you run by hand with your judgement in the loop at every one.
 
 I'm publishing it because the hard part — discovering that you *cannot* write a `.sh3d`
 without going through Sweet Home 3D's own Java classes, and the dozen smaller traps behind
@@ -49,13 +49,14 @@ the bottom of this file and it is the most reliable thing in the repo.
 | Export a named GLB for a real-time 3D card | works (`ObjExport.java`, `glb.py`) |
 | Cut an open-plan room into the rooms it is used as | works (`seams.py`), boundary declared by you |
 | Corroborate a declared boundary against the floor | works (`thresholds.py`), reports, never decides |
-| `lidar2ha doctor`, `build`, `combine`, `split`, `lights`, `render`, `deploy`, `export-glb` | works (`cli.py`) |
+| `lidar2ha doctor`, `init`, `demo`, `build`, `combine`, `split`, `lights`, `render`, `deploy`, `export-glb` | works (`cli.py`) |
+| A demo house, so you can run all of it without scanning anything | works (`demo.py`) |
 | **`lidar2ha add-capture`** | **does not exist** (exits saying so) |
 
-`pip install .` now gives you a working `lidar2ha`: `doctor`, `build`, `lights`, `render`
-and `deploy`. Only `add-capture` is still a stub, and it exits telling you what to run
-instead. The package is not on PyPI. The remaining stages are still scripts you run
-by hand.
+`pip install .` gives you a working `lidar2ha`. Only `add-capture` is still a stub, and it
+exits telling you what to run instead — which matters more than it sounds, because staging
+a capture by hand is the longest manual step in the whole workflow. The package is not on
+PyPI. The remaining stages are still modules you run by hand.
 
 Roughly: the geometry-and-rendering half is real, the Home-Assistant-integration half is
 still manual, and the glue between them is a shell prompt and me.
@@ -99,7 +100,8 @@ entity id.
 ## Capturing the house
 
 This part is advice, not code, and it's the part I'm most confident about because getting
-it wrong cost me the most time.
+it wrong cost me the most time. [The tutorial](docs/TUTORIAL.md) covers the same ground as
+Part 0, alongside everything that happens after.
 
 **Cover every mirror.** This matters more than anything else here. A scanner cannot tell a
 reflection from a room, so it builds a phantom copy of the space *behind the wall*. In my
@@ -176,146 +178,38 @@ a version check that only looked at paths passed happily while the sources would
 It also says whether your installed packages still match `uv.lock`, which is the one way
 this project goes wrong without anything looking wrong.
 
-Each stage is a module you run by hand, inspecting the output before moving on. Run them
-with `python -m` — they import their shared model from `lidar2ha.schema`, so running the
-files by path fails on the relative import. Prefix them with `uv run` unless you have
-activated `.venv` yourself. Paths below are illustrative; substitute your own.
+**New here? Read [docs/TUTORIAL.md](docs/TUTORIAL.md).** It walks the whole path — a
+dozen Polycam scans to a dashboard that lights up — in the order the work actually has to
+happen, with what you should see at each step and what it looks like when it is wrong.
+
+You can follow all of it without a house:
 
 ```bash
-# 1. floor plan -> intermediate model.  Add --role fixtures for a fixture pass:
-#    its geometry is bad on purpose, and marking it keeps its walls and floor
-#    heights out of the building.
-#    A capture that walked more than one storey comes out as more than one
-#    level: Polycam returns every storey on one sheet, so the model is cut on
-#    ceiling height and each band becomes a level named for the height it sat
-#    at -- `Floor 1 (210cm)`.  Those names are what step 5c declares.
-python -m lidar2ha.polycam floorplan.dxf --csv rooms.csv -o home.json
+uv run lidar2ha demo ~/demo-house
+```
 
-# 2. what elevation is each floor at?
-python -m lidar2ha.mesh mesh.obj
+That writes eight captures of a building that does not exist, packaged the way Polycam
+packages yours — two archives per capture, every file inside them sharing one name. One of
+the eight is wrong about where the kitchen is, so `combine` has something to catch.
 
-# 3. put the plan and the mesh in the same coordinate frame
-python -m lidar2ha.registration home.json mesh.obj -o registered.json
+The pipeline is stages you run by hand, inspecting the output before moving on. Run them
+with `python -m` — they import their shared model from `lidar2ha.schema`, so running the
+files by path fails on the relative import. Prefix them with `uv run` unless you have
+activated `.venv` yourself. The tutorial's appendix lists every stage, both entry points,
+and what each reads and writes.
 
-# 4. one rectified photo per wall (or textures_tile.py for the cheap fallback)
-python -m lidar2ha.textures_project registered.json mesh.obj -o walltex
-
-# 5. give rooms their HA area names, merging open-plan splits
-#    A merged room answers to every name it was made from, so a `merge:` group
-#    needs only ONE of its rooms mapped and the order it is written in does not
-#    matter.  Map two of them to different areas and the survivor is reported
-#    and left unnamed -- one polygon is in one area.
-python -m lidar2ha.rooms registered.json project.yaml -o named.json --capture upstairs
-
-# 5b. OPTIONAL, from a fixture pass: find the real fittings, put them in rooms,
-#     and build the sheet you approve them against before anything is placed
-python -m lidar2ha.fixtures fixture_mesh.obj -o fixtures.json --crops crops/
-#     List every geometry capture the fixture pass walked through -- one pass
-#     routinely spans two.  --daylight-mesh is an ORDINARY capture of the same
-#     rooms: a window is bright in it too and a fitting is not, which separates
-#     them mechanically.
-python -m lidar2ha.placefixtures fixtures.json fixture_registered.json \
-    ground_named.json hall_named.json \
-    --daylight-mesh ground_mesh.obj -o fixtures_placed.json
-python -m lidar2ha.contactsheet crops/ fixtures_placed.json -o sheet.png
-#     Look at sheet.png. The likely windows are sorted to the bottom and
-#     outlined, but the cutoff is a guess until you have read a sheet against
-#     it -- and a candle or a mirror still looks exactly like a fitting.
-
-# 5c. OPTIONAL, when a capture walked more than one storey: say which storey
-#     of it belongs to which level.  `whichlevel` fits each of the capture's
-#     levels onto the levels you have already combined and REFUSES rather than
-#     naming a weak winner -- a capture of somewhere undeclared still produces
-#     a least-bad row, and taking it is a confident wrong answer.
-#     --write prints the project.yaml block to paste.  It leaves refusals out:
-#     writing an unidentified storey down as a declaration would turn a refusal
-#     into a fact.
-lidar2ha whichlevel unknown_registered.json --project project.yaml --write
-
-#     which prints a block to merge into `levels:` at the TOP level of
-#     project.yaml -- it carries its own `levels:` key, so pasting it
-#     underneath one nests the whole declaration where combine never looks:
-#
-#       levels:
-#         "Upstairs":
-#           - id: "unknown_geometry_0825-1649"
-#             storeys: ["Floor 1 (710cm)", "Floor 3"]
-#
-#     merged with the entries already there, which stay as they are:
-#
-#       levels:
-#         "Upstairs":
-#           - upstairs_geometry_0823-1058          # a bare id still works
-#           - id: "unknown_geometry_0825-1649"
-#             storeys: ["Floor 1 (710cm)", "Floor 3"]
-#
-#     ALWAYS A LIST, even of one.  One capture can hold several storeys of the
-#     SAME floor -- Polycam laid one walk of an upstairs across two sheet
-#     clusters, and after the split two of its levels both belong to that floor
-#     while holding different rooms.  Naming one storey per capture would have
-#     discarded 23 m2 of it.
-
-# 5d. OPTIONAL, when a level was scanned more than once: merge the captures.
-#     Geometry is SELECTED, never averaged -- two plans of one room disagree by
-#     ~17 cm and blending matches neither wall -- so the best-scoring capture
-#     takes a whole group of rooms sharing floor, and each room records which
-#     capture it came from.
-#     The work list is the other half of the output: which rooms only a fixture
-#     pass has ever seen, where the captures disagree about the layout, and any
-#     floor a capture saw that the model does not contain.
-python -m lidar2ha.combine midlevel_named.json midlevel_fixtures_named.json     -o midlevel_combined.json
-lidar2ha combine "Mid Level" --project project.yaml   # same, via project.yaml
-
-# 5e. OPTIONAL, and the one step no scan can do for you: cut the rooms an open
-#     plan fuses.  There is no wall to segment on, so EVERY capture returns the
-#     kitchen end and the dining end as one polygon and rescanning never
-#     separates them -- the boundary is yours to declare.  Read coordinates off
-#     the preview, which draws a metre grid labelled in centimetres for exactly
-#     this, and write them into project.yaml under `split:`.
-#     The pieces come back with NO ceiling: a fused room reports one height for
-#     two spaces, which is the whole reason to split, so measure them after.
-#     They inherit an `ha_area` only if the room being cut had one, so map the
-#     parent under `rooms:` first -- which area it names does not matter, the
-#     pieces replace it.  Map it under EVERY capture of that level, not only the
-#     one `split` names: `combine` picks a winner per room, and a re-shot capture
-#     winning it later drops the pieces' areas again with the split still
-#     succeeding.  Skip it and the pieces come out named, outlined and
-#     unbindable; `split` says so, and `lights --report` lists them again.
-python -m lidar2ha.preview midlevel_combined.json -o plan.png     # where are the rooms?
-python -m lidar2ha.floormap  scan7.obj -o floor                   # optional: the floor,
-python -m lidar2ha.thresholds scan7.obj --axis y                  # photographed and swept
-lidar2ha split "Mid Level" --project project.yaml --mesh scan7.obj
-python -m lidar2ha.ceilings midlevel_split.json scan7.obj
-
-# 6. read the HA registry and place every light.* entity in its room
-lidar2ha lights named.json --refresh --project project.yaml -o lights.json \
-    --fittings fixtures_placed.json   # omit to place at the pole instead
-
-# 7. scene file -> .sh3d: compiles and runs the Java for you, then reopens the
-#    result through Sweet Home 3D's own reader
-lidar2ha build named.json -o house.sh3d \
-    --walltex walltex/manifest.json --lights lights.json --elevation 'Upper=262'
-
-# 8. raytrace it. --list first: free, and tells you what it will cost.
-lidar2ha render house.sh3d -o render_out --project project.yaml --list
-lidar2ha render house.sh3d -o render_out --project project.yaml --preview
-lidar2ha render house.sh3d -o render_out --project project.yaml
-
-# 9. copy it to Home Assistant. Writes nothing without --push.
-#    --subdir puts one storey in its own directory and points the card at it.
-#    Without it a second storey deploys over the first: `base.png` is replaced
-#    while the frames of the storey that was there stay beside it, named after
-#    entity ids nothing in this render owns.  Those are reported, never
-#    deleted -- they are somebody's working dashboard.
-lidar2ha deploy render_out --project project.yaml
-lidar2ha deploy render_out --project project.yaml --push
-lidar2ha deploy render_out --project project.yaml --push --subdir upstairs
-
-# OPTIONAL. The same model as geometry, for a real-time 3D card rather than
-# raytraced overlays. Each object is named after its entity id, and the count
-# printed at the end is how many of those names survived the conversion --
-# which is the only thing that makes the file useful.
-lidar2ha export-glb house.sh3d -o house.glb
+```bash
+lidar2ha init my-house && cd my-house      # project.yaml
+python -m lidar2ha.ha --refresh            # your HA areas -- needed BEFORE `rooms`
+python -m lidar2ha.polycam plan.dxf --csv rooms.csv -o cap.json
+python -m lidar2ha.registration cap.json mesh.obj -o cap_registered.json
+python -m lidar2ha.rooms cap_registered.json project.yaml -o cap_named.json --capture cap
+lidar2ha combine "Ground Floor" --project project.yaml   # per level, 3+ captures
+lidar2ha split   "Ground Floor" --project project.yaml   # open plan only
+lidar2ha lights  ground_split.json --project project.yaml -o lights.json
+lidar2ha build   ground_split.json -o house.sh3d --lights lights.json
+lidar2ha render  house.sh3d -o render_out --project project.yaml --list   # FREE. always first.
+lidar2ha deploy  render_out --project project.yaml                        # add --push to write
 ```
 
 `lights` needs `HA_URL` and a long-lived access token in `HA_TOKEN` (environment or a
@@ -619,10 +513,16 @@ most useful thing anyone could do with it, and I have no way to find out on my o
 
 ```bash
 uv run pytest -q                     # the java-marked tests skip without Sweet Home 3D
+uv run pytest -q -m "not tutorial"   # skip the demo-pipeline run, which costs ~25s
 uv run ruff check .
 uv run mypy                          # clean on src/lidar2ha, and it stays that way
 uv run lidar2ha doctor               # the only thing that compiles the Java
 ```
+
+If you change a stage's interface, change [docs/TUTORIAL.md](docs/TUTORIAL.md) in the same
+commit. `tests/test_tutorial.py` holds it to the claims it can check, but most of a
+walkthrough is prose and prose drifts silently — a runbook this project kept for its own
+house still said a feature "does not exist yet" three commits after it shipped.
 
 `uv.lock` and `.python-version` are committed, so everyone resolves the same packages.
 Change a dependency with `uv add` or `uv lock --upgrade-package <name>` and commit the
