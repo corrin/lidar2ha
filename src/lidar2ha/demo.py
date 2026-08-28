@@ -431,7 +431,12 @@ ATLAS_PX = 512
 TILE_PX = 128           # one ceiling tile per room, in a 4 x 2 grid
 CEILING_CELL_M = 0.20   # ceiling subdivision; a fitting must span a few faces
 SURFACE_CELL_M = 0.12   # floor and wall subdivision; see grid_quad
-LIGHT_RADIUS_PX = 6
+# A fitting's size in the ROOM, not in the atlas. One tile covers a whole room
+# whatever its size, so a radius in pixels is a different physical size in every
+# room: at 6 px the 2 m hallway's fitting came out 9 cm across, smaller than one
+# 20 cm ceiling cell, and `fixtures` stepped straight over it -- 5 fittings in
+# the capture, 2 found, no error anywhere.
+LIGHT_RADIUS_M = 0.25
 
 
 def _uv(px: float, py: float) -> tuple[float, float]:
@@ -441,7 +446,15 @@ def _uv(px: float, py: float) -> tuple[float, float]:
     return (px / (ATLAS_PX - 1), 1.0 - py / (ATLAS_PX - 1))
 
 
-def _build_atlas(rooms: list[DemoRoom]) -> Any:
+def _build_atlas(rooms: list[DemoRoom], lit: bool) -> Any:
+    """The capture's photo atlas. `lit` is what separates the two passes.
+
+    A fitting is bright only when it is switched on; a window is bright in every
+    capture. That difference is the whole of `--daylight-mesh`, and painting the
+    lights into an ordinary capture too removes it: measured, `placefixtures`
+    then read all five fittings as windows -- correctly, because in that atlas
+    they were bright in both.
+    """
     from PIL import Image, ImageDraw
 
     img = Image.new("RGB", (ATLAS_PX, ATLAS_PX), (38, 34, 30))
@@ -451,13 +464,22 @@ def _build_atlas(rooms: list[DemoRoom]) -> Any:
 
     for i, room in enumerate(rooms):
         tx, ty = _tile_origin(i)
+        # Well below `fixtures`' 200 luma floor. At 206 the ceiling itself sat
+        # on the p99 cutoff, so 2,200 faces came back "bright", the whole
+        # ceiling read as one region too large to be a fitting, and the
+        # detector found NOTHING -- with every light plainly there.
         draw.rectangle([tx, ty, tx + TILE_PX - 1, ty + TILE_PX - 1],
-                       fill=(208, 206, 202))                # ceiling swatch
+                       fill=(132, 130, 127))                # ceiling swatch
+        # The tile maps the room's full extent onto TILE_PX either way, so the
+        # two axes scale differently on a room that is not square.
+        rx = LIGHT_RADIUS_M / room.w * (TILE_PX - 1)
+        ry = LIGHT_RADIUS_M / room.h * (TILE_PX - 1)
+        if not lit:
+            continue
         for lu, lv in room.lights:
             cx = tx + lu * (TILE_PX - 1)
             cy = ty + lv * (TILE_PX - 1)
-            draw.ellipse([cx - LIGHT_RADIUS_PX, cy - LIGHT_RADIUS_PX,
-                          cx + LIGHT_RADIUS_PX, cy + LIGHT_RADIUS_PX],
+            draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry],
                          fill=(255, 255, 255))
     return img
 
@@ -572,7 +594,9 @@ def build_mesh(capture: DemoCapture) -> Any:
     mesh = trimesh.Trimesh(vertices=np.array(verts, dtype=float),
                            faces=np.array(faces, dtype=int), process=False)
     mesh.visual = TextureVisuals(uv=np.array(uvs, dtype=float),
-                                 material=SimpleMaterial(image=_build_atlas(rooms)))
+                                 material=SimpleMaterial(
+                                     image=_build_atlas(
+                                         rooms, capture.role == "fixtures")))
     return mesh
 
 
