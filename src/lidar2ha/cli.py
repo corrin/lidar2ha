@@ -369,6 +369,50 @@ def validate_cmd(project: Path, registry: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# coverage
+# --------------------------------------------------------------------------- #
+
+
+@cli.command(name="coverage")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("project.yaml"), show_default=True)
+@click.option("--registry", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("registry.json"), show_default=True)
+@click.option("--exports", type=click.Path(file_okay=False, path_type=Path),
+              default=Path("exports"), show_default=True,
+              help="where the per-level models were written")
+def coverage_cmd(project: Path, registry: Path, exports: Path) -> None:
+    """Which of your Home Assistant areas have geometry, across every level.
+
+    The question `combine` answers only per level and only for areas
+    project.yaml maps, and `lights` answers only for areas some entity names.
+    An area Home Assistant knows and nothing mentions is invisible to both.
+    """
+    import json
+
+    from .coverage import measure, report, uncovered_floors
+    from .schema import load_model
+
+    settings = _project_settings(project)
+    cached = json.loads(registry.read_text(encoding="utf-8"))
+
+    models, sources = {}, {}
+    for level in settings.get("levels") or {}:
+        slug = level.lower().replace(" ", "_")
+        # `_split.json` in preference: the pieces of a cut room are the areas a
+        # person actually uses, and the fused parent is not one of them.
+        for suffix in ("_split.json", "_combined.json"):
+            path = exports / f"{slug}{suffix}"
+            if path.exists():
+                models[level] = load_model(path)
+                sources[level] = path.name
+                break
+
+    report(measure(settings, cached, models, sources),
+           uncovered_floors(settings, cached))
+
+
+# --------------------------------------------------------------------------- #
 # whichlevel
 # --------------------------------------------------------------------------- #
 

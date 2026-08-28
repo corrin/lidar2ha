@@ -638,3 +638,44 @@ def test_validate_cmd_passes_a_clean_project(tmp_path):
         "--registry", str(tmp_path / "registry.json")])
     assert result.exit_code == 0, result.output
     assert "nothing to report" in result.output
+
+
+def test_coverage_cmd_runs_over_the_levels_it_finds(tmp_path):
+    """The entrypoint, whose model-file resolution is its own code.
+
+    It prefers `<level>_split.json` over `<level>_combined.json`, because the
+    pieces of a cut room are the areas a person uses and the fused parent is not
+    one of them.
+    """
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Room
+
+    (tmp_path / "project.yaml").write_text(
+        "levels:\n  Ground: [a, b]\n", encoding="utf-8")
+    (tmp_path / "registry.json").write_text(json.dumps({
+        "floors": [{"floor_id": "g", "name": "Ground"}],
+        "areas": [{"area_id": "den", "name": "Den", "floor_id": "g"},
+                  {"area_id": "garage", "name": "Garage", "floor_id": "g"}],
+    }), encoding="utf-8")
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    model = Model(source="t.dxf", units="cm", levels=[Level(
+        name="Floor 1", elevation_cm=0, ceiling_height_cm=240, walls=[],
+        rooms=[Room(name="den", ha_area="den",
+                    points=[(0, 0), (400, 0), (400, 300), (0, 300)])])])
+    (exports / "ground_split.json").write_text(
+        model.model_dump_json(by_alias=True), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "coverage", "--project", str(tmp_path / "project.yaml"),
+        "--registry", str(tmp_path / "registry.json"),
+        "--exports", str(exports)])
+    assert result.exit_code == 0, result.output
+    assert "1 of 2 area(s)" in result.output
+    assert "garage" in result.output
+    assert "ground_split.json" in result.output
