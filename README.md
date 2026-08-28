@@ -4,12 +4,17 @@ Turn a phone LiDAR scan of your house into a 3D floorplan in Home Assistant that
 lights up when you tap a light. It's raytraced, so light spills through
 stairwells and across open-plan volumes.
 
-I built it because I wanted my house in Home Assistant and I didn't want to draw
-it by hand. Claude wrote essentially all of the code. I supplied the house, the
-scans, and the judgement about whether each output was actually right.
+That spill is the point of the whole thing. `floor3d-card` and Floorplan 3D
+render in real time, so they can't do it. If your house is a set of sealed boxes
+you may as well use one of those and save yourself a fortnight. If it's got a
+stairwell, a double-height space or open plan living, and you're tired of looking
+at a flat floorplan card, this is for you.
 
-It has been run against exactly one house. Mine. Every threshold in here is a
-guess that happened to work once.
+I built it because I wanted my house in Home Assistant and I didn't want to draw
+it by hand. I've only ever run it on my own house, so every threshold in it is a
+guess that happened to work once. Claude wrote essentially all of the code, and I
+supplied the house, the scans, and the judgement about whether each output was
+actually right.
 
 ## What you need
 
@@ -63,15 +68,9 @@ Honest take: the geometry and rendering half is solid. The Home Assistant half
 works but is manual. You write the area mapping, you review the fittings, and
 you paste the card into your dashboard yourself.
 
-### Why raytraced, and not a WebGL card
-
-`floor3d-card` and Floorplan 3D render in real time, so there's no raytracing and
-no cross-floor light spill. If your house is a set of sealed boxes that costs you
-nothing. If it has a stairwell, a double-height space or open-plan living, that
-spill is the whole reason to bother.
-
-They're not mutually exclusive. `export-glb` emits `.obj` and `.glb` from the
-same `.sh3d`, each object named after its entity id, so one model can drive both.
+You don't have to pick between this and a real-time card, by the way.
+`export-glb` emits `.obj` and `.glb` from the same `.sh3d`, each object named
+after its entity id, so one model can drive both.
 
 ## Install
 
@@ -111,8 +110,9 @@ Two questions run through every lap:
 2. Is this something true about the house that nothing has been told? Then write
    it in `project.yaml`.
 
-`project.yaml` is the control file and it accumulates. Every section of it is an
-answer to something a render got wrong.
+`project.yaml` is where you tell it the things it can't work out on its own.
+Mostly that's which scanner room is which Home Assistant area. It grows as you
+go.
 
 Worth knowing up front: Home Assistant only ever receives pre-rendered overlay
 images and a `picture-elements` card, which `deploy` copies to
