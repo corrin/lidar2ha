@@ -1,28 +1,32 @@
 # lidar2ha
 
 Turn a phone LiDAR scan of your house into a 3D floorplan in Home Assistant that
-lights up when you tap a light — raytraced, with light spilling through stairwells
-and across open-plan volumes.
+lights up when you tap a light. It's raytraced, so light spills through
+stairwells and across open-plan volumes.
 
-Built for one house: mine. Every threshold and default here is tuned to one
-building scanned with one app. Claude wrote essentially all of the code; I
-supplied the house, the scans, and the judgement about whether each output was
-right.
+I built it because I wanted my house in Home Assistant and I didn't want to draw
+it by hand. Claude wrote essentially all of the code. I supplied the house, the
+scans, and the judgement about whether each output was actually right.
+
+It has been run against exactly one house. Mine. Every threshold in here is a
+guess that happened to work once.
 
 ## What you need
 
-- An iPhone with LiDAR (12 Pro or later), or an iPad Pro (2020 or later)
-- Polycam, on a tier that exports floor plans — around $1,000/year, or the 7-day trial
-- Home Assistant, with SSH to `/config` ([Terminal & SSH add-on][ssh])
-- A long-lived access token from an admin account ([your profile page][token])
-- [Sweet Home 3D][sh3d] and the [floor-plan plugin][plugin]
-- A JDK 17 or later ([Temurin][temurin])
-- Three scans of each storey, plus a fixture pass per storey
-- A week of Polycam, and a couple of weekends
+1. An iPhone with LiDAR (12 Pro or later), or an iPad Pro (2020 or later)
+2. Polycam, on a tier that exports floor plans
+3. Home Assistant, with SSH to `/config` ([Terminal & SSH add-on][ssh])
+4. A long-lived access token from an admin account ([your profile][token])
+5. [Sweet Home 3D][sh3d] and the [floor-plan plugin][plugin]
+6. A JDK 17 or later ([Temurin][temurin])
+7. Three scans of each storey, plus a fixture pass
 
-Most people do this on the trial. Everything that needs Polycam — scanning *and*
-exporting — happens inside those seven days. Everything after runs offline
-forever, so prove the toolchain works before you start the clock.
+On (2): floor plan export runs about $1,000/year, so I'm assuming you're on the
+7 day trial like a normal person.
+
+That's worth planning around. Everything that needs Polycam, scanning and
+exporting both, has to happen inside those seven days. Everything after runs
+offline forever. So get the toolchain working first, then start the clock.
 
 [ssh]: https://github.com/home-assistant/addons/blob/master/ssh/DOCS.md
 [token]: https://www.home-assistant.io/docs/authentication/#your-account-profile
@@ -34,39 +38,40 @@ forever, so prove the toolchain works before you start the clock.
 
 | Stage | State |
 |---|---|
-| Parse Polycam floor-plan DXF/CSV → JSON model | works (`polycam.py`) |
+| Parse Polycam floor-plan DXF/CSV into a JSON model | works (`polycam.py`) |
 | Recover floor elevations from the mesh | works (`mesh.py`) |
-| Register DXF floors onto the mesh | works, and the weak link — see limits |
+| Register DXF floors onto the mesh | works, and it's the weak link. See limits |
 | Rectify per-wall textures from the photo atlas | works (`textures_project.py`) |
 | Tiled textures by surface class (fallback) | works (`textures_tile.py`) |
 | Write a real `.sh3d` | works (`Sh3dWriter.java`) |
 | Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`), all levels in one pass |
 | Frame the camera so the house fits | works (`camera.py`), solved rather than guessed |
 | Rename rooms to HA areas, merge open-plan splits | works (`rooms.py`), mapping written by hand |
-| Merge several captures of one level | works (`combine.py`), align-or-discard, needs 3+ scans |
+| Merge several captures of one level | works (`combine.py`), align-or-discard, wants 3+ scans |
 | Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
-| Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), needs human review |
+| Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), needs a human |
 | Separate windows from fittings mechanically | works (`daylight.py`), differences two captures |
 | Review sheet for the fittings found | works (`contactsheet.py`), windows sorted last |
 | Export a named GLB for a real-time 3D card | works (`ObjExport.java`, `glb.py`) |
-| Cut an open-plan room into the rooms it is used as | works (`seams.py`), boundary declared by you |
+| Cut an open-plan room into the rooms it's used as | works (`seams.py`), boundary declared by you |
 | Corroborate a declared boundary against the floor | works (`thresholds.py`), reports, never decides |
-| A demo house, to run all of it before you scan | works (`demo.py`) |
+| A demo house, so you can run it all before scanning | works (`demo.py`) |
 | `lidar2ha add-capture` | **not implemented** (exits saying so) |
 
-The geometry and rendering half is solid. The Home Assistant half is manual:
-you write the area mapping, you review the fittings, you paste the card.
+Honest take: the geometry and rendering half is solid. The Home Assistant half
+works but is manual. You write the area mapping, you review the fittings, and
+you paste the card into your dashboard yourself.
 
 ### Why raytraced, and not a WebGL card
 
-`floor3d-card` and Floorplan 3D render in real time, so there is no raytracing
-and no cross-floor light spill. For a house of sealed boxes that costs nothing.
-For a stairwell, a double-height space, or open-plan living, it is the reason to
-do this at all.
+`floor3d-card` and Floorplan 3D render in real time, so there's no raytracing and
+no cross-floor light spill. If your house is a set of sealed boxes that costs you
+nothing. If it has a stairwell, a double-height space or open-plan living, that
+spill is the whole reason to bother.
 
-They are not exclusive. `export-glb` emits `.obj` and `.glb` from the same
-`.sh3d`, each object named after its entity id, so one model drives both.
+They're not mutually exclusive. `export-glb` emits `.obj` and `.glb` from the
+same `.sh3d`, each object named after its entity id, so one model can drive both.
 
 ## Install
 
@@ -76,69 +81,79 @@ uv sync --all-extras
 uv run lidar2ha doctor
 ```
 
-`--all-extras` is not optional: `paramiko` and `websockets` are extras, and a
-bare `uv sync` removes them along with `deploy` and the Home Assistant registry.
+`--all-extras` isn't optional. `paramiko` and `websockets` are extras, and a bare
+`uv sync` quietly removes them again, which takes `deploy` and the Home Assistant
+registry with it.
 
-`doctor` locates Sweet Home 3D, the plugin and your JDK, then compiles the Java
-against your own installation and reports the compiler's errors. It also checks
-your installed packages against `uv.lock`.
+`doctor` finds Sweet Home 3D, the plugin and your JDK, then compiles the Java
+against your own installation and shows you the compiler's own errors. It also
+checks your installed packages against `uv.lock`.
 
-Then run the whole pipeline on a house that does not exist:
+Then run the whole thing on a house that doesn't exist:
 
 ```bash
 uv run lidar2ha demo ~/demo-house
 ```
 
 Eight captures of a two-storey building with a stairwell, packaged the way
-Polycam packages yours, one of them wrong about where the kitchen is. Do this
-before you pay Polycam anything.
+Polycam packages yours. One of the eight is wrong about where the kitchen is, so
+`combine` has something to catch. Do this before you pay Polycam anything.
 
 ## How it goes
 
-Scan a room, run it through, put it on your dashboard, and look at it. What you
-see tells you what to fix next: a name in `project.yaml`, a boundary you need to
-declare, or another scan. Then round again.
+It's a loop, not a pipeline. Scan a room, run it through, put it on your
+dashboard, and look at it. What you see tells you what to do next: a name in
+`project.yaml`, a boundary you need to declare, or another scan.
 
-`project.yaml` is the control file, and it accumulates. Every section of it is an
+Two questions run through every lap:
+
+1. Is this a bad scan? Then rescan.
+2. Is this something true about the house that nothing has been told? Then write
+   it in `project.yaml`.
+
+`project.yaml` is the control file and it accumulates. Every section of it is an
 answer to something a render got wrong.
 
-Home Assistant receives pre-rendered overlay images and a `picture-elements`
-card, which `deploy` copies to `/config/www/floorplan/`. The model stays on your
-desktop.
+Worth knowing up front: Home Assistant only ever receives pre-rendered overlay
+images and a `picture-elements` card, which `deploy` copies to
+`/config/www/floorplan/`. The model itself stays on your desktop.
 
-**[docs/TUTORIAL.md](docs/TUTORIAL.md)** walks the loop from an empty directory to
-a lit dashboard, with what you should see at each step and what it looks like
-when it is wrong.
+**[docs/TUTORIAL.md](docs/TUTORIAL.md)** walks the loop from an empty directory
+to a lit dashboard, with what you should see at each step and what it looks like
+when it's wrong.
 
 ## Known limits
 
-- **Registration is the weak point.** A wall-poor open-plan level gives the
-  fitter little to hold onto. `registration.py` reports how well-constrained each
-  fit is; read that number rather than trusting the result.
-- **A capture placed on the wrong walls is not caught.** A five-wall bedroom
-  landed 65° out on top of a hallway at 100% coverage and 18.9 cm median error.
-  No quantile sees this, because arithmetically nothing is wrong.
-- **Windows are missing.** LiDAR passes through glass. Add them by hand in Sweet
-  Home 3D.
-- **Texture detail is capped by the scan.** Polycam's atlas carries roughly
-  384 px per metre of real surface, measured. No export setting improves it.
-- **Voids** — stairwell shafts, double-height spaces — are declared by hand. A
-  scanner maps rooms, not the space between them.
-- **Staging captures is manual**, and you pay it on every pass. `add-capture`
-  would fix it and does not exist.
-- **Every constant here is a guess** that worked once, on one house, in one app.
+- **Registration is the weak point.** A wall-poor open-plan level gives the fitter
+  very little to hold onto. `registration.py` reports how well-constrained each
+  fit is, and you should read that number rather than trust the result.
+- **Nothing catches a scan placed on the wrong walls.** A five-wall bedroom of
+  mine landed 65 degrees out on top of a hallway, at 100% coverage and 18.9 cm
+  median error. No quantile sees that, because arithmetically nothing is wrong. I
+  think I know the fix (every capture of one building shares a wall grid, so only
+  four rotations between two captures are ever valid) but it isn't built.
+- **Windows are missing.** LiDAR goes straight through glass. Add them by hand in
+  Sweet Home 3D.
+- **Texture detail is capped by the scan.** Polycam's atlas carries roughly 384 px
+  per metre of real surface, measured. No export setting improves it.
+- **Voids** (stairwell shafts, double-height spaces) have to be declared by hand.
+  A scanner maps rooms, not the space between them.
+- **Staging captures is manual**, and you pay it on every lap. `add-capture` would
+  fix that and doesn't exist. It's the biggest ergonomic gap in the project.
 
 ## When the toolchain bites
 
-Sweet Home 3D, Java3D and the plugin fail with messages that name a DLL, a class
-version, or nothing at all. **[docs/SH3D-NOTES.md](docs/SH3D-NOTES.md)** indexes
-those errors, and explains why a `.sh3d` holds Java-serialised objects rather
-than the documented `Home.xml` — which is why there is Java in this repo.
+Sweet Home 3D, Java3D and the plugin fail with messages that name a DLL, or a
+class version, or nothing at all.
+**[docs/SH3D-NOTES.md](docs/SH3D-NOTES.md)** indexes those errors, and explains
+why a `.sh3d` holds Java-serialised objects rather than the documented
+`Home.xml`, which is why there's Java in this repo at all.
 
 ## Contributing
 
-If you try this on a second house I'd like to hear what broke. That is the most
-useful thing anyone could do with it, and I have no way to find out on my own.
+If you try this on a second house I'd genuinely like to hear what broke. That's
+the most useful thing anyone could do with it, and I've no way to find out on my
+own.
 
 ```bash
 uv run pytest -q                     # java-marked tests skip without Sweet Home 3D
@@ -148,20 +163,22 @@ uv run mypy                          # clean on src/lidar2ha, and it stays that 
 uv run lidar2ha doctor               # the only thing that compiles the Java
 ```
 
-Change a stage's interface and change [docs/TUTORIAL.md](docs/TUTORIAL.md) in the
-same commit. `tests/test_tutorial.py` holds it to the claims it can check.
+If you change a stage's interface, change [docs/TUTORIAL.md](docs/TUTORIAL.md) in
+the same commit. `tests/test_tutorial.py` holds it to the claims it can check.
 
-`uv.lock` and `.python-version` are committed. Change a dependency with `uv add`
-or `uv lock --upgrade-package <name>` and commit the lock alongside the
-`pyproject.toml` change; CI installs with `uv sync --locked`.
+`uv.lock` and `.python-version` are committed, so everyone resolves the same
+packages. Change a dependency with `uv add` or
+`uv lock --upgrade-package <name>`, and commit the lock alongside the
+`pyproject.toml` change. CI installs with `uv sync --locked` and fails when the
+two have drifted.
 
 Contributor tooling lives in `[dependency-groups]` rather than an extra, so it
 never reaches the published wheel. uv installs it by default.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
 
-Sweet Home 3D is © eTeks, under the GNU GPL. This project does not bundle or
-modify it; it compiles against a local installation. Check your own obligations
+Sweet Home 3D is (c) eTeks, under the GNU GPL. This project doesn't bundle or
+modify it, it compiles against a local installation. Check your own obligations
 if you redistribute a combined work.

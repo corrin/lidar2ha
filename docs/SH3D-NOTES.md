@@ -30,7 +30,7 @@ A `.sh3d` is a ZIP. Since Sweet Home 3D 5.3 it contains a `Home.xml` conforming 
 [`SweetHome3D.dtd`][dtd], and the documentation describes that XML as the modern format. So
 the obvious move is to write XML, zip it, done.
 
-**Sweet Home 3D will refuse to open it** — *"can't open home"*.
+**Sweet Home 3D will refuse to open it** - *"can't open home"*.
 
 Dump an archive Sweet Home 3D wrote itself:
 
@@ -43,7 +43,7 @@ One entry. `Home`, containing **Java-serialised objects**. No `Home.xml` at all.
 app reads the serialised entry; the XML is there for other tools to consume.
 
 Java serialisation of Sweet Home 3D's classes can only be produced by those classes. So a
-generator has to go *through* Sweet Home 3D, not around it — which is why there is Java in
+generator has to go *through* Sweet Home 3D, not around it - which is why there is Java in
 this repo, and why it compiles against your own installation.
 
 [dtd]: http://www.sweethome3d.com/SweetHome3D.dtd
@@ -58,11 +58,11 @@ this repo, and why it compiles against your own installation.
   the polygon, emit no wall along the open edge.
 - **Pick the catalog light by ID.** The alphabetically first `Light` is
   `eTeks#blueLightSource`, and the catalog's `*LightSource` entries are invisible emitters
-  whose model is line geometry — they light the scene but render as nothing. Use
+  whose model is line geometry - they light the scene but render as nothing. Use
   `eTeks#pendantLamp`. `Furniture.jar` must be on the classpath.
 - **Light sources must be visible with power > 0** or the plugin ignores them.
 - **The plugin only sees lights on the SELECTED level.** Not the viewable ones, not all of
-  them — `setViewable(true)` and `setAllLevelsSelection(true)` both make no difference. A
+  them - `setViewable(true)` and `setAllLevelsSelection(true)` both make no difference. A
   two-storey house therefore renders with one floor's lights and no cross-floor spill,
   which is the entire reason for using a raytracer. The way through: a light's elevation is
   measured from its own level's floor, so emitting every light against the *lowest* level
@@ -70,40 +70,40 @@ this repo, and why it compiles against your own installation.
   all of them in the render set. Geometry stays on its proper level; only the lights move.
 - **Yaw looks along `(sin yaw, cos yaw)`,** so `yaw = 0` faces *increasing* y. Place the
   camera on the far side of the plan, leave the yaw at zero, and every render comes back a
-  uniform white frame — a picture of the sky, produced at full raytracing cost without a
+  uniform white frame - a picture of the sky, produced at full raytracing cost without a
   single warning.
 - **The field of view is horizontal.** So on a 16:9 render the *vertical* angle is the
   narrow one, and that is the axis a model gets clipped on. Framing by a bounding sphere
   and a safety multiplier does not account for this: it wastes half the width on a long
   house and clips the height anyway.
 - **Rendering needs Sweet Home 3D's own 32-bit JVM.** Java3D and YafaRay ship as 32-bit
-  natives, and that runtime has only `javaw.exe` — no console — so the render step logs to
+  natives, and that runtime has only `javaw.exe` - no console - so the render step logs to
   a file. Writing a `.sh3d` runs fine on a normal JDK. Two JVMs; `javabridge.py` exists to
   keep that fact in one place.
 - **So does exporting geometry, which traces nothing.** `ObjExport` only walks the model
   and writes OBJ, but building the scene graph goes through `Object3DBranchFactory`, which
   loads Java3D's natives regardless. On a 64-bit JDK it dies with `Can't load IA 32-bit
-  .dll on a AMD 64-bit platform`. "It doesn't render, so it can use the normal JVM" is
-  wrong, and the error names a DLL rather than the reason.
+  .dll on a AMD 64-bit platform`. I'd assumed that because it doesn't render it
+  could use the normal JVM. It can't, and the error names a DLL rather than the
+  reason.
 - **`-Djava.awt.headless=true` breaks the headless export.** It is the obvious flag for a
   command-line tool with no window, and it is exactly backwards: `VirtualUniverse`'s static
   initialiser wants a display, so setting it throws `HeadlessException` during class
-  loading — before `main()`, and so before any handler that would have logged it.
-- **Converting OBJ→glTF with trimesh silently discards every object name.** trimesh keys a
+  loading - before `main()`, and so before any handler that would have logged it.
+- **Converting OBJ->glTF with trimesh silently discards every object name.** trimesh keys a
   scene by *material*, so six lights that share the `white` material come back as one node
-  called `white`. `ObjExport` exists for one reason — to name each group after its entity
-  id, because a 3D card binds entities to objects by name — and the conversion that looks
+  called `white`. `ObjExport` exists for one reason - to name each group after its entity
+  id, because a 3D card binds entities to objects by name - and the conversion that looks
   free destroys precisely that. The resulting GLB is valid, opens fine, and binds nothing.
   `obj2gltf` preserves the names; `glb.py` counts them going in and coming out, every time,
   because the failure is invisible until the card does nothing.
 - **`javac` and `java` must come from the same JDK.** Resolving each off `PATH`
-  independently gets you a modern compiler and whatever stale JRE is earlier in the path —
-  on Windows, typically Oracle's `java8path` shim — and it fails at the point of use with
+  independently gets you a modern compiler and whatever stale JRE is earlier in the path - on Windows, typically Oracle's `java8path` shim - and it fails at the point of use with
   `UnsupportedClassVersionError` naming neither.
 - **Java3D is not in `SweetHome3D.jar`.** `j3dcore`, `j3dutils` and `vecmath` are separate
   jars beside it, so anything touching `javax.media.j3d` needs the whole lib directory on
   the classpath, not just the main jar.
-- **A UTF-8 BOM breaks both sides silently-ish.** In a `.java` source `javac` reports
+- **A UTF-8 BOM breaks both sides, fairly quietly.** In a `.java` source `javac` reports
   `illegal character: '﻿'`; in a scene file it makes the first record `﻿home`,
   which surfaces as the unhelpful "unknown record type". Windows editors add one unasked.
 - **Ceiling height is a property of the room, not the level.** One capture has a 2.2 m
@@ -131,7 +131,7 @@ this repo, and why it compiles against your own installation.
   `lidar2ha render --list` is free and always worth running first.
 - **`Quality.LOW` does not raytrace.** It screenshots the Java3D OpenGL view, and with no
   usable GL context it returns a *blank frame* in about a second without erroring. Seven
-  perfectly-generated blank PNGs cost someone an hour here.
+  perfectly-generated blank PNGs cost me an hour.
 - **Rendering is slow and the machine barely matters.** It runs single-process on Sweet
   Home 3D's bundled 32-bit Java 8 runtime, because Java3D and YafaRay are 32-bit natives.
   Measured: 179.7 s for 7 frames at 800x600 on a real model, about 26 s a frame. Scene
