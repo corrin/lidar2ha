@@ -2,13 +2,22 @@
 
 Turn a phone LiDAR scan of your house into a 3D floorplan in Home Assistant that
 lights up when you tap a light. It's raytraced, so light spills through
-stairwells and across open-plan volumes.
+stairwells and across open plan volumes.
 
-That spill is the point of the whole thing. `floor3d-card` and Floorplan 3D
-render in real time, so they can't do it. If your house is a set of sealed boxes
-you may as well use one of those and save yourself a fortnight. If it's got a
-stairwell, a double-height space or open plan living, and you're tired of looking
-at a flat floorplan card, this is for you.
+The raytracing and the dashboard card are [home-assistant-floor-plan][plugin]'s,
+and it does that part well. What it needs from you is a Sweet Home 3D model of
+your house, and everybody builds that by hand. That is the bit that stops people,
+and it's the bit this does.
+
+As far as I can find, nothing else writes a `.sh3d` at all. There are readers and
+a headless renderer, listed in [docs/SH3D-NOTES.md](docs/SH3D-NOTES.md), but no
+generator, and no published phone-scan-to-Home-Assistant workflow.
+
+Whether it's worth it depends on your house. Real-time cards like `floor3d-card`
+render without raytracing, so they can't do cross-floor light spill, and that
+spill is most of the reason to bother. If you've got a stairwell, a double-height
+space or open plan living, this is for you. If your house is a set of sealed
+boxes, use one of those and save yourself a fortnight.
 
 I built it because I wanted my house in Home Assistant and I didn't want to draw
 it by hand. I've only ever run it on my own house, so every threshold in it is a
