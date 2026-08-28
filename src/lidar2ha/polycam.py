@@ -413,10 +413,18 @@ def main():
         })
 
     ceilings = read_room_ceilings(args.csv)
-    if args.csv and not ceilings:
+    if not ceilings:
         # Silence here would be worse than failure: every wall would quietly get
-        # the default height and the model would look plausible but be wrong.
-        print(f"WARNING: no ceiling heights parsed from {args.csv}. "
+        # the default height and the model would look plausible but be wrong. A
+        # double-height stairwell and a laundry reading the same number is the
+        # geometry that makes cross-floor light spill worth rendering.
+        #
+        # The heights are in the CSV and not in the DXF, so the common way to
+        # arrive here is an export: `Floor Plan -> DXF` hands you no CSV to
+        # pass, where `Floor Plan -> Zip (all)` does.
+        why = (f"no ceiling heights parsed from {args.csv}" if args.csv
+               else "no --csv given, and the DXF does not carry ceiling heights")
+        print(f"WARNING: {why}. "
               f"Falling back to {args.default_height} m for every room.")
 
     wall_groups = split_into_floors(walls, n_floors)

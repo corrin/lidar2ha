@@ -121,3 +121,36 @@ def test_floors_split_at_the_largest_gaps():
     items = [{"cx": x} for x in (0, 1, 2, 50, 51, 52)]
     groups = split_into_floors(items, 2)
     assert [len(g) for g in groups] == [3, 3]
+
+
+def test_omitting_the_csv_says_so_rather_than_inventing_a_ceiling(tmp_path, capsys):
+    """A capture exported as a bare DXF gets every room the default height.
+
+    The heights live in the CSV, not the DXF, so `Floor Plan -> DXF` instead of
+    `Floor Plan -> Zip (all)` silently gives a whole capture one made-up ceiling.
+    Measured on a real project: three captures came out at exactly 240 cm in
+    every room while the captures beside them ran 400-520, and nothing said why.
+    A double-height stairwell and a laundry reading the same height is the
+    geometry that makes cross-floor light spill worth rendering.
+
+    `polycam` already warns when a --csv is given and parses to nothing. This is
+    the same failure reached by a different route, and it was the silent one.
+    """
+    import sys
+    from unittest import mock
+
+    from lidar2ha import demo, polycam
+
+    dxf, _csv = demo.one_storey(tmp_path)
+    out = tmp_path / "capture.json"
+    with mock.patch.object(sys, "argv", ["polycam", str(dxf), "-o", str(out)]):
+        polycam.main()
+
+    printed = capsys.readouterr().out
+    assert "WARNING" in printed, (
+        "omitting --csv fell back to the default height without saying so:\n"
+        + printed)
+    assert "2.4" in printed, (
+        "the warning must name the height every room just got, since that "
+        "number is the only way to recognise the fallback in the model:\n"
+        + printed)

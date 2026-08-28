@@ -165,23 +165,26 @@ def doctor(sh3d_jar: str | None) -> None:
 
 PROJECT_YAML = """\
 # lidar2ha project. Paths are relative to this file.
-name: {name}
+#
+# Settings that are not in this file, so you do not go looking for them here:
+#   Sweet Home 3D's jar   `--sh3d-jar`, or $LIDAR2HA_SH3D_JAR
+#   texture patch size    `build --tile-cm`
+#   a level's elevation   `build --elevation NAME=CM`
 
-# Uncomment if Sweet Home 3D is not in the usual place for your platform.
-# sweethome3d_jar: C:\\Program Files (x86)\\Sweet Home 3D\\lib\\SweetHome3D.jar
-
-# Physical size of one tiled texture patch, in centimetres.
-tile_cm: 100
-
-# Levels whose elevation the mesh could not recover, in centimetres above the
-# lowest floor. `lidar2ha build` reports which levels defaulted to 0.
-elevations: {{}}
+# One entry per Polycam export, keyed by the id the sections below use for it.
+# `multi_floor` says the walk covered more than one storey; combining is per
+# storey, so `combine` uses it to tell you to pass --storey rather than
+# refusing those captures later with nothing saying why.
+#   captures:
+#     midlevel: {}
+#     wholehouse: {multi_floor: true}
+captures: {}
 
 # Which captures make up each level, for `lidar2ha combine <level>`. Geometry
 # never merges across levels -- captures of different storeys share no frame --
 # so combining is per level, and this is what says which captures share one.
 # Key by the names in `homeassistant.floors`; the values are ids from `captures`.
-levels: {{}}
+levels: {}
 
 # Scanner room name -> Home Assistant area id, per capture. A scanner names
 # rooms by guessing, so this is the mapping you confirm once. `rooms` fails
@@ -190,14 +193,14 @@ levels: {{}}
 #     midlevel:
 #       "Living Room": lounge
 #       "Office 1": kitchen        # many scanner rooms may share one area
-rooms: {{}}
+rooms: {}
 
 # Scanner rooms to union, per capture -- the scanner split one open volume in
 # two and its boundary is an artefact of that capture alone.
 #   merge:
 #     midlevel:
 #       - ["Kitchen", "Office 1"]
-merge: {{}}
+merge: {}
 
 # Rooms to CUT, per LEVEL rather than per capture, because an open plan's
 # fusion is the architecture: there is no wall to segment on, so every capture
@@ -217,7 +220,34 @@ merge: {{}}
 #             outline: [[310, -420], [560, -420], [560, -140], [310, -140]]
 #           - name: lounge
 #             box: [[310, -140], [700, 260]]
-split: {{}}
+split: {}
+
+# The corrections `lidar2ha lights` cannot work out for itself.
+lights:
+  # Entities to leave out. A ZHA group's entity hangs off the coordinator
+  # device rather than off any lamp, so placing the group AND its members is
+  # the same bulbs twice -- and the plugin sums sources sharing a name, so the
+  # room renders quietly too bright rather than erroring. Indicator LEDs and
+  # controller channels turn up in the light domain too.
+  #   exclude: [light.kitchen_group, light.landing_status]
+  exclude: []
+  # Force one back in past the group filters.
+  include: []
+  # entity_id -> further area ids to place it in as well, for an entity that
+  # lights more than one room.
+  extra: {}
+  # Brightness 0-1, per entity and for everything not named.
+  power: {}
+  default_power: 0.5
+  # Which fitting each entity drives, in plan centimetres. Four downlights on
+  # two switches look exactly like four on one, so no measurement separates
+  # them and this is the only place the answer exists. A declaration nothing
+  # sits near is reported rather than guessed at.
+  #   pairing:
+  #     kitchen:
+  #       light.kitchen_west: [[485, 127]]
+  #       light.kitchen_east: [[620, 127]]
+  pairing: {}
 
 # Where to look from. The tool solves HOW FAR back to stand so the whole house
 # fits; these are the choices it cannot make for you.
@@ -240,6 +270,21 @@ render:
   #   FULL     every combination in the house              2^n
   # On one 21-light house: 22 frames, 65541 frames, and 2097152 frames.
   mixing: CSS
+
+# Home Assistant, for fetching the registry. $HA_URL and $HA_TOKEN win over
+# these, and a .env beside this file is already gitignored -- a long-lived
+# access token is a house key.
+# ha_url: http://homeassistant.local:8123
+# ha_token: ...
+
+# Where `deploy` copies the render. $HA_SSH_HOST, $HA_SSH_USER, $HA_SSH_PORT
+# and $HA_SSH_KEY win over these. On Home Assistant OS the host is the
+# Terminal & SSH add-on, which is where /config is mounted.
+# deploy:
+#   host: homeassistant.local
+#   user: root
+#   port: 22
+#   key: ~/.ssh/id_ed25519
 """
 
 
@@ -251,7 +296,7 @@ def init(directory: Path) -> None:
     config = directory / "project.yaml"
     if config.exists():
         raise SystemExit(f"{config} already exists; not overwriting it")
-    config.write_text(PROJECT_YAML.format(name=directory.name), encoding="utf-8")
+    config.write_text(PROJECT_YAML, encoding="utf-8")
     for sub in ("captures", "build"):
         (directory / sub).mkdir(exist_ok=True)
     click.echo(f"created {directory}/")

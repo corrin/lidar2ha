@@ -20,18 +20,103 @@ cd ~/demo-house
 
 ---
 
-## Part 0 — Before you scan
+## Part 0 — Getting your scans out of Polycam
 
-The one section to read before you pick up the phone, because nothing downstream
-repairs a bad capture.
+### Two exports per capture, and only one right format for each
+
+You have the scans. Before anything else you have to get them off Polycam, and
+the export picker is where this pipeline is most often lost — because the wrong
+format produces files that import cleanly, look fine, and are missing something
+you will not notice for days.
+
+Per capture, **two** exports. The picker is single-select, so you do them one at
+a time:
+
+| Menu | Choose | You get | Why that one |
+|---|---|---|---|
+| Floor Plan | **Zip (all)** | `.dxf` + `.csv` (+ pdf, svg, png) | the DXF is the plan; **the CSV is the ceiling heights** |
+| Mesh | **OBJ** | `.obj` + `.mtl` + `textures/` | the atlas comes as real image files |
+
+Export settings: **Metric / Meters**, point density **High**, **Mesh up axis: Z**.
+
+Floor-plan export is a paid Polycam tier. There is no way around that: the DXF is
+the only thing that carries room polygons.
+
+### What the other formats cost you, measured
+
+Both wrong choices are easy to make, neither errors, and both were made on the
+house this was written from — three of its nineteen captures went out as
+`Floor Plan → DXF` and `Mesh → GLB` instead. Here is what that cost.
+
+**Floor Plan → DXF (without the CSV): every room gets a made-up ceiling.** The
+ceiling heights live in the CSV, not the DXF. With no CSV, `polycam` falls back to
+`--default-height`, which is 2.4 m. Those three captures against the rest:
+
+```
+ground_geometry_0823-1038   ceiling=520cm      <- Zip (all): real, varied heights
+mid_geometry_0823-1020      ceiling=470cm
+upstairs_geometry_0823-1058 ceiling=400cm
+
+ground_geometry_0823-2006   ceiling=240cm      <- DXF only: every room, every capture
+mid_geometry_0823-1810      ceiling=240cm
+upstairs_geometry_0823-1904 ceiling=240cm
+```
+
+Every room in all three is exactly 240 cm. A double-height stairwell and a laundry
+come out the same height, which is precisely the geometry that makes cross-floor
+light spill worth raytracing.
+
+`polycam` warns when it gets no heights, whether that is a `--csv` it could not
+parse or no `--csv` at all:
+
+```
+WARNING: no --csv given, and the DXF does not carry ceiling heights.
+         Falling back to 2.4 m for every room.
+```
+
+The warning scrolls past, though, and the model it writes is perfectly valid.
+The durable signal is the one above: uniform 240 cm across every room.
+
+**Mesh → GLB: no wall textures and no fitting detection.** A GLB is a valid mesh
+and registers fine, so it looks like a working capture. But trimesh gives glTF a
+`PBRMaterial`, whose atlas hangs off `.baseColorTexture` rather than `.image` —
+and `.image` is what `fixtures` and `textures_project` select geometry on:
+
+```
+OBJ capture: 2 geoms, material=SimpleMaterial, .image=set,  usable = 2/2
+GLB capture: 5 geoms, material=PBRMaterial,    .image=None, usable = 0/5
+```
+
+`textures_project` reports `coverage 0.0% -- skipped` for every wall and writes an
+empty manifest with exit status 0, which reads as *"this scan didn't see any
+walls"* when it means *"the loader could not find the atlas"*.
+
+So: **Zip (all)** and **OBJ**. If you have already exported the other way, you do
+not need to rescan — just re-export those captures from Polycam.
+
+### Downloads arrive named by date, not by capture
+
+Worth knowing before you click, because it decides how much sorting you do later:
+every download is named for the **capture date**, so a day's scanning gives you
+`23_08_2026.zip`, `23_08_2026 (1).zip`, `23_08_2026 (2).zip`, and the number is
+your browser's counter — the order you clicked, not which capture is which.
+
+The cheapest fix is free: **export one capture at a time and rename the two files
+the moment they land**, before you export the next. Part 3 is what you do if you
+did not.
+
+### Before you scan (or rescan)
+
+Nothing downstream repairs a bad capture, so if you are not finished — or the work
+list later tells you to go back:
 
 **Cover every mirror.** A scanner cannot tell a reflection from a room, so it
 builds a phantom copy of the space behind the wall. One 2.2 m room produced a
 5.55 m mesh in 882 disconnected pieces.
 
-**Polycam, LiDAR, Space mode — never Floorplan mode.** Floorplan mode produces no
-mesh, and without a mesh there is no registration, no ceiling heights, no fitting
-positions and no textures. You get a plan you cannot place.
+**LiDAR, Space mode — never Floorplan mode.** Floorplan mode produces no mesh, and
+without a mesh there is no registration, no ceiling heights, no fitting positions
+and no textures. You get a plan you cannot place.
 
 **One continuous capture per wall-bounded volume**, not per Home Assistant area.
 Open doors, turn lights on, and accept that glass is invisible to LiDAR — windows
@@ -48,21 +133,6 @@ every light switched on, phone aimed at each fitting in turn. Geometry quality i
 sacrificed on purpose. What you are recording is where the lights physically
 are — and, more importantly, *how high they hang*, which nothing else can tell you
 and which the raytracer needs.
-
-Two exports per capture, and the picker is single-select so you do them one at a
-time:
-
-| | |
-|---|---|
-| Floor Plan → **Zip (all)** | DXF + CSV |
-| Mesh → **OBJ** | the textured mesh |
-
-Settings: **Metric / Meters**, point density **High**, **Mesh up axis: Z**. The
-last one matters — several stages assume the mesh shares the plan's ground plane,
-and `mesh.py` refuses a mesh with no up-facing horizontal faces rather than
-silently building your house on its side.
-
-Floor-plan export is a paid Polycam tier.
 
 ---
 
@@ -107,7 +177,9 @@ uv run lidar2ha init ~/my-house
 cd ~/my-house
 ```
 
-That writes `project.yaml`, plus `captures/` and `build/`.
+That writes `project.yaml`, plus `captures/` and `build/`. Every section of the
+template is empty, and commented with what it declares and an example of the
+shape; the parts below fill them in in order.
 
 **Now fetch your Home Assistant registry, before anything else.** This is out of
 order compared to how the stages are numbered, and it has to be: Part 4 asks you
@@ -121,7 +193,9 @@ uv run python -m lidar2ha.ha --refresh -o registry.json
 ```
 
 Put those two in a `.env` beside `project.yaml` instead if you prefer; it is
-already gitignored. After this one fetch everything works from the cached
+already gitignored, which `project.yaml` is not — `ha_url` and `ha_token` are
+read from there too, but a long-lived access token is a house key. After this
+one fetch everything works from the cached
 `registry.json`, so the rest of the loop runs offline.
 
 **What you should see:** a count of areas, floors, devices and light entities, and
@@ -264,6 +338,22 @@ WARNING: Floor 1 holds 7 room(s) across 3 ceiling bands: 210cm x3, 480cm x1, 710
 
 That warning is not a problem — it is the whole-house walk being taken apart into
 storeys, and Part 5 is where you say which storey belongs to which level.
+
+**What it looks like when it's wrong:** every room reporting the same ceiling,
+and that ceiling being 240 cm.
+
+```
+  Floor 1    walls= 22 rooms=3 doors=3 ceiling=240cm
+      Bedroom         7 pts   ceiling 240cm
+      Hallway        13 pts   ceiling 240cm
+      Living Room    18 pts   ceiling 240cm
+```
+
+That is `--default-height`, and it means no CSV reached this command — either you
+did not pass `--csv`, or the capture was exported as a bare DXF (Part 0). A
+`WARNING` line above says so, but this is what it looks like once the warning has
+scrolled away. Compare against a capture that has a CSV: real heights vary room to
+room and run well past 240.
 
 ### `registration` — the plan and the mesh into one frame
 
