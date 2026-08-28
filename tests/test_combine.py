@@ -29,6 +29,7 @@ from the model with nothing saying so.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -1119,6 +1120,60 @@ def test_the_poor_capture_is_named_as_the_outlier(trio):
     result = combining.combine(trio)
     best = min(result.agreement.values())
     assert result.agreement["drifted"] / best > combining.OUTLIER_RATIO
+    assert combining.outlier_check(result.agreement).names == ("drifted",)
+
+
+def test_captures_that_all_agree_have_no_odd_one_out():
+    """Observed on a level whose captures agreed almost exactly. Every one of
+    them was marked the odd one out, including two reading 0.0 cm:
+
+        ground_geometry_0412-0900    0.0 cm    3.9x best   <- the odd one out
+        ground_fixtures_0412-1300    0.0 cm    4.0x best   <- the odd one out
+        ground_geometry_0412-1145    0.2 cm   1968915389492.1x best
+
+    The ratio divides by the best, so a best that is arithmetic noise makes
+    every capture several times worse than it. A table whose job is to name one
+    capture must not name them all.
+    """
+    check = combining.outlier_check(
+        {"a": 1.0665e-15, "b": 4.16e-15, "c": 0.0021})
+
+    assert check.names == ()
+    assert check.verdict == "agree"
+
+
+def test_an_outlier_a_couple_of_centimetres_out_is_still_named():
+    """The guard against the noise case must not swallow a real disagreement.
+    The demo level reads 1.6, 1.9 and 3.5 cm and the 3.5 is the capture holding
+    a room 70 cm out of place -- the smallest real outlier there is anywhere to
+    measure, and docs/TUTORIAL.md prints that row."""
+    check = combining.outlier_check({"a": 0.016, "b": 0.019, "c": 0.035})
+
+    assert check.names == ("c",)
+    assert check.verdict == "odd_one_out"
+
+
+def test_captures_that_differ_without_an_outlier_are_not_called_agreed():
+    """The third answer. This house's good captures spread 2.5 to 4.3 cm, which
+    is neither one capture standing out nor a level where the figures cannot be
+    told apart -- and reporting it as agreement would put a promise on numbers
+    that never made one."""
+    check = combining.outlier_check({"a": 0.025, "b": 0.030, "c": 0.043})
+
+    assert check.names == ()
+    assert check.verdict == "no_outlier"
+
+
+def test_the_report_does_not_call_every_capture_the_odd_one_out(combined, capsys):
+    """The symptom as a reader met it: three captures, three flags, and nothing
+    left that identifies anything."""
+    noise = dict(zip(combined.agreement, (1.0665e-15, 4.16e-15, 0.0021),
+                     strict=True))
+    combining.report(replace(combined, agreement=noise))
+
+    out = capsys.readouterr().out
+    assert "<- the odd one out" not in out
+    assert "1968915389492" not in out
 
 
 # --------------------------------------------------------------------------- #

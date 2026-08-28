@@ -257,6 +257,13 @@ REFERENCE_TOLERANCE = 2.0
 # gap rather than near an edge. The tightest case was `boy_bedroom`, which
 # cleared the old figure by a hair at 2.26x and clears this one at 4.3x.
 OUTLIER_RATIO = 2.0
+# ...and how far out it has to be in absolute terms before that multiple means
+# anything. A fifth of the step the walls are sampled at: below that, two
+# captures are on the same walls and what separates them is rounding. The
+# smallest outlier there is anywhere to measure is 3.5 cm against a best of
+# 1.6, on the demo level, so this sits well under what it must not swallow --
+# and would only move for a capture shown to be out at under a centimetre.
+OUTLIER_FLOOR_CM = 1.0
 
 # What a fixture pass costs a room WHEN NOTHING CAN BE MEASURED INSTEAD.
 #
@@ -2361,6 +2368,37 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
 # --------------------------------------------------------------------------- #
 
 
+class OutlierCheck(NamedTuple):
+    """Which captures the averaged walls single out. Three answers."""
+
+    verdict: Literal["odd_one_out", "agree", "no_outlier"]
+    names: tuple[str, ...]
+
+
+def outlier_check(agreement: Mapping[str, float], *,
+                  ratio: float = OUTLIER_RATIO,
+                  floor_cm: float = OUTLIER_FLOOR_CM) -> OutlierCheck:
+    """The captures several times worse than the best at landing on the others.
+
+    A MULTIPLE OF THE BEST IS NOT ENOUGH ON ITS OWN. Where every capture agrees
+    the best is nearly zero, and dividing by it made all three of one level's
+    captures several times worse than it -- two of them reading 0.0 cm and one
+    1968915389492.1x the best. A table whose whole job is to name one capture
+    named them all, and that is a table saying nothing.
+
+    So `agree` is a verdict and not a gap in the reporting: captures that land
+    within `floor_cm` of walls they did not vote on cannot be told apart, and
+    there is no odd one out to name.
+    """
+    floor_m = floor_cm * CM_TO_M
+    if max(agreement.values()) < floor_m:
+        return OutlierCheck("agree", ())
+    best = min(agreement.values())
+    named = tuple(n for n, e in sorted(agreement.items(), key=lambda kv: kv[1])
+                  if e >= floor_m and e > best * ratio)
+    return OutlierCheck("odd_one_out" if named else "no_outlier", named)
+
+
 def report(result: Combined) -> None:
     """Print everything that was decided and everything that was refused."""
     cands, scores = result.candidates, result.scores
@@ -2408,22 +2446,33 @@ def report(result: Combined) -> None:
         # vote on, so a capture cannot flatter itself in it.
         print("\n  distance from the AVERAGED walls of the other captures (not from")
         print("  the reference, so a bad reference cannot charge its error to all):")
+        check = outlier_check(result.agreement)
         best = min(result.agreement.values())
+        ratios = best >= OUTLIER_FLOOR_CM * CM_TO_M
         for name, err in sorted(result.agreement.items(), key=lambda kv: kv[1]):
-            ratio = err / best if best > 0 else 1.0
-            mark = "   <- the odd one out" if ratio > OUTLIER_RATIO else ""
+            against = f"{err / best:4.1f}x best" if ratios else f"{'--':>10s}"
+            mark = "   <- the odd one out" if name in check.names else ""
             gone = "" if result.aligned[name].usable else "  (discarded above)"
-            print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {ratio:4.1f}x best"
-                  f"{mark}{gone}")
+            print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {against}{mark}{gone}")
             # Never just the number. Two captures that agree cannot average
             # anything once one of them is the capture being judged, and a
             # figure measured against one other capture is a second opinion.
             print(f"    {'':22s} against {result.agreement_basis[name]}")
-        worst = max(result.agreement.values())
-        if best > 0 and worst / best > OUTLIER_RATIO:
+        if not ratios:
+            print(f"  No ratios: the best figure here is under "
+                  f"{OUTLIER_FLOOR_CM:.0f} cm, and a multiple of a")
+            print("  distance that small describes rounding, not disagreement.")
+        if check.verdict == "odd_one_out":
             print("  This is what identifies the odd one out, and it is the reason to")
             print("  scan a level more than twice: two captures that disagree cannot")
             print("  say which of them is wrong, and a third says it immediately.")
+        elif check.verdict == "agree":
+            print(f"  Nothing to single out: every capture lands within "
+                  f"{OUTLIER_FLOOR_CM:.0f} cm of walls it did")
+            print("  not vote on, which is closer than they can be told apart.")
+        else:
+            print("  Nothing to single out: no capture is several times worse than the")
+            print("  best. That they differ is above; which of them is right is not.")
 
     if result.malformed:
         print("\nMALFORMED ROOMS")

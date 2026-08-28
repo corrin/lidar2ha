@@ -12,7 +12,14 @@ import numpy as np
 import pytest
 from scipy.spatial import cKDTree
 
-from lidar2ha.registration import register, score, transform
+from lidar2ha.registration import (
+    coverage_notes,
+    mesh_height,
+    register,
+    score,
+    transform,
+)
+from lidar2ha.schema import Registration
 
 
 def plan_points(step: float = 0.05) -> np.ndarray:
@@ -129,3 +136,64 @@ def test_coverage_is_reported_alongside_the_error():
 
     assert set(fit) >= {"median_error_m", "coverage", "fit_cost_m", "mirror"}
     assert 0.0 <= fit["coverage"] <= 1.0
+
+
+# --------------------------------------------------------------------------- #
+# what the LOW COVERAGE banner blames
+# --------------------------------------------------------------------------- #
+
+
+def nothing_fitted() -> Registration:
+    """The registration the wrong .obj produced: 0% coverage, infinite error."""
+    return Registration(theta_deg=0.0, tx_m=0.0, ty_m=0.0, mirror=False,
+                        median_error_m=float("inf"), coverage=0.0)
+
+
+def test_a_mesh_that_is_not_a_building_is_named_as_the_cause():
+    """A plan was registered against lidar2ha's own export-glb output, which
+    sits in `gltf/` inside a capture directory and is in another unit. Its wall
+    points spanned -3.33 to 1353.87 m and the fit read inf cm at 0% coverage --
+    and the banner sent the reader to tune --vertical-tol, which cannot reach a
+    mesh that is not the building.
+    """
+    notes = "\n".join(coverage_notes(
+        nothing_fitted(), mesh_height(np.array([-3.33, 1353.87]))))
+
+    assert "1357" in notes, f"the span nobody could miss is not in:\n{notes}"
+    assert "--vertical-tol" not in notes
+
+
+def test_a_mesh_that_is_a_building_still_gets_the_vertical_tol_theory():
+    """The double-height theory is the right one when the mesh IS a building.
+    Deleting it along with the wrong-file case would leave the banner with no
+    advice at all -- the same capture read -3.06 to 2.32 m against the correct
+    mesh."""
+    notes = "\n".join(coverage_notes(
+        nothing_fitted(), mesh_height(np.array([-3.06, 2.32]))))
+
+    assert "--vertical-tol" in notes
+
+
+def test_the_banner_still_refuses_to_trust_the_error():
+    """The one thing the old banner got right. The error is a median over
+    matched points only, so a fit that abandoned the plan reports the median of
+    what it kept, whatever is wrong with the mesh."""
+    for z in (np.array([-3.33, 1353.87]), np.array([-3.06, 2.32])):
+        assert "unreliable" in "\n".join(
+            coverage_notes(nothing_fitted(), mesh_height(z)))
+
+
+def test_a_fit_that_covered_the_plan_says_nothing():
+    """A warning that fires on a good fit is a warning nobody reads. The mesh
+    being odd is not by itself a reason to distrust a fit that landed."""
+    good = Registration(theta_deg=0.0, tx_m=0.0, ty_m=0.0, mirror=False,
+                        median_error_m=0.01, coverage=1.0)
+    assert coverage_notes(good, mesh_height(np.array([-3.06, 2.32]))) == []
+
+
+def test_a_tall_building_is_not_called_implausible():
+    """This must not become a new way to lose a capture. A scan of a genuine
+    high-rise spans tens of metres and is a real thing; the wrong-file case was
+    three orders of magnitude out."""
+    assert mesh_height(np.array([0.0, 36.0])).verdict == "building"
+    assert mesh_height(np.array([-3.33, 1353.87])).verdict == "too_tall"
