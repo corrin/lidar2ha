@@ -260,6 +260,31 @@ def init(directory: Path) -> None:
     click.echo("  build/      generated files land here")
 
 
+@cli.command()
+@click.argument("directory", type=click.Path(path_type=Path))
+def demo(directory: Path) -> None:
+    """Write a demo project: eight captures of a house that is nobody's.
+
+    The archives land in `downloads/` named exactly as Polycam names them --
+    by capture date, so every inner file collides -- because staging them is
+    the first thing the tutorial asks you to do and the first thing that can
+    quietly destroy a capture.
+    """
+    from .demo import build_demo
+
+    if directory.exists() and any(directory.iterdir()):
+        raise SystemExit(f"{directory} is not empty; pick a new directory")
+    result = build_demo(directory)
+    click.echo(f"created {result['directory']}/")
+    click.echo(f"  downloads/     {result['archives']} archives, "
+               f"{result['captures']} captures, all named alike")
+    click.echo("  project.yaml   already filled in")
+    click.echo("  registry.json  a cached Home Assistant registry, so "
+               "`lights` needs no Home Assistant")
+    click.echo("  exports/       stage the captures here")
+    click.echo("  ANSWER_KEY.json  which archive is which -- try without it first")
+
+
 # --------------------------------------------------------------------------- #
 # whichlevel
 # --------------------------------------------------------------------------- #
