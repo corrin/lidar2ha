@@ -24,6 +24,7 @@ from lidar2ha.lights import (
     pole_of,
     print_report,
     room_index,
+    rooms_sharing_an_area,
     valid_entity_id,
 )
 from lidar2ha.schema import Level, Model, Room
@@ -519,3 +520,35 @@ def test_an_unjudged_fitting_is_still_placed():
 
     assert [(lt.x, lt.y) for lt in lights] == [(50.0, 50.0)]
     assert report.daylight == []
+
+
+def test_two_rooms_sharing_one_area_are_reported_rather_than_dropped():
+    """The collapse `Report` was built to make impossible, and missed.
+
+    `room_index` is keyed by `ha_area`, so where several rooms carry one area
+    the last walked wins and the rest leave the index. They are then invisible
+    to every diagnostic: `rooms_without_areas` lists rooms with NO area and
+    these have one, `rooms_without_lights` walks the index they are no longer
+    in, and `areas_without_rooms` fires only when an area has none at all. The
+    room renders and can never be lit, with no thread to pull.
+
+    Not hypothetical: `ceilings.measure`'s docstring records one real level
+    carrying three rooms called `hallway` and two called `stairwell`, and a
+    stairwell cut from two different parents does the same. A split model names
+    a piece for its area, and several pieces can share one.
+    """
+    model = Model(source="t.dxf", units="cm", levels=[Level(
+        name="Floor 1", elevation_cm=0, ceiling_height_cm=240, walls=[],
+        rooms=[
+            Room(name="hallway", ha_area="hallway",
+                 points=[(0, 0), (300, 0), (300, 200), (0, 200)]),
+            Room(name="hallway", ha_area="hallway",
+                 points=[(400, 0), (600, 0), (600, 200), (400, 200)]),
+            Room(name="den", ha_area="den",
+                 points=[(0, 400), (300, 400), (300, 600), (0, 600)]),
+        ])])
+
+    shared = rooms_sharing_an_area(model)
+    assert shared == {"hallway": 2}, (
+        "a level with two rooms in one area reported none: " + repr(shared))
+    assert "den" not in shared, "an area with one room is not a collision"

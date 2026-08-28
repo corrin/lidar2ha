@@ -114,3 +114,41 @@ def test_a_floor_no_level_covers_is_reported_separately():
                             {"Ground": model(("den", 12.0))})
     assert coverage.uncovered_floors({"levels": {"Ground": []}}, REG) == ("Upstairs",)
     assert all(r.level != "Upstairs" for r in rows)
+
+
+def test_an_area_on_several_levels_including_its_own_floor_spans():
+    """A stairwell is one area and three storeys, and that is not a mistake.
+
+    Home Assistant's area belongs to exactly one floor; a stairwell consumes
+    space on every storey it passes through. The community's answer is "the
+    floor it consumes", and `polycam` already files a shaft on the lowest band
+    it spans. So the geometry legitimately puts one area on several levels, and
+    flagging it per level fires forever on correct data -- which is how a report
+    teaches people to skip it.
+    """
+    rows = coverage.measure({"levels": {"Ground": [], "Upstairs": []}}, REG,
+                            {"Ground": model(("den", 12.0), ("garage", 20.0)),
+                             "Upstairs": model(("office", 9.0), ("den", 4.0))})
+    ground = next(r for r in rows if r.level == "Ground")
+    upstairs = next(r for r in rows if r.level == "Upstairs")
+
+    assert "den" not in upstairs.foreign, (
+        "an area spanning levels was reported as misfiled")
+    assert "den" in ground.covered, "it is still covered on its own floor"
+    assert "den" in upstairs.spans
+    # Counted once, or the denominator stops meaning anything.
+    assert "den" not in upstairs.covered
+
+
+def test_an_area_only_ever_off_its_own_floor_is_still_an_error():
+    """The case the `foreign` verdict was actually for.
+
+    An area that appears on no level but its HA floor is a real mis-mapping --
+    a room named for another storey, or a floor assignment that is wrong. Losing
+    that check while making room for the stairwell would trade a false positive
+    for a false negative.
+    """
+    rows = coverage.measure({"levels": {"Ground": []}}, REG,
+                            {"Ground": model(("den", 12.0), ("office", 9.0))})
+    assert "office" in rows[0].foreign
+    assert "office" not in rows[0].spans

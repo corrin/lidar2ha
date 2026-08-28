@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .lights import rooms_sharing_an_area
 from .rooms import polygon_of
 from .schema import Model
 
@@ -45,14 +46,25 @@ class LevelCoverage:
     floor_areas: tuple[str, ...]
     covered: tuple[str, ...]
     missing: tuple[str, ...]
-    # Rooms carrying an `ha_area` that is not an area of this floor. Counting
-    # these as covering the level is how a level reports more areas covered than
-    # it has; the mismatch is a finding in itself, since either the area is on
-    # the wrong floor in Home Assistant or the room is.
+    # Rooms carrying an `ha_area` that is not an area of this floor AND is not
+    # on any level's floor either. Counting these as covering the level is how a
+    # level reports more areas covered than it has; the mismatch is a finding in
+    # itself, since either the area is on the wrong floor in Home Assistant or
+    # the room is.
     foreign: tuple[str, ...]
+    # Areas whose rooms are here and whose HA floor is some other level's. A
+    # stairwell is one area and three storeys, and that is not a mistake: Home
+    # Assistant's area belongs to exactly one floor while the volume consumes
+    # space on every storey it passes through, which is why `polycam` files a
+    # shaft on the lowest band it spans. Counted as covered on its own floor and
+    # only there, so the denominator still means something.
+    spans: tuple[str, ...]
     # (label, m2), largest first. Each needs a name, a `split:`, or to be
     # recorded as not-an-area.
     unnamed: tuple[tuple[str, float], ...]
+    # area -> how many rooms carry it here, where that is more than one. Only
+    # one of them can ever take a light: `lights.room_index` is keyed by area.
+    shared: dict[str, int]
 
 
 def _floors_by_name(registry: dict) -> dict[str, str]:
@@ -83,15 +95,25 @@ def measure(settings: dict, registry: dict,
             sources: dict[str, str] | None = None) -> list[LevelCoverage]:
     """Coverage per declared level. `models` is keyed by the `levels:` key."""
     floors = _floors_by_name(registry)
-    rows: list[LevelCoverage] = []
+    declared = list(settings.get("levels") or {})
 
-    for level in settings.get("levels") or {}:
+    # Every area any declared level's own floor owns. An area found on a level
+    # that is not its floor is only a mistake if NO declared level owns it --
+    # otherwise it is a volume spanning storeys, and saying so per level would
+    # fire forever on correct data.
+    ours: set[str] = set()
+    for level in declared:
+        if floors.get(level):
+            ours.update(_areas_of(registry, floors[level]))
+
+    rows: list[LevelCoverage] = []
+    for level in declared:
         floor_id = floors.get(level)
         floor_areas = _areas_of(registry, floor_id) if floor_id else ()
         model = models.get(level)
         if model is None:
             rows.append(LevelCoverage(level, floor_id, None, floor_areas,
-                                      (), (), (), ()))
+                                      (), (), (), (), (), {}))
             continue
 
         held: set[str] = set()
@@ -105,6 +127,7 @@ def measure(settings: dict, registry: dict,
                 unnamed.append((label, polygon_of(room).area / CM2_PER_M2))
 
         known = set(floor_areas)
+        elsewhere = held - known
         rows.append(LevelCoverage(
             level=level,
             floor_id=floor_id,
@@ -112,8 +135,10 @@ def measure(settings: dict, registry: dict,
             floor_areas=floor_areas,
             covered=tuple(sorted(held & known)),
             missing=tuple(sorted(known - held)),
-            foreign=tuple(sorted(held - known)),
+            foreign=tuple(sorted(elsewhere - ours)),
+            spans=tuple(sorted(elsewhere & ours)),
             unnamed=tuple(sorted(unnamed, key=lambda t: -t[1])),
+            shared=rooms_sharing_an_area(model),
         ))
     return rows
 
@@ -143,11 +168,22 @@ def report(rows: list[LevelCoverage], uncovered: tuple[str, ...] = ()) -> None:
                   "id under `rooms.<capture>`:")
             for area in row.missing:
                 print(f"    {area}")
+        if row.spans:
+            print("  SPANS STOREYS -- this area's floor is another level's, and "
+                  "that is not a\n  mistake. Counted there, not here:")
+            for area in row.spans:
+                print(f"    {area}")
         if row.foreign:
-            print("  CARRIED, BUT NOT AN AREA OF THIS FLOOR -- either the area "
-                  "is on the wrong floor in\n  Home Assistant, or the room is:")
+            print("  CARRIED, BUT NOT AN AREA OF ANY LEVEL'S FLOOR -- either "
+                  "the area is on the wrong\n  floor in Home Assistant, or the "
+                  "room is:")
             for area in row.foreign:
                 print(f"    {area}")
+        if row.shared:
+            print("  ONE AREA, SEVERAL ROOMS -- only one of each can take a "
+                  "light, because\n  lights bind by area:")
+            for area, n in row.shared.items():
+                print(f"    {area:<24} {n} rooms")
         if row.unnamed:
             print("  NO AREA -- each needs a name in `rooms:`, a `split:`, or "
                   "to be left as not-an-area:")
