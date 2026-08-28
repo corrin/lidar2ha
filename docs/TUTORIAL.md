@@ -51,7 +51,7 @@ matches what you saw.
 | *"The lights are in the wrong place"* | `fixtures`, pairing |
 | *"A room is too bright, or never lights"* | `lights`, groups, exclusions |
 | [The last lap](#the-last-lap) | full render, `--subdir`, the card |
-| [Appendix](#appendix---every-stage) | every stage, and what `project.yaml` won't tell you |
+| [Appendix](#appendix---every-stage) | every stage, and how `project.yaml` gets checked |
 
 ---
 
@@ -1052,16 +1052,24 @@ Differences worth knowing:
    `_alignment.json`. The CLI takes a level name, resolves paths from
    `project.yaml`, and doesn't.
 
-## One thing `project.yaml` won't tell you
+## `project.yaml` gets checked when it loads
 
-Apart from `levels:`, the project file is read leniently. Every section gets looked
-up with a plain `.get`, so a misspelled or unrecognised key does nothing and says
-nothing. There's no schema and no warning.
+Every stage validates the whole file before it does anything, and refuses a key
+it doesn't read:
 
-I had ten areas of light pairings sitting under a top-level `light_pairing:` while
-the tool reads `lights.pairing:`. They'd never once been applied.
+```
+project.yaml:
+  unknown key `pairings` under `lights`, did you mean `pairing`?
 
-So if a section seems to have no effect, check the spelling and the nesting before
-you check anything else.
+A key nothing reads does nothing and says nothing, which is why this is an error.
+```
+
+It didn't always do that, which is why it does now. I had ten areas of light
+pairings sitting under a top-level `light_pairing:` while the tool reads
+`lights.pairing:`. Nothing crashed and nothing warned, the models just came out
+without them, and I didn't find out for months.
+
+`levels:` and `split:` have their own parsers on top of this, which check the
+contents rather than only the key names.
 
 [plugin]: https://github.com/shmuelzon/home-assistant-floor-plan

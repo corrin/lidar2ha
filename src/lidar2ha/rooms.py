@@ -30,13 +30,12 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, NamedTuple
 
-import yaml
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
+from . import projectschema
 from .schema import Level, Model, Room, load_model, save_model
 
 CM2_TO_M2 = 1e-4
@@ -560,7 +559,7 @@ def main():
     args = ap.parse_args()
 
     model = load_model(args.model)
-    project = yaml.safe_load(Path(args.project).read_text(encoding="utf-8")) or {}
+    project = projectschema.settings(args.project)
 
     mapping = (project.get("rooms") or {}).get(args.capture) or {}
     merges = (project.get("merge") or {}).get(args.capture) or []

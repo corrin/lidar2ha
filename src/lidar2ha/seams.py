@@ -37,14 +37,13 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
-import yaml
 from shapely.geometry import LineString, Polygon
 from shapely.ops import split as shapely_split
 from shapely.ops import unary_union
 
+from . import projectschema
 from .placefixtures import plan_cm_to_mesh_m
 from .projectlevels import origin_of
 from .rooms import Placed, covered_rooms, polygon_of
@@ -783,8 +782,7 @@ def main():
     if args.project:
         if not args.level:
             raise SystemExit("--project needs --level to say which entry to apply")
-        project = yaml.safe_load(
-            Path(args.project).read_text(encoding="utf-8")) or {}
+        project = projectschema.settings(args.project)
         declarations = (project.get("split") or {}).get(args.level) or []
         if not declarations:
             raise SystemExit(

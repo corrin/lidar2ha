@@ -48,6 +48,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from . import projectschema
+
 # Fixed by the plugin: it writes /local/floorplan/... into the card, and /local/
 # is Home Assistant's alias for /config/www/.
 REMOTE_ROOT = PurePosixPath("/config/www/floorplan")
@@ -323,10 +325,7 @@ def main():
             f"The card refers to images that are not in {local}: {missing}\n"
             f"They come from one render and must ship together; re-run `lidar2ha render`.")
 
-    project = {}
-    if args.project:
-        import yaml
-        project = yaml.safe_load(Path(args.project).read_text(encoding="utf-8")) or {}
+    project = projectschema.settings(args.project)
 
     card = card_for_subdir(as_written, args.subdir)
     settings = credentials(project)

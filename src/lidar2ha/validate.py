@@ -1,11 +1,13 @@
 """Check `project.yaml` before a stage acts on it.
 
 `project.yaml` is the whole of what a person contributes; every other stage is
-mechanical. It is also read leniently -- `levels:` is the only section with a
-strict parser, and everything else is looked up with `.get`, so a misspelled
-key does nothing and says nothing. Measured on the house this was built for, six
-top-level keys were consumed by nothing at all, one of them holding ten areas of
-light pairings that had never once been applied.
+mechanical.
+
+Spelling is not checked here. `projectschema` refuses an unknown key when the
+file is loaded, before any stage acts on it, which is earlier than this command
+and does not need anybody to remember to run it. What is left here is everything
+a schema cannot see: a key can be spelt correctly, typed correctly, and still
+name a capture that no level uses.
 
 Every check here is a failure that actually happened, and every one of them
 produced a plausible model rather than an error. The expensive one is the first:
@@ -22,18 +24,6 @@ have.
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-# Every top-level key some part of the package reads. `name` is here because
-# `init` writes it and a reader would rightly be confused to be told the file it
-# was handed is wrong; it is inert, and the template says so.
-KNOWN_KEYS = frozenset({
-    "name", "captures", "levels", "rooms", "merge", "split",
-    "lights", "camera", "render", "deploy", "ha_url", "ha_token",
-    # Written by `init` and read by nothing -- kept out of the report because
-    # telling somebody their generated file is wrong helps nobody. The template
-    # now names where each setting really lives.
-    "elevations", "tile_cm", "sweethome3d_jar",
-})
 
 
 @dataclass(frozen=True)
@@ -133,18 +123,6 @@ def check(settings: dict, registry: dict | None = None) -> list[Finding]:
             f"{capture_id} is in `captures:` and in no `levels:` entry",
             "`combine` never sees it, so whatever it holds is not in any "
             "model. Add it to a level, or accept that it is only a record."))
-
-    # 5. A key nothing reads. The pattern is `projectlevels.parse_entries`'s,
-    #    which refuses an unknown key inside a `levels:` entry for the same
-    #    reason: the failure of a declaration nobody reads is that it does
-    #    nothing and says nothing.
-    for key in sorted(set(settings) - KNOWN_KEYS):
-        found.append(Finding(
-            "unknown_key",
-            f"{key}:",
-            "Nothing in lidar2ha reads this. If it is a note to yourself, "
-            "fine; if you expected it to do something, check the spelling and "
-            "the nesting."))
 
     return found
 

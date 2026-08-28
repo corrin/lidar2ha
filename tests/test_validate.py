@@ -108,19 +108,6 @@ def test_a_capture_declared_and_used_in_no_level_is_reported():
     assert any("orphan" in f.detail for f in found if f.kind == "capture_unused")
 
 
-def test_a_top_level_key_nothing_reads_is_reported():
-    """The file is read with `.get` throughout, so a misspelled section is
-    silent. Ten areas of `light_pairing:` sat beside the `lights.pairing:` the
-    code reads, and had never once been applied."""
-    found = validate.check(
-        {"levels": {"G": ["a", "b"]},
-         "rooms": {"a": {"R": "den"}, "b": {"R": "den"}},
-         "light_pairing": {"den": {}}},
-        registry("den"))
-    unknown = [f for f in found if f.kind == "unknown_key"]
-    assert unknown and "light_pairing" in unknown[0].detail
-
-
 def test_a_clean_project_reports_nothing():
     """If this fails the checks are firing on correct input, and a gate that
     cries wolf is worse than no gate."""

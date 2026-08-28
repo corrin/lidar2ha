@@ -17,7 +17,7 @@ from pathlib import Path
 
 import click
 
-from . import __version__, javabridge, projectlevels, render
+from . import __version__, javabridge, projectlevels, projectschema, render
 from .javabridge import ToolchainError
 
 OK = "ok"
@@ -362,9 +362,7 @@ def validate_cmd(project: Path, registry: Path) -> None:
 
     found = check(settings, cached)
     report(found)
-    # `unknown_key` is advisory: a note to yourself in the project file is a
-    # reasonable thing to keep, and failing on it would make the gate useless.
-    if any(f.kind != "unknown_key" for f in found):
+    if found:
         raise SystemExit(1)
 
 
@@ -911,10 +909,7 @@ def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None
 
 
 def _project_settings(project: Path | None) -> dict:
-    if not project:
-        return {}
-    import yaml
-    return yaml.safe_load(project.read_text(encoding="utf-8")) or {}
+    return projectschema.settings(project)
 
 
 @cli.command()

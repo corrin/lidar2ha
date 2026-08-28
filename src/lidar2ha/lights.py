@@ -60,6 +60,7 @@ from pathlib import Path
 from shapely.geometry import Point, Polygon
 from shapely.ops import polylabel
 
+from . import projectschema
 from .ha import (
     LightEntity,
     classify,
@@ -696,9 +697,7 @@ def main():
 
     config = LightsConfig()
     if args.project:
-        import yaml
-        config = LightsConfig.from_project(
-            yaml.safe_load(Path(args.project).read_text(encoding="utf-8")) or {})
+        config = LightsConfig.from_project(projectschema.settings(args.project))
 
     rooms = room_index(model)
     if not rooms:
