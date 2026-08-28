@@ -1,8 +1,7 @@
 # Writing .sh3d files
 
 Notes from building a generator for Sweet Home 3D's file format, and for the
-[home-assistant-floor-plan plugin][plugin] that renders from it. Each entry cost
-at least a day to find.
+[home-assistant-floor-plan plugin][plugin] that renders from it.
 
 You do not need the rest of this repo to use these.
 
@@ -41,7 +40,7 @@ this repo, and why it compiles against your own installation.
 
 [dtd]: http://www.sweethome3d.com/SweetHome3D.dtd
 
-### Other things that cost a day each
+## Things that cost a day each
 
 - **`addWall()` / `addRoom()` / `addPieceOfFurniture()` overwrite the object's level** with
   the home's *selected* level. Call `setLevel()` **after** adding, or everything silently
