@@ -1,18 +1,26 @@
-# Writing .sh3d files
+# Sweet Home 3D traps
 
-Notes from building a generator for Sweet Home 3D's file format, and for the
-[home-assistant-floor-plan plugin][plugin] that renders from it.
+Most people arrive here holding an error. Sweet Home 3D, Java3D and the
+[floor-plan plugin][plugin] fail in ways that name a DLL, or a class version, or
+nothing at all, and none of the messages say what is actually wrong.
 
-You do not need the rest of this repo to use these.
+| What you saw | Below |
+|---|---|
+| *"can't open home"* on a file you generated | [The format itself](#the-format-itself) |
+| Your plan opens empty, everything on `level=null` | `addWall()` overwrites the level |
+| `UnsupportedClassVersionError` | `javac` and `java` from different JDKs |
+| `Can't load IA 32-bit .dll on a AMD 64-bit platform` | geometry export needs the 32-bit JVM |
+| `HeadlessException` before `main()` runs | `-Djava.awt.headless=true` |
+| `illegal character` in a `.java`, or "unknown record type" | a UTF-8 BOM |
+| A uniform white frame, at full render cost | camera yaw |
+| A blank frame, produced in about a second | `Quality.LOW` does not raytrace |
+| A valid `.glb` that binds no entities | trimesh discards object names |
+| Nine days of rendering queued | the light mixing mode |
 
-Prior art, all of it read-side: [sh3d.py][sh3dpy], FreeCAD's importer and
-[sh3dtoblender][blender] parse `.sh3d`; [SH3D-ConsolePhotoGenerator][console]
-renders one headlessly. I know of nothing else that writes one.
+The second reader here is someone writing their own `.sh3d` generator. You do
+not need the rest of this repo for that; start at the format.
 
 [plugin]: https://github.com/shmuelzon/home-assistant-floor-plan
-[sh3dpy]: https://pypi.org/project/sh3d.py/
-[blender]: https://github.com/lcgamboa/sh3dtoblender
-[console]: https://github.com/AnimMouse/SH3D-ConsolePhotoGenerator
 
 ---
 
@@ -128,3 +136,13 @@ this repo, and why it compiles against your own installation.
   Home 3D's bundled 32-bit Java 8 runtime, because Java3D and YafaRay are 32-bit natives.
   Measured: 179.7 s for 7 frames at 800x600 on a real model, about 26 s a frame. Scene
   complexity counts as much as pixels -- a near-empty test scene managed 6.5 s a frame.
+
+## Prior art
+
+Every tool I know of reads `.sh3d` and none of them write one: [sh3d.py][sh3dpy],
+FreeCAD's importer and [sh3dtoblender][blender] parse the format;
+[SH3D-ConsolePhotoGenerator][console] renders one headlessly.
+
+[sh3dpy]: https://pypi.org/project/sh3d.py/
+[blender]: https://github.com/lcgamboa/sh3dtoblender
+[console]: https://github.com/AnimMouse/SH3D-ConsolePhotoGenerator

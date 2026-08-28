@@ -128,13 +128,12 @@ when it is wrong.
   would fix it and does not exist.
 - **Every constant here is a guess** that worked once, on one house, in one app.
 
-## Writing `.sh3d` files yourself
+## When the toolchain bites
 
-A `.sh3d` holds Java-serialised Sweet Home 3D objects, not the documented
-`Home.xml`, so a generator has to go through Sweet Home 3D rather than around it.
-That and the dozen smaller traps behind it are in
-**[docs/SH3D-NOTES.md](docs/SH3D-NOTES.md)**. You do not need the rest of this
-repo to use them.
+Sweet Home 3D, Java3D and the plugin fail with messages that name a DLL, a class
+version, or nothing at all. **[docs/SH3D-NOTES.md](docs/SH3D-NOTES.md)** indexes
+those errors, and explains why a `.sh3d` holds Java-serialised objects rather
+than the documented `Home.xml` — which is why there is Java in this repo.
 
 ## Contributing
 
