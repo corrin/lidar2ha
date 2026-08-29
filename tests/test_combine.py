@@ -1469,6 +1469,28 @@ def test_a_partial_area_is_context_and_cannot_win():
     assert answer.winner != 2
 
 
+def test_two_source_area_ambiguity_keeps_provisional_geometry():
+    """Uncertainty must be visible without punching a room out of the model."""
+    rooms = [
+        Room(name="bedroom", ha_area="bedroom",
+             points=[(shift, 0), (400 + shift, 0),
+                     (400 + shift, 300), (shift, 300)])
+        for shift in (0, 50)
+    ]
+    cands = [
+        Candidate(i, capture, "geometry", room, Polygon(room.points), 12.0)
+        for i, (capture, room) in enumerate(zip(("a", "b"), rooms, strict=True))
+    ]
+
+    answer = combining.select_area(
+        "bedroom", cands,
+        {0: Score(0.8, {}, []), 1: Score(0.6, {}, [])},
+        two_source_agree_cm=5)
+
+    assert answer.verdict == "ambiguous"
+    assert answer.winner == 0, "the best provisional survey was dropped from the model"
+
+
 @pytest.mark.parametrize("change", [
     {"max_median_cm": 0.0},
     {"area_completeness": 1.01},

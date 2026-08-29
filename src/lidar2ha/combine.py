@@ -1246,8 +1246,10 @@ def select_area(area: str, candidates: list[Candidate], scores: dict[int, Score]
         gap = max(distances.values())
         if gap > two_source_agree_cm:
             return AreaSelection(
-                area, None, "ambiguous", observations, distances,
-                [f"two captures differ by {gap:.1f} cm and cannot say which is right"])
+                area, ranked[0].index, "ambiguous", observations, distances,
+                [f"two captures differ by {gap:.1f} cm and cannot say which is right; "
+                 f"{ranked[0].capture} is retained provisionally so the area is not "
+                 f"removed from the model"])
         return AreaSelection(area, ranked[0].index, "agreed", observations, distances)
     return AreaSelection(area, ranked[0].index, "measured", observations, distances)
 
@@ -1758,9 +1760,10 @@ def decide_areas(groups: list[Group], cands: list[Candidate],
                 two_source_agree_cm=two_source_agree_cm)
             selections.append(selection)
             winner = None if selection.winner is None else cands[selection.winner].capture
-            ordered = sorted(selection.distance_cm,
-                             key=lambda i: selection.distance_cm[i])
-            runner = cands[ordered[1]].capture if len(ordered) > 1 else None
+            ordered = sorted(
+                (i for i in selection.distance_cm if i != selection.winner),
+                key=lambda i: (selection.distance_cm[i], cands[i].capture))
+            runner = cands[ordered[0]].capture if ordered else None
             reasons = list(selection.reasons)
             if selection.verdict == "single_source":
                 reasons.append("no other capture supplies a complete survey of this area")
