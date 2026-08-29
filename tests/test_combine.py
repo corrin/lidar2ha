@@ -38,8 +38,10 @@ from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
 from lidar2ha import combine as combining
+from lidar2ha import schema
 from lidar2ha.combine import (
     Candidate,
+    Score,
     ceiling_plausibility,
     containment,
     group_rooms,
@@ -1261,3 +1263,112 @@ def test_an_empty_level_is_refused_before_it_produces_a_confident_answer():
     empty = Model(source="a.dxf", levels=[Level(name="L", ceiling_height_cm=250)])
     with pytest.raises(ValueError, match="no walls"):
         combining.combine({"a": empty, "b": empty})
+
+
+def _fused_group():
+    """Two captures resolving a pair of named rooms, and one laying a polygon
+    over both. The real shape: `upstairs_1058` and `upstairs_1904` each keep
+    `sewing_room` and `girl_bedroom` apart, and the fixture pass returns one
+    20.2 m2 `Hallway 1` covering the pair.
+    """
+    def room(name, area, x0, x1):
+        return schema.Room(name=name, ha_area=area,
+                           points=[(x0, 0), (x1, 0), (x1, 400), (x0, 400)])
+
+    def walls(*spans):
+        """The outline of each room, so the fitter has something to register on
+        and so the fused capture genuinely lacks the wall it is missing."""
+        out = []
+        for x0, x1 in spans:
+            for a, b in (((x0, 0), (x1, 0)), ((x1, 0), (x1, 400)),
+                         ((x1, 400), (x0, 400)), ((x0, 400), (x0, 0))):
+                out.append(schema.Wall(xStart=a[0], yStart=a[1],
+                                       xEnd=b[0], yEnd=b[1],
+                                       thickness=10, height=240))
+        return out
+
+    def model(rooms, spans):
+        return schema.Model(source="t.dxf", units="cm", levels=[schema.Level(
+            name="Floor 1", elevation_cm=0, ceiling_height_cm=240,
+            walls=walls(*spans), rooms=list(rooms))])
+
+    return {
+        "geom_a": model([room("sewing_room", "sewing_room", 0, 300),
+                         room("girl_bedroom", "girl_bedroom", 300, 600)],
+                        [(0, 300), (300, 600)]),
+        "geom_b": model([room("sewing_room", "sewing_room", 5, 305),
+                         room("girl_bedroom", "girl_bedroom", 305, 605)],
+                        [(5, 305), (305, 605)]),
+        # No wall at x=300: that is the wall it is missing.
+        "fused": model([room("Hallway 1", None, 0, 600)], [(0, 600)]),
+    }
+
+
+def test_a_capture_fusing_two_named_rooms_does_not_take_the_group():
+    """It is missing a wall, and the captures that found it are right there.
+
+    `partitioning`'s own docstring says a polygon laid over rooms another
+    capture keeps apart "is not slightly wrong about a boundary -- it is missing
+    two walls". It measures exactly that and scores the fused candidate 0.5
+    against everyone else's 1.0 -- which at weight 0.10 is a 0.05 nudge, and the
+    margins observed on the real house were 0.14 and 0.015. So the measurement
+    was right and could not act, which is why this is tested at `decide` with
+    the fused capture scoring HIGHEST. Anything less and the test passes without
+    the rule.
+
+    Measured on the real house this cost `sewing_room`, `girl_bedroom` and
+    `computer_pulpit`: each resolved separately by two geometry captures, each
+    replaced by one unnamed polygon from a fixture pass that won its group.
+
+    The owner's areas are the evidence. Two rooms carrying different `ha_area`s
+    is a person saying they are different rooms, and no scan contradicts that --
+    unlike a genuinely open plan, where NO capture resolves them and `split:` is
+    the only answer there will ever be.
+    """
+    cands, group = _fusion_group()
+    scores = {0: Score(0.60, {}, []), 1: Score(0.60, {}, []),
+              2: Score(0.95, {}, [])}          # the fused one scores best
+    decision = combining.decide(group, cands, scores)
+    assert decision.winner != "fused", (
+        "the fused capture won on score, and both named rooms went with it")
+    assert any("missing" in r or "fus" in r for r in decision.reasons), (
+        f"nothing said why it was passed over: {decision.reasons}")
+
+
+def test_a_fused_capture_still_wins_where_nothing_else_resolved_it():
+    """The rule is about being outvoted, not about the shape of the polygon.
+
+    Where no other capture keeps the rooms apart there is nothing to be missing
+    a wall against, and refusing the only capture that saw the floor is exactly
+    how the bathroom vanished the first time.
+    """
+    cands, group = _fusion_group(resolved_by_others=False)
+    scores = {i: Score(0.5, {}, []) for i in range(len(cands))}
+    assert combining.decide(group, cands, scores).winner == "fused"
+
+
+def _fusion_group(resolved_by_others: bool = True):
+    """Two named rooms and one polygon over both, as Candidates and a Group.
+
+    Built at this level on purpose: reproducing it through `combine` needs the
+    fused capture to out-score two geometry captures on registration, and a
+    synthetic case that agrees perfectly never does -- the first version of this
+    test passed without the rule and proved nothing.
+    """
+    def cand(i, capture, area, x0, x1):
+        room = schema.Room(name=area or "Hallway 1", ha_area=area,
+                           points=[(x0, 0), (x1, 0), (x1, 400), (x0, 400)])
+        return Candidate(index=i, capture=capture, role="geometry", room=room,
+                         poly=Polygon(room.points),
+                         area_m2=(x1 - x0) * 400 / 10_000)
+
+    cands = [
+        cand(0, "geom", "sewing_room" if resolved_by_others else None, 0, 300),
+        cand(1, "geom", "girl_bedroom" if resolved_by_others else None, 300, 600),
+        cand(2, "fused", None, 0, 600),
+    ]
+    group = combining.Group(
+        members=[0, 1, 2],
+        per_capture={"geom": [0, 1], "fused": [2]},
+        kind="disagreement")
+    return cands, group

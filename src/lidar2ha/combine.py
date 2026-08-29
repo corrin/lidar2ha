@@ -1351,6 +1351,31 @@ def partition_score(indices: list[int], cands: list[Candidate],
     return float(weighted), float(footprint)
 
 
+def fuses_named_rooms(capture: str, group: Group,
+                      cands: list[Candidate], *,
+                      edge: float = EDGE_CONTAINMENT) -> bool:
+    """Does this capture lay one polygon over two rooms another capture NAMES?
+
+    Two conditions, and both matter. The rooms must be named, because an
+    `ha_area` is the owner saying these are different rooms and nothing measured
+    can contradict that. And they must belong to another capture, because a
+    capture cannot be outvoted by itself -- where nobody else resolved the
+    space there is no wall to be missing, and refusing the only capture that saw
+    the floor is how the bathroom vanished the first time.
+    """
+    for mine in group.per_capture.get(capture, []):
+        for other, theirs in group.per_capture.items():
+            if other == capture:
+                continue
+            named = {cands[i].room.ha_area for i in theirs
+                     if cands[i].room.ha_area
+                     and containment(cands[i].poly, cands[mine].poly)[0] >= edge
+                     and cands[i].poly.area <= cands[mine].poly.area}
+            if len(named) > 1:
+                return True
+    return False
+
+
 def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
            margin_needed: float = DISAGREE_MARGIN,
            provisional_score: float = PROVISIONAL_SCORE,
@@ -1367,6 +1392,25 @@ def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
          for cap, rooms in group.per_capture.items()),
         key=lambda t: (-t[1], -t[2], t[0]),
     )
+
+    # A capture laying one polygon over two rooms ANOTHER capture names as
+    # different areas is missing a wall, and the captures that found it are in
+    # this group. `partitioning` measures exactly this and scores it 0.5 against
+    # everyone else's 1.0, which at weight 0.10 is a 0.05 nudge -- and the
+    # margins it lost to on the real house were 0.14 and 0.015. So the signal
+    # was right and could not act.
+    #
+    # The areas are the evidence, and they are the owner's rather than the
+    # scan's: two rooms carrying different `ha_area`s is a person saying they
+    # are different rooms. A genuinely open plan looks nothing like this -- NO
+    # capture resolves it, so there is nobody to be outvoted by, and `split:` is
+    # the only answer there will ever be.
+    fusing = {cap for cap, _s, _f in ranked if fuses_named_rooms(cap, group, cands)}
+    survivors = [row for row in ranked if row[0] not in fusing]
+    passed_over = [row[0] for row in ranked[:1] if row[0] in fusing]
+    if survivors:
+        ranked = survivors
+
     best_cap, best_score, best_footprint = ranked[0]
     runner_up = ranked[1][0] if len(ranked) > 1 else None
     margin = best_score - ranked[1][1] if len(ranked) > 1 else None
@@ -1376,6 +1420,11 @@ def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
 
     reasons = list(provisional_for(group, best_cap, best_score, margin, cands,
                                    margin_needed, provisional_score))
+    for cap in passed_over:
+        reasons.append(
+            f"{cap} scored highest and was passed over: it lays one polygon "
+            f"over rooms another capture names as different areas, which is a "
+            f"missing wall rather than a close call")
     if hole > 0 and whole > 0 and best_footprint / whole < footprint_frac:
         # Reported, never filled from the loser. Filling is blending under
         # another name, and it leaves a T-junction sliver along every edge the
