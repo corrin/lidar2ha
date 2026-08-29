@@ -214,3 +214,26 @@ def test_a_split_under_a_capture_is_still_refused(tmp_path):
     with pytest.raises(SystemExit) as exc:
         projectschema.load(p)
     assert "split" in str(exc.value)
+
+
+def test_a_key_that_exists_elsewhere_is_told_where_it_goes(tmp_path):
+    """`did you mean X?` where X is the key just rejected reads as nonsense.
+
+    Seen on my own file: `unknown key 'split' under captures.<id>, did you mean
+    'split'?`. `difflib` matched it against the top-level `split:`, which is a
+    perfect match rather than a near one. The key is spelt correctly and is in
+    the wrong place, so the useful half is WHERE it lives.
+    """
+    p = write(tmp_path, """
+        captures:
+          midlevel:
+            split: {room: Living Room}
+    """)
+    with pytest.raises(SystemExit) as exc:
+        projectschema.load(p)
+    message = str(exc.value)
+    assert "did you mean `split`?" not in message, (
+        "suggested the key it had just rejected:\n" + message)
+    assert "top level" in message, (
+        "a correctly spelt key in the wrong place wants its home naming:\n"
+        + message)

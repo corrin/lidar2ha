@@ -134,9 +134,21 @@ class Project(_Strict):
     sweethome3d_jar: Any = None
 
 
-def _did_you_mean(key: str, candidates: list[str]) -> str:
+def _did_you_mean(key: str, candidates: list[str], *, where: str) -> str:
+    """A spelling hint, or a LOCATION one, or nothing.
+
+    A key that is spelt correctly and sits in the wrong section is the commoner
+    mistake, and `difflib` answers it with a perfect match against itself: my own
+    file produced `unknown key 'split' under captures.<id>, did you mean
+    'split'?`, which reads as nonsense and sends the reader hunting a typo that
+    is not there. Where the key exists somewhere else, say where.
+    """
+    if key in Project.model_fields and where:
+        return " -- that one goes at the top level"
     near = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
-    return f", did you mean `{near[0]}`?" if near else ""
+    if near and near[0] != key:
+        return f", did you mean `{near[0]}`?"
+    return ""
 
 
 def _explain(error: ValidationError, path: Path) -> str:
@@ -160,7 +172,7 @@ def _explain(error: ValidationError, path: Path) -> str:
             lines.append(
                 f"  unknown key `{loc[-1]}`"
                 + (f" under `{where}`" if where else " at the top level")
-                + _did_you_mean(loc[-1], known))
+                + _did_you_mean(loc[-1], known, where=where))
         else:
             lines.append(f"  {'.'.join(loc)}: {err['msg']}")
     if any(e["type"] == "extra_forbidden" for e in error.errors()):
