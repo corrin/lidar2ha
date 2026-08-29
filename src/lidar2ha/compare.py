@@ -40,7 +40,7 @@ from scipy.spatial import cKDTree
 from .registration import (
     CM_TO_M,
     grid_bearing,
-    register,
+    register_candidates,
     sample_along_walls,
     transform,
 )
@@ -163,8 +163,8 @@ def room_anchors(src: Model, tgt: Model, *,
     return pairs
 
 
-def plan_fit(src: Model, tgt: Model, match_limit_m: float = MATCH_LIMIT_M) -> Fit:
-    """Fit `src`'s plan onto `tgt`'s, and grade the agreement.
+def plan_fits(src: Model, tgt: Model, match_limit_m: float = MATCH_LIMIT_M) -> list[Fit]:
+    """Every distinct plan placement, graded best-first.
 
     Raises rather than returning a degenerate fit: a capture with no walls gives
     the fitter nothing to hold onto, and a transform derived from that is a
@@ -179,23 +179,31 @@ def plan_fit(src: Model, tgt: Model, match_limit_m: float = MATCH_LIMIT_M) -> Fi
     tgt_pts = sample_along_walls(tgt_walls)
     tree = cKDTree(tgt_pts)
 
-    raw: Any = register(src_pts, tgt_pts, tree, force_mirror=False,
-                        rotations=grid_rotations(src_walls, tgt_walls),
-                        anchors=room_anchors(src, tgt))
-    placed = transform(src_pts, raw["theta_rad"], raw["tx"], raw["ty"], False)
-    d, _ = tree.query(placed, k=1, distance_upper_bound=match_limit_m)
-    matched = d[np.isfinite(d)]
+    raw_fits: list[Any] = register_candidates(
+        src_pts, tgt_pts, tree, force_mirror=False,
+        rotations=grid_rotations(src_walls, tgt_walls),
+        anchors=room_anchors(src, tgt))
+    out = []
+    for raw in raw_fits:
+        placed = transform(src_pts, raw["theta_rad"], raw["tx"], raw["ty"], False)
+        d, _ = tree.query(placed, k=1, distance_upper_bound=match_limit_m)
+        matched = d[np.isfinite(d)]
+        out.append(Fit(
+            theta_rad=float(raw["theta_rad"]),
+            tx=float(raw["tx"]),
+            ty=float(raw["ty"]),
+            median_error_m=float(raw["median_error_m"]),
+            coverage=float(raw["coverage"]),
+            p90_m=float(np.percentile(matched, 90)) if len(matched) else None,
+            matched=int(len(matched)),
+            sampled=int(len(src_pts)),
+        ))
+    return out
 
-    return Fit(
-        theta_rad=float(raw["theta_rad"]),
-        tx=float(raw["tx"]),
-        ty=float(raw["ty"]),
-        median_error_m=float(raw["median_error_m"]),
-        coverage=float(raw["coverage"]),
-        p90_m=float(np.percentile(matched, 90)) if len(matched) else None,
-        matched=int(len(matched)),
-        sampled=int(len(src_pts)),
-    )
+
+def plan_fit(src: Model, tgt: Model, match_limit_m: float = MATCH_LIMIT_M) -> Fit:
+    """The best geometric fit, retained for callers with no further evidence."""
+    return plan_fits(src, tgt, match_limit_m)[0]
 
 
 def main():

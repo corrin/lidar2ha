@@ -390,6 +390,23 @@ def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None,
     bearing from and no rooms to pair -- which is why this is a parameter rather
     than something computed here.
     """
+    return register_candidates(
+        plan_pts, target_xy, tree, coarse_step_deg=coarse_step_deg,
+        force_mirror=force_mirror, rotations=rotations, anchors=anchors,
+        refine_top=refine_top)[0]
+
+
+def register_candidates(plan_pts, target_xy, tree, coarse_step_deg=2.0,
+                        force_mirror=None, rotations=None, anchors=None,
+                        refine_top=REFINE_TOP):
+    """Every distinct refined basin, best first.
+
+    `register` historically returned only the lowest-cost basin. That erases
+    the fact a small capture may fit several rooms, so callers with identity or
+    multi-capture evidence had no alternatives left to decide between. This
+    function exposes the already-computed refinements; `register` remains the
+    compatibility wrapper for callers that genuinely have no further evidence.
+    """
     target_c = target_xy.mean(axis=0)
     mirrors = (False, True) if force_mirror is None else (force_mirror,)
 
@@ -407,7 +424,22 @@ def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None,
             starts += seeded[: max(0, refine_top - 1)]
         fits += [_refine(plan_pts, tree, s, mirror) for s in starts]
 
-    return min(fits, key=lambda f: f["fit_cost_m"])
+    fits.sort(key=lambda f: f["fit_cost_m"])
+    distinct = []
+    for fit in fits:
+        same = any(
+            abs((fit["theta_rad"] - old["theta_rad"] + math.pi) %
+                (2 * math.pi) - math.pi) <= math.radians(1.0)
+            and math.hypot(fit["tx"] - old["tx"], fit["ty"] - old["ty"]) <= 0.10
+            for old in distinct)
+        if not same:
+            distinct.append(fit)
+    if not distinct:
+        # `_coarse` always supplies one start for a non-empty point cloud. Keep
+        # the boundary explicit anyway: indexing an empty list would name no
+        # input and no reason.
+        raise ValueError("registration produced no placement candidates")
+    return distinct
 
 
 

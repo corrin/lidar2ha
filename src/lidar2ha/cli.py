@@ -568,6 +568,16 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
 
     ids = [w.capture_id for w in entries]
     captures = settings.get("captures") or {}
+    room_mappings = settings.get("rooms") or {}
+    unnamed = sorted({capture_id for capture_id in ids
+                      if capture_id not in room_mappings})
+    if unnamed:
+        raise SystemExit(
+            f"{project}, level {level!r}: capture(s) have no `rooms:` entry: "
+            f"{', '.join(unnamed)}. Scanner labels are not identity, and an "
+            f"unnamed winner silently removes an area another capture named. "
+            f"Add a mapping block (values may be null while unresolved) and run "
+            f"`lidar2ha rooms` before combining.")
     models = {}
     # key -> (capture id as project.yaml spells it, storey inside it). Stamped
     # onto the record after combining, because `combine` is handed a dict of
@@ -623,10 +633,12 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                          f"One capture needs no combining -- build from it "
                          f"directly.")
 
-    areas: set[str] = set()
-    for capture_id in ids:
-        mapping = (settings.get("rooms") or {}).get(capture_id) or {}
-        areas.update(a for a in mapping.values() if a)
+    # FROM THE EXPANDED STOREYS, never every mapping on the source capture. A
+    # whole-house walk's room mapping spans several floors; treating them all as
+    # expected here made Ground report upstairs_hallway and upstairs_toilet as
+    # missing even though their storeys were deliberately assigned upstairs.
+    areas = {room.ha_area for model in models.values() for lv in model.levels
+             for room in lv.rooms if room.ha_area}
     if not areas:
         click.echo("  note: project.yaml maps no areas for these captures, so the "
                    "work list cannot say which areas ended up with no source.")
@@ -655,8 +667,10 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     try:
         result = combining.combine(
             models, reference=reference, expected_areas=areas,
-            max_median_cm=max_median_cm or combining.MAX_MEDIAN_CM,
-            max_p90_cm=max_p90_cm or combining.MAX_P90_CM)
+            max_median_cm=(combining.MAX_MEDIAN_CM if max_median_cm is None
+                           else max_median_cm),
+            max_p90_cm=(combining.MAX_P90_CM if max_p90_cm is None
+                        else max_p90_cm))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -675,8 +689,12 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     save_model(result.model, out)
     work = out.with_name(out.stem + "_worklist.json")
     work.write_text(json.dumps(result.worklist, indent=2), encoding="utf-8")
+    alignment = out.with_name(out.stem + "_alignment.json")
+    alignment.write_text(
+        json.dumps(combining.alignment_record(result), indent=2), encoding="utf-8")
     click.echo(f"\nwrote  {out}")
     click.echo(f"wrote  {work}  ({len(result.worklist)} thing(s) to do about the house)")
+    click.echo(f"wrote  {alignment}  (every placement basin and capture verdict)")
     click.echo(f"\nNext:  lidar2ha lights {out} --project {project} -o lights.json")
 
 

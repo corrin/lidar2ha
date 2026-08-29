@@ -58,9 +58,10 @@ from typing import Any, Literal, NamedTuple
 import numpy as np
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 
-from .compare import MATCH_LIMIT_M, Fit, plan_fit
+from .compare import MATCH_LIMIT_M, Fit, plan_fit, plan_fits
 from .projectlevels import origin_of
 from .registration import grid_bearing as _wall_grid_bearing
 from .registration import (
@@ -296,6 +297,26 @@ DISAGREE_MARGIN = 0.10
 # name, and it produces a T-junction sliver along every shared edge.
 FOOTPRINT_FRAC = 0.85
 
+# A declared room must overlap this much of its counterpart before the
+# declaration can locate a capture. Measured on the 2026-08-29 basement scan,
+# the correct bedroom correspondence is nearly complete while the lower-error
+# den basin has no overlap with the declared bedroom at all.
+IDENTITY_MIN_OVERLAP = 0.60
+# Placements this close on declared-area overlap are not distinguishable by the
+# identity evidence. The value is a guess and is deliberately a function
+# argument below; another capture with two real basins inside this margin is
+# the evidence that changes it.
+IDENTITY_AMBIGUITY = 0.05
+
+# A capture can see part of a known room merely to locate new ground. Below
+# this fraction of another candidate's polygon it is alignment context, not a
+# geometry candidate. The 2026-08-29 workflow is the motivating case; expose
+# this at both command-line entry points before changing the default.
+AREA_COMPLETENESS = 0.70
+# With two candidates there is a second opinion, not a mean. If their sampled
+# outlines differ by more than this there is no evidence for choosing either.
+AREA_TWO_SOURCE_AGREE_CM = 5.0
+
 WEIGHTS: dict[str, float] = {
     # Agreement with the co-registered consensus does most of the work: it is
     # the only signal measured against evidence from OUTSIDE the candidate's own
@@ -389,13 +410,52 @@ class Score:
 
     @property
     def weakest(self) -> str | None:
-        """The signal that cost this candidate most.
-
-        Named in the report because a 0.17 ceiling and a 0.0 wall support read
-        completely differently and need completely different fixes.
-        """
+        """The signal that cost this candidate most."""
         measured = {k: v for k, v in self.signals.items() if v is not None}
         return min(measured, key=lambda k: measured[k]) if measured else None
+
+
+PlacementVerdict = Literal["placed", "ambiguous", "unplaceable"]
+
+
+@dataclass
+class PlacementChoice:
+    """Which basin declared common ground supports.
+
+    The candidates survive every verdict. For an ambiguous placement they are
+    the finding; sorting them into one answer would discard the uncertainty.
+    """
+
+    verdict: PlacementVerdict
+    fit: Fit | None
+    candidates: list[Fit]
+    overlap: dict[int, float]
+    reason: str = ""
+
+
+ObservationState = Literal["candidate", "context", "unseen"]
+
+
+@dataclass
+class AreaObservation:
+    candidate: int
+    state: ObservationState
+    completeness: float | None
+
+
+AreaSelectionVerdict = Literal["measured", "agreed", "ambiguous", "single_source"]
+
+
+@dataclass
+class AreaSelection:
+    """One area's independently selected geometry and all evidence behind it."""
+
+    area: str
+    winner: int | None
+    verdict: AreaSelectionVerdict
+    observations: list[AreaObservation]
+    distance_cm: dict[int, float]
+    reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -953,6 +1013,84 @@ def place_cm(points_cm: Any, fit: Fit | None) -> np.ndarray:
     return transform(pts * CM_TO_M, fit["theta_rad"], fit["tx"], fit["ty"], False) * M_TO_CM
 
 
+def _declared_overlap(source: Level, target: Level, fit: Fit) -> float | None:
+    """Best overlap of rooms declared to be the same area under one basin.
+
+    None is different from zero: None means the captures share no declaration,
+    while zero means they do and this basin puts the declared rooms apart.
+    """
+    source_by_area: dict[str, list[Polygon]] = {}
+    target_by_area: dict[str, list[Polygon]] = {}
+    for room in source.rooms:
+        if room.ha_area and len(room.points) >= 3:
+            moved = place_cm(room.points, fit)
+            source_by_area.setdefault(room.ha_area, []).append(Polygon(moved))
+    for room in target.rooms:
+        if room.ha_area and len(room.points) >= 3:
+            target_by_area.setdefault(room.ha_area, []).append(polygon_of(room))
+
+    shared = set(source_by_area) & set(target_by_area)
+    if not shared:
+        return None
+    scores = []
+    for area in shared:
+        best = 0.0
+        for left in source_by_area[area]:
+            for right in target_by_area[area]:
+                smaller = min(left.area, right.area)
+                if smaller > 0:
+                    best = max(best, left.intersection(right).area / smaller)
+        scores.append(best)
+    return float(sum(scores) / len(scores))
+
+
+def _same_basin(left: Fit, right: Fit, *, translation_cm: float = 10.0,
+                rotation_deg: float = 1.0) -> bool:
+    turn = abs((math.degrees(left["theta_rad"] - right["theta_rad"]) + 180) % 360 - 180)
+    shift = math.hypot(left["tx"] - right["tx"], left["ty"] - right["ty"])
+    return turn <= rotation_deg and shift * M_TO_CM <= translation_cm
+
+
+def choose_placement(source: Level, target: Level, candidates: list[Fit], *,
+                     min_overlap: float = IDENTITY_MIN_OVERLAP,
+                     ambiguity: float = IDENTITY_AMBIGUITY) -> PlacementChoice:
+    """Choose a basin from declared common ground, never from total coverage.
+
+    A scan that starts in a known bedroom and then reaches a new basement has
+    lower capture-wide coverage at the correct placement. Minimising over every
+    wall rewards the wrong basin for explaining the basement away. The declared
+    bedroom is the evidence that can choose; absent a shared declaration this
+    function abstains and preserves the fitter's existing best answer.
+    """
+    if not candidates:
+        return PlacementChoice("unplaceable", None, [], {}, "no placement candidates")
+
+    measured = {i: overlap for i, fit in enumerate(candidates)
+                if (overlap := _declared_overlap(source, target, fit)) is not None}
+    if not measured:
+        best = min(candidates, key=lambda f: f["median_error_m"])
+        return PlacementChoice("placed", best, candidates, {},
+                               "no declared common area; retained geometric fit")
+
+    best_overlap = max(measured.values())
+    if best_overlap < min_overlap:
+        return PlacementChoice(
+            "unplaceable", None, candidates, measured,
+            f"declared common areas overlap only {best_overlap:.0%}, below {min_overlap:.0%}")
+
+    plausible = [i for i, value in measured.items()
+                 if value >= best_overlap - ambiguity]
+    distinct: list[int] = []
+    for index in sorted(plausible, key=lambda i: candidates[i]["median_error_m"]):
+        if not any(_same_basin(candidates[index], candidates[other]) for other in distinct):
+            distinct.append(index)
+    if len(distinct) != 1:
+        return PlacementChoice(
+            "ambiguous", None, candidates, measured,
+            f"{len(distinct)} distinct placements preserve the declared common area")
+    return PlacementChoice("placed", candidates[distinct[0]], candidates, measured)
+
+
 def place_wall(wall: Wall, fit: Fit | None, source: str) -> Wall:
     """One wall, in the reference frame, carrying where it came from."""
     (xs, ys), (xe, ye) = place_cm(
@@ -974,6 +1112,76 @@ def outline_m(poly: Polygon, step_m: float = 0.05) -> np.ndarray:
         return np.empty((0, 2))
     return sample_segments(list(zip(ring, np.roll(ring, -1, axis=0), strict=True)),
                            step_m, include_end=False)
+
+
+def _normalised_outline(poly: Polygon, samples: int = 128) -> np.ndarray:
+    """A stable arclength parameterisation for arithmetic boundary means."""
+    ring = orient(poly, sign=1.0).exterior
+    points = np.asarray([
+        ring.interpolate(i / samples, normalized=True).coords[0]
+        for i in range(samples)
+    ], dtype=float)
+    # Shapely preserves the input ring's arbitrary first vertex. Rotate every
+    # sampled outline to the same geometric corner before averaging, otherwise
+    # identical polygons with different vertex order manufacture a difference.
+    first = min(range(len(points)), key=lambda i: (points[i, 0], points[i, 1]))
+    return np.roll(points, -first, axis=0)
+
+
+def _outline_distance_cm(poly: Polygon, mean: np.ndarray) -> float:
+    points = _normalised_outline(poly, len(mean))
+    return float(np.percentile(np.linalg.norm(points - mean, axis=1), 90))
+
+
+def select_area(area: str, candidates: list[Candidate], scores: dict[int, Score], *,
+                completeness: float = AREA_COMPLETENESS,
+                two_source_agree_cm: float = AREA_TWO_SOURCE_AGREE_CM) -> AreaSelection:
+    """Select one area's geometry against a leave-one-out boundary mean.
+
+    The old weighted score is accepted only as a deterministic tiebreak between
+    geometries already known to agree. It cannot overrule distance from the
+    area's other captures.
+    """
+    mine = [c for c in candidates if c.room.ha_area == area]
+    observations: list[AreaObservation] = []
+    eligible: list[Candidate] = []
+    for cand in mine:
+        others = [o for o in mine if origin_of(o.capture) != origin_of(cand.capture)]
+        if not others:
+            fraction = None
+            state: ObservationState = "candidate"
+        else:
+            fraction = max((cand.poly.intersection(o.poly).area / o.poly.area
+                            for o in others if o.poly.area > 0), default=0.0)
+            state = "candidate" if fraction >= completeness else "context"
+        observations.append(AreaObservation(cand.index, state, fraction))
+        if state == "candidate":
+            eligible.append(cand)
+
+    if not eligible:
+        return AreaSelection(area, None, "ambiguous", observations, {},
+                             ["no observation is complete enough to supply the area"])
+    if len(eligible) == 1:
+        return AreaSelection(area, eligible[0].index, "single_source", observations, {},
+                             ["only one capture supplies complete geometry for this area"])
+
+    distances: dict[int, float] = {}
+    for cand in eligible:
+        others = [o for o in eligible if o.index != cand.index]
+        mean = np.mean(np.stack([_normalised_outline(o.poly) for o in others]), axis=0)
+        distances[cand.index] = _outline_distance_cm(cand.poly, mean)
+
+    ranked = sorted(eligible, key=lambda c: (
+        distances[c.index], -scores.get(c.index, Score(0.0, {}, [])).total,
+        c.capture))
+    if len(eligible) == 2:
+        gap = max(distances.values())
+        if gap > two_source_agree_cm:
+            return AreaSelection(
+                area, None, "ambiguous", observations, distances,
+                [f"two captures differ by {gap:.1f} cm and cannot say which is right"])
+        return AreaSelection(area, ranked[0].index, "agreed", observations, distances)
+    return AreaSelection(area, ranked[0].index, "measured", observations, distances)
 
 
 def nn_stats(pts: np.ndarray, tree: cKDTree, cap_m: float
@@ -1440,6 +1648,59 @@ def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
     )
 
 
+def decide_areas(groups: list[Group], cands: list[Candidate],
+                 scores: dict[int, Score]) -> tuple[list[Decision], list[AreaSelection]]:
+    """Decide named areas independently; retain geometric grouping for unknowns.
+
+    A capture commonly surveys one known room poorly for context and a missing
+    room carefully. Choosing its whole overlap partition makes the two rise and
+    fall together. Named areas are independent facts, so each gets its own mean
+    and winner. A group with no declared identities keeps the old geometric
+    decision because there is no area boundary to separate it by.
+    """
+    decisions: list[Decision] = []
+    selections: list[AreaSelection] = []
+    for group in groups:
+        areas = sorted({str(cands[i].room.ha_area) for i in group.members
+                        if cands[i].room.ha_area})
+        if not areas:
+            decisions.append(decide(group, cands, scores))
+            continue
+        for area in areas:
+            members = [i for i in group.members if cands[i].room.ha_area == area]
+            per_capture: dict[str, list[int]] = {}
+            for index in members:
+                per_capture.setdefault(origin_of(cands[index].capture), []).append(index)
+            sub = Group(
+                members=members, per_capture=per_capture,
+                kind=("unopposed" if len(per_capture) == 1 else "one_to_one"),
+                edges={k: v for k, v in group.edges.items()
+                       if k[0] in members and k[1] in members},
+                near_edges={k: v for k, v in group.near_edges.items()
+                            if k[0] in members and k[1] in members},
+                self_overlaps=[s for s in group.self_overlaps
+                               if s[0] in members and s[1] in members],
+            )
+            selection = select_area(area, [cands[i] for i in members], scores)
+            selections.append(selection)
+            winner = None if selection.winner is None else cands[selection.winner].capture
+            ordered = sorted(selection.distance_cm,
+                             key=lambda i: selection.distance_cm[i])
+            runner = cands[ordered[1]].capture if len(ordered) > 1 else None
+            reasons = list(selection.reasons)
+            if selection.verdict == "single_source":
+                reasons.append("no other capture supplies a complete survey of this area")
+            decisions.append(Decision(
+                group=sub, winner=winner,
+                winner_rooms=[] if selection.winner is None else [selection.winner],
+                runner_up=runner, margin=None,
+                provisional=selection.verdict in ("single_source", "ambiguous"),
+                reasons=reasons,
+                hole_m2=0.0,
+            ))
+    return decisions, selections
+
+
 def provisional_for(group: Group, winner: str, score: float, margin: float | None,
                     cands: list[Candidate], margin_needed: float,
                     provisional_score: float) -> list[str]:
@@ -1802,6 +2063,7 @@ class Combined:
     groups: list[Group]
     scores: dict[int, Score]
     decisions: list[Decision]
+    area_selections: list[AreaSelection]
     fits: dict[str, Fit | None]
     rejected: dict[str, str]
     malformed: list[dict[str, Any]]
@@ -1945,7 +2207,8 @@ def alignment_record(result: Combined) -> list[dict[str, Any]]:
 def worklist(decisions: list[Decision], cands: list[Candidate],
              scores: dict[int, Score], fragments: list[Fragment],
              naming: list[Naming],
-             expected_areas: set[str] | None) -> list[dict[str, Any]]:
+             expected_areas: set[str] | None,
+             area_selections: list[AreaSelection] | None = None) -> list[dict[str, Any]]:
     """What to go and do about the house, which is the point of the exercise.
 
     Per area: who won it, how well, and every reason to distrust that. Plus the
@@ -1955,6 +2218,25 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
     """
     items: list[dict[str, Any]] = []
     won_areas: set[str] = set()
+
+    for selection in area_selections or []:
+        if selection.verdict == "measured":
+            continue
+        items.append({
+            "kind": f"area_{selection.verdict}",
+            "area": selection.area,
+            "winner": (None if selection.winner is None
+                       else cands[selection.winner].capture),
+            "distances_cm": {cands[i].capture: round(distance, 1)
+                             for i, distance in selection.distance_cm.items()},
+            "observations": [
+                {"capture": cands[o.candidate].capture, "state": o.state,
+                 "completeness": (None if o.completeness is None
+                                  else round(o.completeness, 3))}
+                for o in selection.observations
+            ],
+            "reasons": selection.reasons,
+        })
 
     for decision in decisions:
         group = decision.group
@@ -2188,8 +2470,28 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
             aligned[name] = Alignment(capture=name, verdict="discarded", reason=why)
             continue
 
-        fit = plan_fit(single[name], single[ref])
-        record = Alignment(capture=name, candidates=[fit],
+        basin_candidates = plan_fits(single[name], single[ref])
+        finite_candidates = [f for f in basin_candidates
+                             if math.isfinite(f["median_error_m"])]
+        if not finite_candidates:
+            fit = basin_candidates[0]
+        else:
+            placement = choose_placement(level, levels[ref], finite_candidates)
+            if placement.verdict != "placed":
+                verdict: Verdict = ("ambiguous" if placement.verdict == "ambiguous"
+                                    else "discarded")
+                record = Alignment(
+                    capture=name, verdict=verdict,
+                    candidates=placement.candidates,
+                    reason=placement.reason,
+                    agreement_m=agreement.get(name))
+                aligned[name] = record
+                rejected[name] = record.reason
+                continue
+            assert placement.fit is not None
+            fit = placement.fit
+
+        record = Alignment(capture=name, candidates=finite_candidates or [fit],
                            verdict="accepted", fit=fit,
                            common_points=fit["matched"], sampled_points=fit["sampled"],
                            agreement_m=agreement.get(name))
@@ -2347,7 +2649,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     }
 
     # --- stage 4: select ----------------------------------------------------
-    decisions = [decide(g, cands, scores) for g in groups]
+    decisions, area_selections = decide_areas(groups, cands, scores)
     chosen: list[int] = []
     rooms_out: list[Room] = []
     for decision in decisions:
@@ -2367,7 +2669,9 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     walls_out, dropped = select_walls(offered)
 
     fragments, sliver_m2, slivers = uncovered_floor(cands, chosen, scores)
-    naming = name_suggestions(cands, chosen)
+    # Losing unnamed rooms still need an identity disposition. Restricting this
+    # to winners made a context scan disappear from the only durable report.
+    naming = name_suggestions(cands, [c.index for c in cands if not c.named])
 
     # --- the model ----------------------------------------------------------
     base = levels[ref]
@@ -2401,14 +2705,36 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                     coverage=None if not a.candidates else a.candidates[0]["coverage"])
             for n, a in aligned.items() if not a.usable],
     )
+    items = worklist(decisions, cands, scores, fragments, naming, expected_areas,
+                     area_selections)
+    for entry in malformed:
+        items.append({
+            "kind": "malformed_room",
+            "capture": entry["capture"], "room": entry["room"],
+            "kept": bool(entry.get("kept")),
+            "reasons": [entry["reason"]],
+        })
+    for name, record in aligned.items():
+        caution_text = cautions.get(name)
+        if record.usable and not caution_text:
+            continue
+        items.append({
+            "kind": ("capture_caution" if record.usable else
+                     f"capture_{record.verdict}"),
+            "capture": name, "verdict": record.verdict,
+            "candidates": len(record.candidates),
+            "reasons": [reason for reason in (record.reason, caution_text) if reason],
+        })
+
     return Combined(
         model=model, reference=ref, candidates=cands, groups=groups, scores=scores,
-        decisions=decisions, fits=fits, rejected=rejected, malformed=malformed,
+        decisions=decisions, area_selections=area_selections,
+        fits=fits, rejected=rejected, malformed=malformed,
         dropped_walls=dropped, fragments=fragments, sliver_m2=sliver_m2,
         slivers=slivers, cautions=cautions, agreement=agreement,
         agreement_basis=agreement_basis, aligned=aligned,
         naming=naming,
-        worklist=worklist(decisions, cands, scores, fragments, naming, expected_areas),
+        worklist=items,
     )
 
 

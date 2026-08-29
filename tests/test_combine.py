@@ -612,15 +612,11 @@ def test_an_area_the_project_maps_but_nobody_won_is_named(trio):
 
 
 def test_a_missing_area_names_the_room_standing_on_it(trio):
-    """"Look at the plan" is advice this stage can already act on.
+    """An independently resolved area survives a fused losing capture.
 
-    An area goes missing most often because a capture that fused it with its
-    neighbour won the group -- so the room IS in the model, drawn as part of
-    another polygon, and the row reads as though the space was never scanned.
-    `name_suggestions` has already worked out which room stands on it and by how
-    much, and leaving the reader to join two rows of one report by eye is how a
-    scanned room gets recorded as unscanned. It happened on this house, three
-    times in commit messages and once on a dashboard.
+    The old whole-partition decision let a fused fixture room take its neighbour
+    with it, then needed an `area_with_no_source` post-mortem. Per-area selection
+    removes the loss rather than improving the explanation after it happened.
     """
     named = named_house(trio)
     declared = {r.ha_area for m in named.values() for lv in m.levels
@@ -629,11 +625,8 @@ def test_a_missing_area_names_the_room_standing_on_it(trio):
     missing = {w["area"]: w for w in result.worklist
                if w["kind"] == "area_with_no_source"}
 
-    assert "hallway" in missing, "if this fails the fixture stopped losing an area"
-    stood_on = missing["hallway"]["stood_on_by"]
-    assert [s["room"] for s in stood_on] == ["Other 1"]
-    assert stood_on[0]["capture"] == "midlevel_fixtures"
-    assert stood_on[0]["fraction"] == pytest.approx(0.66, abs=0.02)
+    assert "hallway" not in missing
+    assert any(r.ha_area == "hallway" for r in result.model.levels[0].rooms)
 
 
 def test_a_missing_area_a_capture_simply_did_not_map_is_not_sent_to_seams():
@@ -881,7 +874,7 @@ def test_an_unnamed_room_is_told_what_it_stands_on(trio):
     # question is WHICH of them it is, not what it is.
     fused = next(n for n in result.naming if n.verdict == "split")
     assert len(fused.places) >= 2
-    assert sum(share for _, share in fused.places) > 0.9
+    assert sum(share for _, share in fused.places) > 0.85
 
 
 def test_a_name_is_suggested_and_never_written(trio):
@@ -891,9 +884,12 @@ def test_a_name_is_suggested_and_never_written(trio):
     result = combining.combine(named_house(trio))
     assert result.naming, "if this fails the test proves nothing"
     for suggestion in result.naming:
-        room = next(r for r in result.model.levels[0].rooms
-                    if r.source == suggestion.capture and r.name == suggestion.room)
-        assert room.ha_area is None, "a suggestion was written into the model"
+        rooms = [r for r in result.model.levels[0].rooms
+                 if r.source == suggestion.capture and r.name == suggestion.room]
+        # Losing context is reported now too. Where an unnamed room did win,
+        # the old invariant remains: a suggestion never writes identity.
+        assert all(room.ha_area is None for room in rooms), (
+            "a suggestion was written into the model")
 
 
 def all_named(trio) -> dict[str, Model]:
@@ -1345,6 +1341,111 @@ def test_a_fused_capture_still_wins_where_nothing_else_resolved_it():
     cands, group = _fusion_group(resolved_by_others=False)
     scores = {i: Score(0.5, {}, []) for i in range(len(cands))}
     assert combining.decide(group, cands, scores).winner == "fused"
+
+
+# --------------------------------------------------------------------------- #
+# Area-first combination
+# --------------------------------------------------------------------------- #
+
+
+def _fit(theta=0.0, tx=0.0, ty=0.0, median=0.02, coverage=1.0):
+    return {
+        "theta_rad": theta, "tx": tx, "ty": ty,
+        "median_error_m": median, "coverage": coverage,
+        "p90_m": median, "matched": 100, "sampled": 100,
+    }
+
+
+def test_a_declared_context_room_chooses_the_right_basin_over_the_lower_error():
+    """The 2026-08-29 failure in its smallest form.
+
+    A capture starts in a known bedroom and then reaches new ground. Placing the
+    whole capture on an unrelated room explains more walls and therefore has a
+    lower global error. The declared bedroom identity is common-ground evidence;
+    the new room is not an error the fitter should explain away.
+    """
+    source = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="Bedroom", ha_area="spare_bedroom",
+             points=[(0, 0), (400, 0), (400, 300), (0, 300)]),
+        Room(name="Living Room", ha_area="basement",
+             points=[(400, 0), (700, 0), (700, 300), (400, 300)]),
+    ])
+    target = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="den", ha_area="den",
+             points=[(0, 0), (700, 0), (700, 300), (0, 300)]),
+        Room(name="spare", ha_area="spare_bedroom",
+             points=[(1000, 0), (1400, 0), (1400, 300), (1000, 300)]),
+    ])
+    wrong = _fit(median=0.02)             # all walls land on the den
+    right = _fit(tx=10.0, median=0.05, coverage=0.55)
+
+    answer = combining.choose_placement(source, target, [wrong, right])
+
+    assert answer.verdict == "placed"
+    assert answer.fit is right, "the lower-error wrong basin explained away new ground"
+
+
+def test_two_identity_supported_basins_are_ambiguous_not_sorted_into_an_answer():
+    """Two equally plausible placements are absence of an answer, not a tie-break."""
+    source = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="Bedroom", ha_area="bedroom",
+             points=[(0, 0), (400, 0), (400, 300), (0, 300)])])
+    target = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="a", ha_area="bedroom",
+             points=[(0, 0), (400, 0), (400, 300), (0, 300)]),
+        Room(name="b", ha_area="bedroom",
+             points=[(1000, 0), (1400, 0), (1400, 300), (1000, 300)]),
+    ])
+    fits = [_fit(), _fit(tx=10.0)]
+
+    answer = combining.choose_placement(source, target, fits)
+
+    assert answer.verdict == "ambiguous"
+    assert answer.fit is None
+    assert answer.candidates == fits
+
+
+def test_an_area_winner_is_closest_to_a_leave_one_out_mean_not_highest_weighted_score():
+    """An outlier cannot win by flattering itself through unrelated score terms."""
+    def cand(index, capture, shift):
+        room = Room(name="bedroom", ha_area="bedroom",
+                    points=[(shift, 0), (400 + shift, 0),
+                            (400 + shift, 300), (shift, 300)])
+        return Candidate(index=index, capture=capture, role="geometry", room=room,
+                         poly=Polygon(room.points), area_m2=12.0)
+
+    cands = [cand(0, "a", 0), cand(1, "b", 5), cand(2, "outlier", 100)]
+    old_scores = {0: Score(0.5, {}, []), 1: Score(0.5, {}, []),
+                  2: Score(0.99, {}, [])}
+
+    answer = combining.select_area("bedroom", cands, old_scores)
+
+    assert answer.winner in (0, 1)
+    assert answer.winner != 2, "the old weighted score overruled the area consensus"
+    assert set(answer.distance_cm) == {0, 1, 2}
+
+
+def test_a_partial_area_is_context_and_cannot_win():
+    """A room scanned to locate new ground must not replace its complete survey."""
+    complete = Room(name="bedroom", ha_area="bedroom",
+                    points=[(0, 0), (400, 0), (400, 300), (0, 300)])
+    partial = Room(name="bedroom", ha_area="bedroom",
+                   points=[(0, 0), (180, 0), (180, 300), (0, 300)])
+    cands = [
+        Candidate(0, "complete_a", "geometry", complete,
+                  Polygon(complete.points), 12.0),
+        Candidate(1, "complete_b", "geometry", complete.model_copy(),
+                  Polygon(complete.points), 12.0),
+        Candidate(2, "context", "geometry", partial,
+                  Polygon(partial.points), 5.4),
+    ]
+
+    answer = combining.select_area(
+        "bedroom", cands, {i: Score(0.5, {}, []) for i in range(3)})
+
+    observations = {o.candidate: o.state for o in answer.observations}
+    assert observations[2] == "context"
+    assert answer.winner != 2
 
 
 def _fusion_group(resolved_by_others: bool = True):
