@@ -538,6 +538,12 @@ def test_the_same_wall_from_two_captures_is_kept_once():
     assert kept[0] is a, "the better capture's version survives, not a blend"
 
 
+def test_capture_priority_does_not_inherit_input_order():
+    """Tied non-winners must offer duplicate features in a stable order."""
+    assert combining.capture_order([], [], {}, ["zulu", "alpha"]) == [
+        "alpha", "zulu"]
+
+
 def test_the_winner_takes_the_group_whole_rather_than_room_by_room(combined):
     """Picking room by room inside a disagreement lays the same floor twice --
     the reference's living room plus the fixture pass's fused one."""

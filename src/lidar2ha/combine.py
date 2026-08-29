@@ -1831,14 +1831,14 @@ def capture_order(decisions: list[Decision], cands: list[Candidate],
         if decision.winner is not None:
             won.setdefault(decision.winner, []).extend(decision.winner_rooms)
 
-    def key(name: str) -> tuple[int, float]:
+    def key(name: str) -> tuple[int, float, str]:
         # `won` is keyed by origin because a group is won by a capture, while
         # walls are offered per ENTRY -- every storey of a winning capture
         # inherits its place in the order.
         rooms = won.get(origin_of(name))
         if not rooms:
-            return (1, -0.0)
-        return (0, -partition_score(rooms, cands, scores)[0])
+            return (1, -0.0, name)
+        return (0, -partition_score(rooms, cands, scores)[0], name)
 
     return sorted(every, key=key)
 
@@ -2765,7 +2765,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     base = levels[ref]
     doors_out = union_doors(
         [place_door(door, fits[name], name)
-         for name in accepted for door in levels[name].doors],
+         for name in order for door in levels[name].doors],
         match_cm=config.door_match_cm)
 
     model = Model(
