@@ -38,10 +38,31 @@ class Capture(_Strict):
 
     `multi_floor` says the walk covered more than one storey, which `combine`
     uses to tell you to pass --storey rather than refusing the capture later
-    with nothing saying why.
+    with nothing saying why. It is the only field here anything reads today.
+
+    The paths are recorded and not yet read. They are still format rather than
+    notes: every stage takes an explicit path that a person currently retypes,
+    and `add-capture` -- the biggest ergonomic gap in the project -- is the
+    command that would read them.
+
+    NOTHING ELSE GOES HERE, and that is deliberate. My own file grew twenty-two
+    keys against a capture and one of them was read. Of the rest: `covers` is a
+    hand-written claim about which areas a capture holds, which `coverage` now
+    measures from the model, and two sources for one fact is how they drift;
+    `role` and `level` duplicate the model and `levels:`; `compass_deg` and
+    `outdoor` are proposals, not features; and three captures carried a `split:`
+    of their own, which had never done anything, because an open plan's fusion
+    belongs to the building and `split:` is keyed by level. Naming those would
+    have made the format out of the archaeology, and would have stopped the last
+    one being the error it is.
     """
 
     multi_floor: bool = False
+    floorplan: str | None = None
+    mesh: str | None = None
+    glb: str | None = None
+    # Free text, so prose has one home that is not a key nothing reads.
+    note: str | None = None
 
 
 class Lights(_Strict):

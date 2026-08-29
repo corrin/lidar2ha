@@ -132,3 +132,85 @@ def test_a_note_left_as_a_key_says_to_make_it_a_comment(tmp_path):
     with pytest.raises(SystemExit) as exc:
         projectschema.load(p)
     assert "`#` comment" in str(exc.value)
+
+
+def test_a_typo_in_a_section_that_IS_read_is_still_refused(tmp_path):
+    """The permission above is scoped to `captures:` and must not leak.
+
+    `lights:`, `camera:`, `render:` and the rest are acted on, so a key nothing
+    reads there is a declaration that never runs -- the failure the whole module
+    exists for.
+    """
+    p = write(tmp_path, """
+        camera:
+          yaw: 180
+          pich: 50
+    """)
+    with pytest.raises(SystemExit) as exc:
+        projectschema.load(p)
+    assert "pich" in str(exc.value)
+
+
+def test_a_key_that_belongs_at_another_level_says_where_it_goes(tmp_path):
+    """`did you mean X?` where X is the key just rejected reads as nonsense.
+
+    Seen on my own file: `unknown key 'split' under captures.<id>, did you mean
+    'split'?`. The key is spelt correctly and is in the wrong place, so the
+    useful half is WHERE it lives, not how to spell it.
+    """
+    p = write(tmp_path, """
+        rooms:
+          midlevel:
+            split: lounge
+        lights:
+          split: {}
+    """)
+    with pytest.raises(SystemExit) as exc:
+        projectschema.load(p)
+    message = str(exc.value)
+    assert "did you mean `split`?" not in message, (
+        "suggested the key it had just rejected:\n" + message)
+
+
+def test_a_capture_records_where_its_exports_are(tmp_path):
+    """The three keys worth naming, out of the twenty-two my file grew.
+
+    Nothing reads them yet, and they are still format rather than notes: every
+    stage takes an explicit path that a person currently retypes, and
+    `add-capture` -- the biggest ergonomic gap in the project -- is exactly the
+    command that would read them. Recording where a capture's archives are is a
+    thing every project has, unlike `compass_deg` or `covers`, which are a
+    proposal and a fact the tool now measures.
+    """
+    p = write(tmp_path, """
+        captures:
+          ground_geometry_0823-1038:
+            floorplan: exports/ground/plan.zip
+            mesh: exports/ground/mesh.zip
+            glb: exports/ground/mesh.glb
+            note: best ground capture by leave-one-out
+        levels:
+          "Ground Level": [ground_geometry_0823-1038, other]
+    """)
+    entry = projectschema.settings(p)["captures"]["ground_geometry_0823-1038"]
+    assert entry["floorplan"] == "exports/ground/plan.zip"
+    assert entry["glb"] == "exports/ground/mesh.glb"
+
+
+def test_a_split_under_a_capture_is_still_refused(tmp_path):
+    """`split:` is keyed by LEVEL, and a copy under a capture is a real error.
+
+    An open plan's fusion belongs to the building, so it is the same in every
+    capture and it runs after `combine` where there is one frame to measure
+    against. My own file had three of these and they had never done anything --
+    which is the case for naming only the keys that mean something, rather than
+    every key the file happens to contain.
+    """
+    p = write(tmp_path, """
+        captures:
+          midlevel:
+            split: {room: Living Room, names: [lounge, dining]}
+    """)
+    with pytest.raises(SystemExit) as exc:
+        projectschema.load(p)
+    assert "split" in str(exc.value)
