@@ -246,6 +246,11 @@ nothing and says nothing -- which is the failure the entry was written to end.
 
 ### Combining captures: align or discard
 
+The complete combine algorithm, including context-only observations and the
+per-area leave-one-out mean used to select geometry, is in
+[`docs/COMBINE.md`](docs/COMBINE.md). That document is authoritative for stage
+ordering; this section records the failures that constrain it.
+
 `combine` is the only stage that reads more than one capture, and its rule has
 two steps with **no third branch**: align the scan; if that fails, report and
 discard it. There is no "align poorly and carry on" — that branch existed, and

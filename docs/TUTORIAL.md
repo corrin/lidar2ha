@@ -549,6 +549,11 @@ errors that tell you what they are.
 
 ## "My captures disagree about the layout"
 
+[`COMBINE.md`](COMBINE.md) specifies the algorithm behind this stage. In
+particular, a room scanned only for alignment context must not compete to
+replace a complete scan of that room, while the new room reached from it may be
+the only candidate and must survive.
+
 ```bash
 uv run lidar2ha combine "Ground Floor" --project project.yaml \
     -o exports/ground_floor_combined.json
