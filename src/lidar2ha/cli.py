@@ -539,6 +539,8 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
               help="fraction required to compete rather than serve as context")
 @click.option("--area-two-source-agree-cm", type=float, default=None,
               help="boundary difference below which two sources are equivalent")
+@click.option("--door-match-cm", type=float, default=None,
+              help="centre and width tolerance for duplicate door observations")
 @click.option("--storey", default=None,
               help="which level to take from INSIDE each capture, when a capture "
                    "holds more than one. This is a Level.name in the model json, "
@@ -550,7 +552,8 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
             min_grid_concentration: float | None,
             identity_min_overlap: float | None, identity_ambiguity: float | None,
             area_completeness: float | None,
-            area_two_source_agree_cm: float | None, storey: str | None) -> None:
+            area_two_source_agree_cm: float | None, door_match_cm: float | None,
+            storey: str | None) -> None:
     """Merge every capture of one LEVEL into one model, and say what to re-scan.
 
     Geometry is SELECTED and never averaged: two plans of one room disagree by
@@ -705,7 +708,9 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                                if area_completeness is None else area_completeness),
             area_two_source_agree_cm=(defaults.area_two_source_agree_cm
                                       if area_two_source_agree_cm is None
-                                      else area_two_source_agree_cm))
+                                      else area_two_source_agree_cm),
+            door_match_cm=(defaults.door_match_cm if door_match_cm is None
+                           else door_match_cm))
         result = combining.combine(
             models, reference=reference, expected_areas=areas, options=options)
     except ValueError as exc:

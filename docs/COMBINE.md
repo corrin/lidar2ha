@@ -103,11 +103,15 @@ the default, and new measurements are what change them.
 ## The 2026-08-29 regression
 
 The private house capture has 15 walls and three CSV rooms: a 13.5 m2 bedroom,
-an 8.9 m2 newly scanned room, and a 0.6 m2 remainder. Its own mesh registration
-is 6.7 cm at 100% coverage. The correct placement, anchored by the known spare
-bedroom, reads 4.9 cm at 81% coverage. A wrong placement on the den reads a
-better-looking 2.3 cm at 100% coverage because it explains away the new ground.
+an 8.9 m2 room labelled `Living Room`, and a 0.6 m2 remainder. Its own mesh
+registration is 6.7 cm at 100% coverage. Registration finds two plausible
+quarter-turn basins. Both put the bedroom almost entirely on the declared spare
+bedroom, so that declaration alone does not distinguish them. One basin reads
+about 2.7 cm at 100% coverage against the established ground model; the other
+reads about 4.2 cm at 85% coverage.
 
-The lower error is not the better placement. The known bedroom is context; the
-new room is the basement. This case is the acceptance test for the ordering
-above.
+Those measurements prove neither `basement` nor `deck` as the identity of the
+new room. The correct outcome is an ambiguous placement until another declared
+common area or an explicit placement decision breaks the tie. The regression
+tests use a reduced, declared-context example to prove the ordering above; they
+do not turn a hypothesis about this private room into data.

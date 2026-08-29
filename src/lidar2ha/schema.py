@@ -126,6 +126,10 @@ class Door(_Base):
     x: float
     y: float
     width: float
+    # Optional for every already-written model. `combine` unions openings from
+    # placed captures, so the selected opening must say where it came from just
+    # as a selected room or wall does.
+    source: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Registration(_Base):

@@ -72,7 +72,7 @@ from .registration import (
     transform,
 )
 from .rooms import Placed, covered_rooms, polygon_of
-from .schema import Capture, Level, Model, Room, Wall, load_model, save_model
+from .schema import Capture, Door, Level, Model, Room, Wall, load_model, save_model
 
 CM_TO_M = 0.01
 M_TO_CM = 100.0
@@ -316,6 +316,10 @@ AREA_COMPLETENESS = 0.70
 # With two candidates there is a second opinion, not a mean. If their sampled
 # outlines differ by more than this there is no evidence for choosing either.
 AREA_TWO_SOURCE_AGREE_CM = 5.0
+# Door centres from repeat captures within this distance are one opening. The
+# stage does not emit doors to Sweet Home 3D yet, but dropping every non-anchor
+# door now would make that later feature start from incomplete data.
+DOOR_MATCH_CM = 20.0
 
 
 @dataclass(frozen=True)
@@ -336,6 +340,7 @@ class CombineOptions:
     identity_ambiguity: float = IDENTITY_AMBIGUITY
     area_completeness: float = AREA_COMPLETENESS
     area_two_source_agree_cm: float = AREA_TWO_SOURCE_AGREE_CM
+    door_match_cm: float = DOOR_MATCH_CM
 
     def validated(self) -> CombineOptions:
         positive = {
@@ -343,6 +348,7 @@ class CombineOptions:
             "max_p90_cm": self.max_p90_cm,
             "max_off_grid_deg": self.max_off_grid_deg,
             "area_two_source_agree_cm": self.area_two_source_agree_cm,
+            "door_match_cm": self.door_match_cm,
         }
         bad = next((name for name, value in positive.items() if value <= 0), None)
         if bad:
@@ -1141,6 +1147,25 @@ def place_wall(wall: Wall, fit: Fit | None, source: str) -> Wall:
     return wall.model_copy(update={"x_start": float(xs), "y_start": float(ys),
                                    "x_end": float(xe), "y_end": float(ye),
                                    "source": source})
+
+
+def place_door(door: Door, fit: Fit | None, source: str) -> Door:
+    """One opening in the reference frame, carrying its capture provenance."""
+    point = place_cm([(door.x, door.y)], fit)[0]
+    return door.model_copy(update={"x": float(point[0]), "y": float(point[1]),
+                                   "source": source})
+
+
+def union_doors(placed: list[Door], *, match_cm: float = DOOR_MATCH_CM) -> list[Door]:
+    """Union openings from placed captures, deduplicating repeat observations."""
+    out: list[Door] = []
+    for door in placed:
+        duplicate = any(math.hypot(door.x - old.x, door.y - old.y) <= match_cm
+                        and abs(door.width - old.width) <= match_cm
+                        for old in out)
+        if not duplicate:
+            out.append(door)
+    return out
 
 
 def outline_m(poly: Polygon, step_m: float = 0.05) -> np.ndarray:
@@ -2269,11 +2294,10 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
     won_areas: set[str] = set()
 
     for selection in area_selections or []:
-        if selection.verdict == "measured":
-            continue
         items.append({
-            "kind": f"area_{selection.verdict}",
+            "kind": "area_selection",
             "area": selection.area,
+            "verdict": selection.verdict,
             "winner": (None if selection.winner is None
                        else cands[selection.winner].capture),
             "distances_cm": {cands[i].capture: round(distance, 1)
@@ -2739,6 +2763,11 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
 
     # --- the model ----------------------------------------------------------
     base = levels[ref]
+    doors_out = union_doors(
+        [place_door(door, fits[name], name)
+         for name in accepted for door in levels[name].doors],
+        match_cm=config.door_match_cm)
+
     model = Model(
         source=models[ref].source,
         # The combined model is a survey of the building even where a fixture
@@ -2747,7 +2776,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         role="geometry",
         levels=[Level(name=base.name, ceiling_height_cm=base.ceiling_height_cm,
                       elevation_cm=base.elevation_cm, walls=walls_out,
-                      rooms=rooms_out, doors=list(base.doors),
+                      rooms=rooms_out, doors=doors_out,
                       # The reference's own plan-to-mesh fit, because the
                       # combined frame IS the reference's plan frame -- so
                       # `textures_project` still indexes into its mesh.
@@ -2787,6 +2816,12 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                      f"capture_{record.verdict}"),
             "capture": name, "verdict": record.verdict,
             "candidates": len(record.candidates),
+                "rooms": [
+                    {"room": str(room.name), "area": room.ha_area,
+                     "area_m2": round(polygon_of(room).area * CM2_TO_M2, 2)}
+                    for level in models[name].levels for room in level.rooms
+                    if len(room.points) >= 3
+                ],
             "reasons": [reason for reason in (record.reason, caution_text) if reason],
         })
 
@@ -3074,6 +3109,8 @@ def main() -> None:
                     default=AREA_TWO_SOURCE_AGREE_CM,
                     help="largest boundary difference at which two captures are "
                          "equivalent; above it neither can identify the winner")
+    ap.add_argument("--door-match-cm", type=float, default=DOOR_MATCH_CM,
+                    help="centre and width tolerance for duplicate door observations")
     args = ap.parse_args()
 
     models: dict[str, Model] = {}
@@ -3103,7 +3140,8 @@ def main() -> None:
             identity_min_overlap=args.identity_min_overlap,
             identity_ambiguity=args.identity_ambiguity,
             area_completeness=args.area_completeness,
-            area_two_source_agree_cm=args.area_two_source_agree_cm)
+            area_two_source_agree_cm=args.area_two_source_agree_cm,
+            door_match_cm=args.door_match_cm)
         result = combine(models, level_name=args.storey, reference=args.reference,
                          options=options)
     except ValueError as exc:

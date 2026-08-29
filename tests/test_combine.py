@@ -86,6 +86,21 @@ def degraded(model: Model, scale: float = 1.06) -> Model:
         "levels": [lv.model_copy(update={"walls": walls, "rooms": rooms})]})
 
 
+def test_doors_from_every_capture_survive_with_provenance() -> None:
+    """The reference capture is not a privileged source of openings."""
+    first = schema.Door(x=100, y=200, width=80)
+    repeated = schema.Door(x=112, y=205, width=82)
+    extra = schema.Door(x=400, y=200, width=90)
+
+    placed = [combining.place_door(first, None, "reference"),
+              combining.place_door(repeated, None, "second"),
+              combining.place_door(extra, None, "second")]
+    doors = combining.union_doors(placed, match_cm=20)
+
+    assert [(d.x, d.y, d.source) for d in doors] == [
+        (100, 200, "reference"), (400, 200, "second")]
+
+
 @pytest.fixture(scope="module")
 def real() -> dict[str, Model]:
     """The three real captures of the mid level, all of which are good.
