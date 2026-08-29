@@ -1448,6 +1448,17 @@ def test_a_partial_area_is_context_and_cannot_win():
     assert answer.winner != 2
 
 
+@pytest.mark.parametrize("change", [
+    {"max_median_cm": 0.0},
+    {"area_completeness": 1.01},
+    {"identity_min_overlap": -0.01},
+])
+def test_combine_thresholds_are_validated_before_geometry_runs(change):
+    """A nonsensical guess must fail at the boundary, not alter the model."""
+    with pytest.raises(ValueError, match="must be"):
+        combining.CombineOptions(**change).validated()
+
+
 def _fusion_group(resolved_by_others: bool = True):
     """Two named rooms and one polygon over both, as Candidates and a Group.
 

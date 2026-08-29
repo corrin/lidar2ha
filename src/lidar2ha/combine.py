@@ -317,6 +317,49 @@ AREA_COMPLETENESS = 0.70
 # outlines differ by more than this there is no evidence for choosing either.
 AREA_TWO_SOURCE_AGREE_CM = 5.0
 
+
+@dataclass(frozen=True)
+class CombineOptions:
+    """Every behaviour-changing bound used by the combine decision path.
+
+    These are guesses, collected so the library and both command-line entry
+    points cannot quietly run different algorithms. Sampling-only and report
+    display constants remain beside the functions they affect.
+    """
+
+    max_median_cm: float = MAX_MEDIAN_CM
+    max_p90_cm: float = MAX_P90_CM
+    edge_containment: float = EDGE_CONTAINMENT
+    max_off_grid_deg: float = MAX_OFF_GRID_DEG
+    min_grid_concentration: float = MIN_GRID_CONCENTRATION
+    identity_min_overlap: float = IDENTITY_MIN_OVERLAP
+    identity_ambiguity: float = IDENTITY_AMBIGUITY
+    area_completeness: float = AREA_COMPLETENESS
+    area_two_source_agree_cm: float = AREA_TWO_SOURCE_AGREE_CM
+
+    def validated(self) -> CombineOptions:
+        positive = {
+            "max_median_cm": self.max_median_cm,
+            "max_p90_cm": self.max_p90_cm,
+            "max_off_grid_deg": self.max_off_grid_deg,
+            "area_two_source_agree_cm": self.area_two_source_agree_cm,
+        }
+        bad = next((name for name, value in positive.items() if value <= 0), None)
+        if bad:
+            raise ValueError(f"{bad} must be greater than zero, got {positive[bad]}")
+        unit = {
+            "edge_containment": self.edge_containment,
+            "min_grid_concentration": self.min_grid_concentration,
+            "identity_min_overlap": self.identity_min_overlap,
+            "identity_ambiguity": self.identity_ambiguity,
+            "area_completeness": self.area_completeness,
+        }
+        bad = next((name for name, value in unit.items()
+                    if not 0.0 <= value <= 1.0), None)
+        if bad:
+            raise ValueError(f"{bad} must be between zero and one, got {unit[bad]}")
+        return self
+
 WEIGHTS: dict[str, float] = {
     # Agreement with the co-registered consensus does most of the work: it is
     # the only signal measured against evidence from OUTSIDE the candidate's own
@@ -1649,7 +1692,10 @@ def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
 
 
 def decide_areas(groups: list[Group], cands: list[Candidate],
-                 scores: dict[int, Score]) -> tuple[list[Decision], list[AreaSelection]]:
+                 scores: dict[int, Score], *,
+                 completeness: float = AREA_COMPLETENESS,
+                 two_source_agree_cm: float = AREA_TWO_SOURCE_AGREE_CM,
+                 ) -> tuple[list[Decision], list[AreaSelection]]:
     """Decide named areas independently; retain geometric grouping for unknowns.
 
     A capture commonly surveys one known room poorly for context and a missing
@@ -1681,7 +1727,10 @@ def decide_areas(groups: list[Group], cands: list[Candidate],
                 self_overlaps=[s for s in group.self_overlaps
                                if s[0] in members and s[1] in members],
             )
-            selection = select_area(area, [cands[i] for i in members], scores)
+            selection = select_area(
+                area, [cands[i] for i in members], scores,
+                completeness=completeness,
+                two_source_agree_cm=two_source_agree_cm)
             selections.append(selection)
             winner = None if selection.winner is None else cands[selection.winner].capture
             ordered = sorted(selection.distance_cm,
@@ -2394,8 +2443,18 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
             max_p90_cm: float = MAX_P90_CM, edge: float = EDGE_CONTAINMENT,
             max_off_grid_deg: float = MAX_OFF_GRID_DEG,
             min_grid_concentration: float = MIN_GRID_CONCENTRATION,
-            expected_areas: set[str] | None = None) -> Combined:
+            expected_areas: set[str] | None = None,
+            options: CombineOptions | None = None) -> Combined:
     """The five stages, with no printing. `main` reports what this returns."""
+    config = (options or CombineOptions(
+        max_median_cm=max_median_cm, max_p90_cm=max_p90_cm,
+        edge_containment=edge, max_off_grid_deg=max_off_grid_deg,
+        min_grid_concentration=min_grid_concentration)).validated()
+    max_median_cm = config.max_median_cm
+    max_p90_cm = config.max_p90_cm
+    edge = config.edge_containment
+    max_off_grid_deg = config.max_off_grid_deg
+    min_grid_concentration = config.min_grid_concentration
     if len(models) < 2:
         raise ValueError("give at least two captures; one capture needs no combining")
 
@@ -2476,7 +2535,10 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         if not finite_candidates:
             fit = basin_candidates[0]
         else:
-            placement = choose_placement(level, levels[ref], finite_candidates)
+            placement = choose_placement(
+                level, levels[ref], finite_candidates,
+                min_overlap=config.identity_min_overlap,
+                ambiguity=config.identity_ambiguity)
             if placement.verdict != "placed":
                 verdict: Verdict = ("ambiguous" if placement.verdict == "ambiguous"
                                     else "discarded")
@@ -2649,7 +2711,9 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     }
 
     # --- stage 4: select ----------------------------------------------------
-    decisions, area_selections = decide_areas(groups, cands, scores)
+    decisions, area_selections = decide_areas(
+        groups, cands, scores, completeness=config.area_completeness,
+        two_source_agree_cm=config.area_two_source_agree_cm)
     chosen: list[int] = []
     rooms_out: list[Room] = []
     for decision in decisions:
@@ -2991,6 +3055,25 @@ def main() -> None:
                          "four rotations between two captures are ever valid -- this "
                          "is what catches a capture placed on the wrong walls, which "
                          "no error figure can see")
+    ap.add_argument("--min-grid-concentration", type=float,
+                    default=MIN_GRID_CONCENTRATION,
+                    help="below this the wall grid abstains instead of approving or "
+                         "refusing a rotation")
+    ap.add_argument("--identity-min-overlap", type=float,
+                    default=IDENTITY_MIN_OVERLAP,
+                    help="minimum containment of a declared common area needed to "
+                         "support a placement")
+    ap.add_argument("--identity-ambiguity", type=float,
+                    default=IDENTITY_AMBIGUITY,
+                    help="declared-area overlap margin within which distinct "
+                         "placements remain ambiguous")
+    ap.add_argument("--area-completeness", type=float, default=AREA_COMPLETENESS,
+                    help="fraction of another survey required to compete as an "
+                         "area candidate rather than alignment context")
+    ap.add_argument("--area-two-source-agree-cm", type=float,
+                    default=AREA_TWO_SOURCE_AGREE_CM,
+                    help="largest boundary difference at which two captures are "
+                         "equivalent; above it neither can identify the winner")
     args = ap.parse_args()
 
     models: dict[str, Model] = {}
@@ -3012,10 +3095,17 @@ def main() -> None:
         models[name] = load_model(path)
 
     try:
+        options = CombineOptions(
+            max_median_cm=args.max_median_cm, max_p90_cm=args.max_p90_cm,
+            edge_containment=args.edge_containment,
+            max_off_grid_deg=args.max_off_grid_deg,
+            min_grid_concentration=args.min_grid_concentration,
+            identity_min_overlap=args.identity_min_overlap,
+            identity_ambiguity=args.identity_ambiguity,
+            area_completeness=args.area_completeness,
+            area_two_source_agree_cm=args.area_two_source_agree_cm)
         result = combine(models, level_name=args.storey, reference=args.reference,
-                         max_median_cm=args.max_median_cm, max_p90_cm=args.max_p90_cm,
-                         edge=args.edge_containment,
-                         max_off_grid_deg=args.max_off_grid_deg)
+                         options=options)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 

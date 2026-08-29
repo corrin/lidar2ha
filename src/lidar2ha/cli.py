@@ -525,6 +525,20 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
               help="the tail matters more than the median: two captures can agree "
                    "at 6 cm median and still differ by 44 cm at p90, which on a "
                    "2.6 m2 room is a large part of the room")
+@click.option("--edge-containment", type=float, default=None,
+              help="intersection / smaller area at which rooms correspond")
+@click.option("--max-off-grid-deg", type=float, default=None,
+              help="largest rotation residual from the shared wall grid")
+@click.option("--min-grid-concentration", type=float, default=None,
+              help="below this the wall grid abstains")
+@click.option("--identity-min-overlap", type=float, default=None,
+              help="declared-area containment required to support a basin")
+@click.option("--identity-ambiguity", type=float, default=None,
+              help="declared-area overlap margin that keeps basins ambiguous")
+@click.option("--area-completeness", type=float, default=None,
+              help="fraction required to compete rather than serve as context")
+@click.option("--area-two-source-agree-cm", type=float, default=None,
+              help="boundary difference below which two sources are equivalent")
 @click.option("--storey", default=None,
               help="which level to take from INSIDE each capture, when a capture "
                    "holds more than one. This is a Level.name in the model json, "
@@ -532,7 +546,11 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
                    "in project.yaml")
 def combine(level: str, project: Path, out: Path | None, reference: str | None,
             max_median_cm: float | None, max_p90_cm: float | None,
-            storey: str | None) -> None:
+            edge_containment: float | None, max_off_grid_deg: float | None,
+            min_grid_concentration: float | None,
+            identity_min_overlap: float | None, identity_ambiguity: float | None,
+            area_completeness: float | None,
+            area_two_source_agree_cm: float | None, storey: str | None) -> None:
     """Merge every capture of one LEVEL into one model, and say what to re-scan.
 
     Geometry is SELECTED and never averaged: two plans of one room disagree by
@@ -665,12 +683,31 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
 
     click.echo("")
     try:
-        result = combining.combine(
-            models, reference=reference, expected_areas=areas,
-            max_median_cm=(combining.MAX_MEDIAN_CM if max_median_cm is None
+        defaults = combining.CombineOptions()
+        options = combining.CombineOptions(
+            max_median_cm=(defaults.max_median_cm if max_median_cm is None
                            else max_median_cm),
-            max_p90_cm=(combining.MAX_P90_CM if max_p90_cm is None
-                        else max_p90_cm))
+            max_p90_cm=(defaults.max_p90_cm if max_p90_cm is None else max_p90_cm),
+            edge_containment=(defaults.edge_containment if edge_containment is None
+                              else edge_containment),
+            max_off_grid_deg=(defaults.max_off_grid_deg if max_off_grid_deg is None
+                              else max_off_grid_deg),
+            min_grid_concentration=(defaults.min_grid_concentration
+                                    if min_grid_concentration is None
+                                    else min_grid_concentration),
+            identity_min_overlap=(defaults.identity_min_overlap
+                                  if identity_min_overlap is None
+                                  else identity_min_overlap),
+            identity_ambiguity=(defaults.identity_ambiguity
+                                if identity_ambiguity is None
+                                else identity_ambiguity),
+            area_completeness=(defaults.area_completeness
+                               if area_completeness is None else area_completeness),
+            area_two_source_agree_cm=(defaults.area_two_source_agree_cm
+                                      if area_two_source_agree_cm is None
+                                      else area_two_source_agree_cm))
+        result = combining.combine(
+            models, reference=reference, expected_areas=areas, options=options)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
