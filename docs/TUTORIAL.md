@@ -594,6 +594,49 @@ reference explains, so a capture that saw a new room always scores lower. I had 
 90% threshold for a while and it rejected the only capture containing my bathroom,
 at 88%.
 
+### Joining inside to outside when they never overlap
+
+My deck scan and dining-room scan met at a door, but I never walked through it.
+There are no common walls for `combine` to measure, so asking the fitter to try
+harder gives a confident-looking wrong answer. I placed two points at the ends of
+the same door sill in each plan instead:
+
+```yaml
+placements:
+  Mid Level:
+    - capture: deck_geometry
+      relative_to: mid_geometry
+      capture_points_cm: [[1120, 430], [1220, 430]]
+      relative_points_cm: [[615, 870], [715, 870]]
+      evidence: aligned the two ends of the shared back-door sill
+```
+
+Use the capture ids exactly as they appear under that level. Coordinates are plan
+centimetres, before either capture has moved. Pick two points far enough apart to
+show the direction of a real shared feature: the two ends of a door, wall or deck
+edge are useful; two guesses a few centimetres apart make the angle unstable.
+
+Run `combine` normally. The alignment JSON distinguishes three answers:
+
+- `direct` or `chained`: walls in overlapping scans measured the placement;
+- `declared`: the two point pairs placed adjacent scans, with your `evidence` and
+  point-pair residual retained;
+- `discarded` or `ambiguous`: the capture contributes no geometry and the report
+  names why.
+
+A declared join never acquires a pretend median, coverage or p90. Look for
+`"measured_overlap": null`. If its `relative_to` capture is refused, the attached
+scan is refused too; the declaration cannot float without a route into the level's
+reference frame. Keep the measured indoor capture as `--reference`, because the
+attached scan's position depends on it.
+
+Polycam sometimes puts coplanar outdoor regions into separate sheet levels. List
+every sheet that belongs to the project level under `levels:`; do not turn sheet
+names or their guessed elevations into storeys. Each expanded sheet has a key such
+as `frontage [Floor 2]`, and a placement must name that exact key. If the sheets
+need their own joins, declare each one and preserve the evidence for each rather
+than flattening them in an image editor.
+
 Then read the work list:
 
 ```

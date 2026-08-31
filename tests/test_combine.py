@@ -1377,6 +1377,136 @@ def _fit(theta=0.0, tx=0.0, ty=0.0, median=0.02, coverage=1.0):
     }
 
 
+def test_placement_paths_reach_adjacent_ground_through_a_bridge():
+    """A deck need not overlap the anchor when a doorway scan joins them.
+
+    The old construction fitted every capture directly onto the anchor, so the
+    second good edge was computed for consensus and then ignored for geometry.
+    """
+    fits = {
+        ("bridge", "inside"): _fit(tx=4.0),
+        ("deck", "bridge"): _fit(tx=3.0),
+    }
+
+    paths = combining.placement_paths(fits, {"inside", "bridge", "deck"},
+                                      "inside", limit_m=0.05)
+
+    assert paths == {
+        "inside": ["inside"],
+        "bridge": ["bridge", "inside"],
+        "deck": ["deck", "bridge", "inside"],
+    }
+
+
+def test_placement_paths_report_disconnected_captures_and_ignore_input_order():
+    """A capture with no accepted edge stays visibly unplaced, never omitted."""
+    forward = {
+        ("bridge", "inside"): _fit(),
+        ("deck", "bridge"): _fit(),
+        ("bad", "deck"): _fit(median=0.20),
+    }
+    reverse = dict(reversed(list(forward.items())))
+
+    a = combining.placement_paths(forward, {"bad", "deck", "inside", "bridge"},
+                                  "inside", limit_m=0.05)
+    b = combining.placement_paths(reverse, {"bridge", "inside", "deck", "bad"},
+                                  "inside", limit_m=0.05)
+
+    assert a == b
+    assert "bad" not in a
+
+
+def test_a_chained_fit_composes_every_edge_and_keeps_the_weakest_evidence():
+    """The deck geometry must land through the bridge without laundering error."""
+    fits = {
+        ("deck", "bridge"): _fit(tx=3.0, median=0.03, coverage=0.8),
+        ("bridge", "inside"): _fit(tx=4.0, median=0.04, coverage=0.9),
+    }
+
+    fit = combining.fit_along_path(["deck", "bridge", "inside"], fits)
+
+    assert fit["tx"] == pytest.approx(7.0)
+    assert fit["ty"] == pytest.approx(0.0)
+    assert fit["median_error_m"] == 0.04
+    assert fit["coverage"] == 0.8
+
+
+def _one_room_capture(name: str, x0: float, width: float, area: str) -> Model:
+    points = [(x0, 0), (x0 + width, 0), (x0 + width, 200), (x0, 200)]
+    walls = [Wall(x_start=x1, y_start=y1, x_end=x2, y_end=y2,
+                  thickness=10, height=240)
+             for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1])]
+    return Model(source=f"{name}.dxf", units="cm", levels=[Level(
+        name="Floor 1", ceiling_height_cm=240, walls=walls,
+        rooms=[Room(name=name, ha_area=area, points=points)])])
+
+
+def test_a_declared_bridge_places_adjacent_ground_without_fake_overlap_evidence():
+    """An outdoor scan with no common walls enters through its declared join.
+
+    Accepting the schema but never handing it to `combine` made the declaration
+    do nothing. Treating its point residual as scan overlap would be the other
+    silent failure: a human placement is binding geometry, not measured quality.
+    """
+    inside = _one_room_capture("inside", 0, 400, "den")
+    deck = _one_room_capture("deck", 1000, 200, "lower_deck")
+    declaration = combining.DeclaredPlacement.from_points(
+        capture="deck", relative_to="inside",
+        capture_points_cm=((1000, 0), (1100, 0)),
+        relative_points_cm=((400, 0), (500, 0)),
+        evidence="owner aligned the shared door edge")
+
+    result = combining.combine(
+        {"inside": inside, "deck": deck}, reference="inside",
+        expected_areas={"den", "lower_deck"},
+        declared_placements=[declaration])
+
+    assert {room.ha_area for room in result.model.levels[0].rooms} == {
+        "den", "lower_deck"}
+    alignment = result.aligned["deck"]
+    assert alignment.placement == "declared"
+    assert alignment.path == ["deck", "inside"]
+    assert alignment.agreement_m is None
+    capture = next(c for c in result.model.captures if c.id == "deck")
+    assert capture.placement == "declared"
+    assert capture.median_error_m is None
+    assert capture.placement_evidence == "owner aligned the shared door edge"
+
+
+def test_declared_adjacent_ground_is_independent_of_capture_input_order():
+    """Reordering project captures cannot move or remove a declared deck."""
+    inside = _one_room_capture("inside", 0, 400, "den")
+    deck = _one_room_capture("deck", 1000, 200, "lower_deck")
+    declaration = combining.DeclaredPlacement.from_points(
+        capture="deck", relative_to="inside",
+        capture_points_cm=((1000, 0), (1100, 0)),
+        relative_points_cm=((400, 0), (500, 0)), evidence="door edge")
+
+    first = combining.combine(
+        {"inside": inside, "deck": deck}, reference="inside",
+        declared_placements=[declaration]).model
+    second = combining.combine(
+        {"deck": deck, "inside": inside}, reference="inside",
+        declared_placements=[declaration]).model
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_a_declared_capture_cannot_be_the_reference():
+    """Choosing the attached scan as anchor must not erase its declaration."""
+    inside = _one_room_capture("inside", 0, 400, "den")
+    deck = _one_room_capture("deck", 1000, 200, "lower_deck")
+    declaration = combining.DeclaredPlacement.from_points(
+        capture="deck", relative_to="inside",
+        capture_points_cm=((1000, 0), (1100, 0)),
+        relative_points_cm=((400, 0), (500, 0)), evidence="door edge")
+
+    with pytest.raises(ValueError, match="declared capture 'deck'.*reference"):
+        combining.combine(
+            {"inside": inside, "deck": deck}, reference="deck",
+            declared_placements=[declaration])
+
+
 def test_a_declared_context_room_chooses_the_right_basin_over_the_lower_error():
     """The 2026-08-29 failure in its smallest form.
 

@@ -87,7 +87,7 @@ offline forever. So get the toolchain working first, then start the clock.
 | Headless raytraced render + `floorplan.yaml` | works (`HeadlessRender.java`), all levels in one pass |
 | Frame the camera so the house fits | works (`camera.py`), solved rather than guessed |
 | Rename rooms to HA areas, merge open-plan splits | works (`rooms.py`), mapping written by hand |
-| Merge several captures of one level | works (`combine.py`), align-or-discard, wants 3+ scans |
+| Merge several captures of one level | works (`combine.py`), measured overlap or declared adjacent joins; wants 3+ scans for consensus |
 | Read your HA area/entity registry | works (`ha.py`), over the WebSocket API |
 | Place every `light.*` entity in its room | works (`lights.py`), positions are a guess |
 | Find real fittings in the scan | works (`fixtures.py`, `placefixtures.py`), needs a human |

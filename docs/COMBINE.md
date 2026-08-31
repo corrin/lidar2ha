@@ -32,7 +32,7 @@ that common ground may be a newly scanned room, so they neither reward nor
 penalise the placement. Capture-wide coverage is reported and never used as a
 veto.
 
-Placement has three outcomes:
+Measured placement has three outcomes:
 
 - **placed** -- one hypothesis is supported;
 - **ambiguous** -- more than one hypothesis remains plausible;
@@ -40,6 +40,33 @@ Placement has three outcomes:
 
 Ambiguous and unplaceable captures contribute no geometry. Their hypotheses
 and measurements remain in the alignment record.
+
+Adjacent inside and outside scans may share no floor or walls at all. In that
+case fitting has no evidence to work with. Two corresponding point pairs can
+declare the rigid join in `project.yaml`:
+
+```yaml
+placements:
+  Ground Floor:
+    - capture: deck
+      relative_to: inside
+      capture_points_cm: [[1120, 430], [1220, 430]]
+      relative_points_cm: [[615, 870], [715, 870]]
+      evidence: aligned the two ends of the shared door sill
+```
+
+The points are plan centimetres in each capture's own frame. Their direction
+determines rotation and their midpoint determines translation. The declaration
+is binding geometry, with its point-pair residual and evidence recorded. It is
+never relabelled as measured wall overlap: `median_error_m`, coverage and p90
+remain absent and the alignment JSON says `measured_overlap: null`.
+
+A declaration may attach to a measured capture or to another declared capture,
+forming an explicit path into the reference frame. The reference itself must be
+a measured root. Unknown captures, duplicate declarations, self-reference,
+cycles and unresolved paths fail at the boundary. If a declaration's target is
+present but its measured placement is refused, the dependent capture is also
+refused and named in the report.
 
 ## 3. Build the area observations
 

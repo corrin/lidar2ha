@@ -251,10 +251,13 @@ per-area leave-one-out mean used to select geometry, is in
 [`docs/COMBINE.md`](docs/COMBINE.md). That document is authoritative for stage
 ordering; this section records the failures that constrain it.
 
-`combine` is the only stage that reads more than one capture, and its rule has
-two steps with **no third branch**: align the scan; if that fails, report and
-discard it. There is no "align poorly and carry on" — that branch existed, and
-it built this house's mid-level model out of the worst of its three captures.
+`combine` is the only stage that reads more than one capture. Overlapping scans
+have two outcomes: align from measured common ground, or report and discard.
+Adjacent scans with no common ground have a third, explicitly different answer:
+a two-point `placements:` declaration may attach them, retaining its evidence
+and never presenting the join as measured overlap. There is no "align poorly and
+carry on" — that branch existed, and it built this house's mid-level model out
+of the worst of its three captures.
 
 **Redundancy is the method.** Fifteen scans exist because nobody knows which are
 good, and the bad one identifies itself by being the odd man out. Two captures

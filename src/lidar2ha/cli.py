@@ -569,7 +569,8 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     from . import combine as combining
     from .schema import load_model, save_model
 
-    settings = _project_settings(project)
+    project_config = projectschema.load(project)
+    settings = project_config.model_dump(exclude_unset=True, exclude_none=False)
     levels = settings.get("levels") or {}
     if not levels:
         raise SystemExit(
@@ -711,8 +712,16 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                                       else area_two_source_agree_cm),
             door_match_cm=(defaults.door_match_cm if door_match_cm is None
                            else door_match_cm))
+        declared = [combining.DeclaredPlacement.from_points(
+            capture=item.capture,
+            relative_to=item.relative_to,
+            capture_points_cm=item.capture_points_cm,
+            relative_points_cm=item.relative_points_cm,
+            evidence=item.evidence,
+        ) for item in project_config.placements.get(level, [])]
         result = combining.combine(
-            models, reference=reference, expected_areas=areas, options=options)
+            models, reference=reference, expected_areas=areas, options=options,
+            declared_placements=declared)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 

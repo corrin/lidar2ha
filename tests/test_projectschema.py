@@ -216,6 +216,24 @@ def test_a_split_under_a_capture_is_still_refused(tmp_path):
     assert "split" in str(exc.value)
 
 
+def test_a_declared_placement_names_two_attachment_points_and_its_evidence(tmp_path):
+    """Adjacent scans can share a level without sharing photographed ground."""
+    p = write(tmp_path, """
+        placements:
+          "Mid Level":
+            - capture: deck
+              relative_to: dining
+              capture_points_cm: [[10, 20], [110, 20]]
+              relative_points_cm: [[500, 300], [500, 400]]
+              evidence: deck doorway aligned to dining-room doorway
+    """)
+
+    placement = projectschema.load(p).placements["Mid Level"][0]
+    assert placement.capture == "deck"
+    assert placement.capture_points_cm == ((10.0, 20.0), (110.0, 20.0))
+    assert placement.evidence.startswith("deck doorway")
+
+
 def test_a_key_that_exists_elsewhere_is_told_where_it_goes(tmp_path):
     """`did you mean X?` where X is the key just rejected reads as nonsense.
 

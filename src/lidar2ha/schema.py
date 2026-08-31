@@ -230,6 +230,13 @@ class Capture(_Base):
     # look identical to everything downstream.
     verdict: str | None = None
     refused_because: str | None = None
+    # A declared placement is binding geometry supplied by the project, not a
+    # measurement of shared scan ground. Keep its provenance without filling
+    # median_error_m / coverage with invented confidence.
+    placement: Literal["direct", "chained", "declared"] | None = None
+    placement_path: list[str] = Field(default_factory=list)
+    placement_evidence: str | None = None
+    placement_point_residual_m: float | None = None
 
 
 class Level(_Base):

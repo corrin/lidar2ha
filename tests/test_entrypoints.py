@@ -640,6 +640,53 @@ def test_validate_cmd_passes_a_clean_project(tmp_path):
     assert "nothing to report" in result.output
 
 
+def test_combine_cmd_consumes_the_levels_declared_placement(tmp_path):
+    """A valid `placements:` block must change the model, not merely validate."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Room, Wall, save_model
+
+    def capture(capture_id, x0, width, area):
+        points = [(x0, 0), (x0 + width, 0), (x0 + width, 200), (x0, 200)]
+        walls = [Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
+                      thickness=10, height=240)
+                 for a, b in zip(points, points[1:] + points[:1])]
+        model = Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+            name="Floor 1", ceiling_height_cm=240, walls=walls,
+            rooms=[Room(name=capture_id, ha_area=area, points=points)])])
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(model, directory / f"{capture_id}_named.json")
+
+    capture("inside", 0, 400, "den")
+    capture("deck", 1000, 200, "lower_deck")
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [inside, deck]\n"
+        "rooms:\n  inside:\n    inside: den\n  deck:\n    deck: lower_deck\n"
+        "placements:\n  Ground:\n    - capture: deck\n"
+        "      relative_to: inside\n"
+        "      capture_points_cm: [[1000, 0], [1100, 0]]\n"
+        "      relative_points_cm: [[400, 0], [500, 0]]\n"
+        "      evidence: owner aligned the door edge\n",
+        encoding="utf-8")
+    out = tmp_path / "ground_combined.json"
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "--reference", "inside", "-o", str(out)])
+
+    assert result.exit_code == 0, result.output
+    alignment = json.loads((tmp_path / "ground_combined_alignment.json").read_text())
+    deck = next(row for row in alignment if row["capture"] == "deck")
+    assert deck["placement"] == "declared"
+    assert deck["measured_overlap"] is None
+    assert deck["evidence"] == "owner aligned the door edge"
+
+
 def test_coverage_cmd_runs_over_the_levels_it_finds(tmp_path):
     """The entrypoint, whose model-file resolution is its own code.
 

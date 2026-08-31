@@ -99,6 +99,16 @@ class Deploy(_Strict):
     key: str | None = None
 
 
+class Placement(_Strict):
+    """A human-declared rigid join between adjacent, non-overlapping scans."""
+
+    capture: str
+    relative_to: str
+    capture_points_cm: tuple[tuple[float, float], tuple[float, float]]
+    relative_points_cm: tuple[tuple[float, float], tuple[float, float]]
+    evidence: str = Field(min_length=1)
+
+
 class Project(_Strict):
     """Everything `project.yaml` may contain."""
 
@@ -117,6 +127,7 @@ class Project(_Strict):
 
     # Parsed by `seams`, which owns what a seam, a box and an outline are.
     split: dict[str, Any] = Field(default_factory=dict)
+    placements: dict[str, list[Placement]] = Field(default_factory=dict)
 
     lights: Lights = Field(default_factory=Lights)
     camera: Camera = Field(default_factory=Camera)
