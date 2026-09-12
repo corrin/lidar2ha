@@ -497,7 +497,7 @@ class DeclaredPlacement:
     def from_points(cls, *, capture: str, relative_to: str,
                     capture_points_cm: tuple[tuple[float, float], tuple[float, float]],
                     relative_points_cm: tuple[tuple[float, float], tuple[float, float]],
-                    evidence: str) -> "DeclaredPlacement":
+                    evidence: str) -> DeclaredPlacement:
         source = np.asarray(capture_points_cm, dtype=float) * CM_TO_M
         target = np.asarray(relative_points_cm, dtype=float) * CM_TO_M
         source_vector = source[1] - source[0]
@@ -824,7 +824,8 @@ def fit_along_path(path: list[str], fits: Mapping[tuple[str, str], Fit]) -> Fit:
     """
     if len(path) < 2:
         raise ValueError("a placement path needs a source and a target")
-    edges = [fits[(source, target)] for source, target in zip(path, path[1:])]
+    edges = [fits[(source, target)]
+             for source, target in zip(path, path[1:], strict=False)]
     return compose_fits(edges)
 
 

@@ -1435,7 +1435,8 @@ def _one_room_capture(name: str, x0: float, width: float, area: str) -> Model:
     points = [(x0, 0), (x0 + width, 0), (x0 + width, 200), (x0, 200)]
     walls = [Wall(x_start=x1, y_start=y1, x_end=x2, y_end=y2,
                   thickness=10, height=240)
-             for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1])]
+             for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1],
+                                           strict=True)]
     return Model(source=f"{name}.dxf", units="cm", levels=[Level(
         name="Floor 1", ceiling_height_cm=240, walls=walls,
         rooms=[Room(name=name, ha_area=area, points=points)])])

@@ -653,7 +653,7 @@ def test_combine_cmd_consumes_the_levels_declared_placement(tmp_path):
         points = [(x0, 0), (x0 + width, 0), (x0 + width, 200), (x0, 200)]
         walls = [Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
                       thickness=10, height=240)
-                 for a, b in zip(points, points[1:] + points[:1])]
+                 for a, b in zip(points, points[1:] + points[:1], strict=True)]
         model = Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
             name="Floor 1", ceiling_height_cm=240, walls=walls,
             rooms=[Room(name=capture_id, ha_area=area, points=points)])])
