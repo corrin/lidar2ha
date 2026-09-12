@@ -771,3 +771,113 @@ def test_voxels_cmd_runs_without_matplotlib(tmp_path, monkeypatch):
 
     assert "den" in grid.names, "the room never got a label"
     assert np.any(grid.labels > 0), "no column was attributed to a room"
+
+
+def test_combine_cmd_says_when_it_leaves_a_registration_behind(tmp_path):
+    """A registration dropped here disables `split --mesh` and `ceilings` in silence.
+
+    `rooms` writes `<id>_named.json` from an unregistered `<id>.json`, and this
+    command prefers the named file. On a real project every capture had a
+    `_registered.json` sitting beside the named file that beat it, so the
+    combined model came out unregistered, `split` recorded every boundary as
+    "level is unregistered", and no ceiling was ever measured on any level.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Registration, Room, Wall, load_model, save_model
+
+    def capture(capture_id, x0, area):
+        # An L, not a rectangle: two overlaid rectangles have two placements
+        # that fit equally well and the combine refuses rather than choosing.
+        points = [(x0, 0), (x0 + 400, 0), (x0 + 400, 200), (x0 + 200, 200),
+                  (x0 + 200, 400), (x0, 400)]
+        walls = [Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
+                      thickness=10, height=240)
+                 for a, b in zip(points, points[1:] + points[:1], strict=True)]
+
+        def model(registration):
+            return Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+                name="Floor 1", ceiling_height_cm=240, walls=walls,
+                registration=registration,
+                rooms=[Room(name=capture_id, ha_area=area, points=points)])])
+
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(model(None), directory / f"{capture_id}_named.json")
+        save_model(model(Registration(
+            theta_deg=0.3, tx_m=0.1, ty_m=-0.2, mirror=False,
+            median_error_m=0.027, coverage=1.0, floor_z_m=-2.86)),
+            directory / f"{capture_id}_registered.json")
+
+    capture("a", 0, "den")
+    capture("b", 100, "den")
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    a: den\n  b:\n    b: den\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "-o", str(tmp_path / "ground_combined.json")])
+
+    assert result.exit_code == 0, result.output
+    assert "_registered.json" in result.output, (
+        "the registration was dropped with nothing saying so")
+    combined = load_model(tmp_path / "ground_combined.json")
+    assert combined.levels[0].registration is not None, (
+        "the combined model carries no fit, so nothing downstream can measure")
+
+
+def test_combine_cmd_refuses_a_registration_fitted_to_other_walls(tmp_path):
+    """A stale sibling fit adopted silently places the level in the wrong mesh.
+
+    Re-exporting the DXF and re-running `rooms` without re-running
+    `registration` leaves a transform next door that was measured against walls
+    that no longer exist. Taking it looks exactly like a good registration, and
+    every stage downstream then reports its output as a measurement.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Registration, Room, Wall, load_model, save_model
+
+    def capture(capture_id, x0, area, *, stale_shift=0.0):
+        points = [(x0, 0), (x0 + 400, 0), (x0 + 400, 200), (x0 + 200, 200),
+                  (x0 + 200, 400), (x0, 400)]
+
+        def model(registration, shift):
+            walls = [Wall(x_start=a[0] + shift, y_start=a[1],
+                          x_end=b[0] + shift, y_end=b[1],
+                          thickness=10, height=240)
+                     for a, b in zip(points, points[1:] + points[:1], strict=True)]
+            return Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+                name="Floor 1", ceiling_height_cm=240, walls=walls,
+                registration=registration,
+                rooms=[Room(name=capture_id, ha_area=area, points=points)])])
+
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(model(None, 0.0), directory / f"{capture_id}_named.json")
+        save_model(model(Registration(
+            theta_deg=0.3, tx_m=0.1, ty_m=-0.2, mirror=False,
+            median_error_m=0.027, coverage=1.0, floor_z_m=-2.86), stale_shift),
+            directory / f"{capture_id}_registered.json")
+
+    capture("a", 0, "den", stale_shift=75.0)
+    capture("b", 100, "den", stale_shift=75.0)
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    a: den\n  b:\n    b: den\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "-o", str(tmp_path / "ground_combined.json")])
+
+    assert result.exit_code == 0, result.output
+    combined = load_model(tmp_path / "ground_combined.json")
+    assert combined.levels[0].registration is None, (
+        "a fit measured against walls this model does not have was adopted")
+    assert "NOT used" in result.output and "a_registered.json" in result.output, (
+        "refused in silence, which is the bug")

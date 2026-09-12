@@ -14,11 +14,15 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 import click
 
 from . import __version__, javabridge, projectlevels, projectschema, render
 from .javabridge import ToolchainError
+
+if TYPE_CHECKING:
+    from .schema import Level, Model
 
 OK = "ok"
 WARN = "warn"
@@ -27,6 +31,57 @@ FAIL = "FAIL"
 
 def _row(status: str, label: str, detail: str = "") -> None:
     click.echo(f"  [{status:^4}] {label:<26} {detail}")
+
+
+class Carried(NamedTuple):
+    """One level's registration, taken from a sibling export or refused."""
+
+    level: str
+    spare: Path
+    taken: bool
+
+
+def _wall_shape(level: Level) -> list[tuple[float, ...]]:
+    """The geometry a registration was fitted to, in a comparable form."""
+    return sorted((w.x_start, w.y_start, w.x_end, w.y_end) for w in level.walls)
+
+
+def adopt_registrations(model: Model, spares: list[Path]) -> list[Carried]:
+    """Fill in a level's missing registration from another export of the capture.
+
+    `rooms` writes `<id>_named.json` out of an unregistered `<id>.json`, and the
+    named file is the one `combine` prefers -- so a capture that HAS been
+    registered arrives with no fit, the combined model carries none, `split
+    --mesh` records every boundary as "level is unregistered", and `ceilings`
+    cannot measure a room at all. On a real project that was true of every
+    capture on every level, and the only visible symptom was three exports whose
+    room ceilings were all null.
+
+    ONLY WHERE THE WALLS STILL MATCH. A registration is a fit of one plan onto
+    one mesh, so it belongs to the geometry it was measured against and not to
+    the capture id. Re-exporting the DXF and re-running `rooms` without
+    re-running `registration` leaves a stale transform in the file next door,
+    and adopting that would place the level confidently in the wrong part of the
+    mesh -- which every stage downstream then reports as a measurement.
+    """
+    from .schema import load_model
+
+    carried: list[Carried] = []
+    for spare in spares:
+        if all(lv.registration is not None for lv in model.levels):
+            break
+        theirs = {lv.name: lv for lv in load_model(spare).levels}
+        for level in model.levels:
+            if level.registration is not None:
+                continue
+            other = theirs.get(level.name)
+            if other is None or other.registration is None:
+                continue
+            match = _wall_shape(other) == _wall_shape(level)
+            if match:
+                level.registration = other.registration
+            carried.append(Carried(level.name, spare, match))
+    return carried
 
 
 def _dep_status(start: Path) -> tuple[str, str] | None:
@@ -605,21 +660,21 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     # onto the record after combining, because `combine` is handed a dict of
     # models and cannot know that two of its keys are one export.
     provenance: dict[str, tuple[str, str | None]] = {}
+    carried: list[Carried] = []
     for wanted in entries:
         capture_id = wanted.capture_id
         # Prefer the model `rooms` has already named. A scanner name is not
         # identity, and combining before naming makes the work list ask about
         # rooms the project has already answered for.
-        found = None
+        candidates = []
         for suffix in ("_named.json", "_registered.json", ".json"):
             for base in (project.parent / f"exports/{capture_id}",
                          project.parent / "captures" / capture_id, project.parent):
                 path = base / f"{capture_id}{suffix}"
                 if path.exists():
-                    found = path
+                    candidates.append(path)
                     break
-            if found:
-                break
+        found = candidates[0] if candidates else None
         if found is None:
             raise SystemExit(
                 f"no model json found for capture {capture_id!r}. Looked for "
@@ -628,6 +683,7 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                 f"Run `python -m lidar2ha.polycam` and `.registration` on it first.")
 
         whole = load_model(found)
+        carried.extend(adopt_registrations(whole, candidates[1:]))
         try:
             expanded = projectlevels.expand(wanted, whole, storey)
         except ValueError as exc:
@@ -678,6 +734,26 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                    f"`split:` and only exist once `lidar2ha split \"{level}\"` "
                    f"has run, so\n        the work list will list them as areas "
                    f"with no source.")
+
+    took = [c for c in carried if c.taken]
+    stale = [c for c in carried if not c.taken]
+    if took:
+        click.echo("  note: the preferred model carries no registration for these "
+                   "levels, so the fit\n        came from the capture's own "
+                   "`_registered.json`. Without one, `split --mesh`\n        "
+                   "cannot corroborate a boundary and `ceilings` cannot measure "
+                   "a room:")
+        for row in took:
+            click.echo(f"          {row.level:<16} {row.spare.name}")
+    if stale:
+        click.echo("  note: these hold a registration measured against walls the "
+                   "model no longer has,\n        so they belong to an export "
+                   "that has since been replaced and were NOT used.\n        The "
+                   "combined model has no registration and `ceilings` will "
+                   "measure nothing\n        until `python -m "
+                   "lidar2ha.registration` runs again:")
+        for row in stale:
+            click.echo(f"          {row.level:<16} {row.spare.name}")
 
     multi = [c for c in ids if (captures.get(c) or {}).get("multi_floor")]
     if multi and storey is None:
