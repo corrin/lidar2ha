@@ -25,11 +25,26 @@ the walk stopped. Measured on one three-storey walk at 10 cm cells:
     fill holes slice by slice          86   m3
     cast a ray up each column         265   m3
 
-Walking up a column, an up-facing hit opens air and a down-facing hit closes it, so
-the air is where the count of floors passed exceeds the count of ceilings passed. That
-needs no enclosure at all. A void spanning two storeys is one open run; a split-level
-step shows as neighbouring columns whose runs start 45 cm apart; and none of it has to
-be told how many storeys the building has.
+Walking up a column, a cell is air when the nearest horizontal surface BELOW it faces
+up. An up-facing hit opens the column and a down-facing hit closes it again. That needs
+no enclosure at all. A void spanning two storeys is one open run; a split-level step
+shows as neighbouring columns whose runs start 45 cm apart; and none of it has to be
+told how many storeys the building has.
+
+Counting instead of looking down was the first version and it over-reported: every
+up-facing surface with no down-facing one over it -- a worktop, a shelf, a stair tread
+nothing ever looked under -- left the balance permanently open, so the air ran up
+through the ceiling and out of the top of the grid.
+
+KNOWN, AND NOT FIXED HERE: on a capture whose mesh holds more than one storey, every
+storey's air is charged to the selected level's footprints, because `labels` is a
+footprint and nothing bounds a column above. A ground-floor lounge with a bedroom over
+it reports both and a mean height near the height of the house. Two obvious repairs are
+both wrong, and measured: gating on the surface below a cell hands the air over a table
+to the table, and gating on the last down-facing surface below it makes a table's
+underside close the room. Each cost 11-49% of every room on a SINGLE-storey capture,
+which has no second storey to exclude at all. Until a ceiling can be told from a
+sideboard, read a multi-storey capture one storey per capture.
 
 Usage:
     python -m lidar2ha.voxels model.json mesh.obj
@@ -226,6 +241,38 @@ def room_floor_index(up: np.ndarray, labels: np.ndarray, n_names: int) -> np.nda
     return out
 
 
+def _air(up: np.ndarray, down: np.ndarray, side: np.ndarray) -> np.ndarray:
+    """The cells holding air, by what lies below each of them.
+
+    WHICH HIT IS BELOW, NOT HOW MANY. Counting floors passed against ceilings
+    passed assumes every up-facing surface has a down-facing one over it, and in a
+    handheld scan many do not: a worktop, a shelf, a windowsill, a stair tread
+    whose underside nothing ever looked at. Each unmatched one adds a permanent 1
+    to the running balance, so the column never closes -- its own ceiling only
+    brings the balance back to 1 -- and the air runs up through every storey above
+    to the top of the grid. Measured on a 10 x 10 cell room with a floor at k=3 and
+    a ceiling at k=23: bare, the middle column holds 19 air cells; add one 4 x 4
+    worktop and it holds 53, topping out at the grid's last plane.
+
+    So a cell is air when the nearest horizontal surface below it faces UP. A
+    ceiling closes the column and the next floor opens it again.
+
+    """
+    # int16 indexes a grid 3 km tall at 10 cm cells. The alternative was three
+    # int64 arrays from `cumsum` over a bool: 1.2 GB on the 50 M cell grid the
+    # module's own `--cm 5` example produces, before the air itself is formed.
+    nz = up.shape[2]
+    dtype = np.int16 if nz <= np.iinfo(np.int16).max else np.int32
+    zs = np.arange(nz, dtype=dtype)
+    marker = np.where(up, np.int8(1), np.where(down, np.int8(-1), np.int8(0)))
+    nearest = np.where(marker != 0, zs, dtype(0))
+    np.maximum.accumulate(nearest, axis=2, out=nearest)
+    air = np.take_along_axis(marker, nearest.astype(np.intp), axis=2) > 0
+    air &= ~(up | down | side)
+
+    return air
+
+
 def air_from_columns(grids: dict[Facing, np.ndarray], cell_m: float, *,
                      min_head_m: float = MIN_HEAD_M,
                      floor_index: np.ndarray | None = None,
@@ -247,12 +294,7 @@ def air_from_columns(grids: dict[Facing, np.ndarray], cell_m: float, *,
         ok = (k >= 0) & (k < first[i, j])
         up[i[ok], j[ok], k[ok]] = True
 
-    opens = np.cumsum(up, axis=2)
-    closes = np.cumsum(grids["down"], axis=2)
-    closes_below = np.zeros_like(closes)
-    closes_below[:, :, 1:] = closes[:, :, :-1]
-    air = (opens - closes_below) > 0
-    air &= ~(grids["up"] | grids["down"] | grids["side"])
+    air = _air(up, grids["down"], grids["side"])
 
     if min_head_m > 0:
         from scipy import ndimage
@@ -276,6 +318,10 @@ def build(model: Model, mesh_path: str, cell_m: float, *,
     """The whole pipeline for one level of one capture."""
     tris = load_triangles(mesh_path)
     grids, origin = rasterise(tris, cell_m)
+    if not 0 <= level_index < len(model.levels):
+        raise SystemExit(
+            f"--level {level_index} but the model has {len(model.levels)} level(s): "
+            f"{', '.join(lv.name for lv in model.levels)}")
     level = model.levels[level_index]
     labels, names = label_columns(level, grids["up"].shape, origin, cell_m)
     fi = room_floor_index(grids["up"], labels, len(names)) if floor_fill else None
@@ -283,6 +329,7 @@ def build(model: Model, mesh_path: str, cell_m: float, *,
                            labels=labels if floor_fill else None)
     return Grid(air=air, up=grids["up"], down=grids["down"], side=grids["side"],
                 labels=labels, names=names, origin_m=origin, cell_m=cell_m)
+
 
 
 class RoomVolume(NamedTuple):
@@ -302,14 +349,18 @@ def volumes(grid: Grid) -> list[RoomVolume]:
     to hold the same air, which for a room with a void over part of it is neither the
     low ceiling nor the high one.
     """
-    owner = np.broadcast_to(grid.labels[:, :, None], grid.air.shape)
-    counts = np.bincount(owner[grid.air].ravel(), minlength=len(grid.names))
+    air = grid.air
+    owner = np.broadcast_to(grid.labels[:, :, None], air.shape)
+    counts = np.bincount(owner[air].ravel(), minlength=len(grid.names))
     cell_area = grid.cell_m ** 2
+    # Hoisted out of the loop: one 2D footprint per room off one pass, rather than a
+    # full 3D boolean allocated and scanned for every room on the level.
+    covered = air.any(axis=2)
     out = []
     for i, name in enumerate(grid.names):
         if not counts[i]:
             continue
-        footprint = ((grid.labels == i)[:, :, None] & grid.air).any(axis=2)
+        footprint = (grid.labels == i) & covered
         out.append(RoomVolume(name, counts[i] * grid.cell_volume_m3,
                               float(footprint.sum()) * cell_area))
     return sorted(out, key=lambda r: -r.volume_m3)

@@ -17,7 +17,14 @@ from __future__ import annotations
 import numpy as np
 
 from lidar2ha.schema import Level, Model, Room
-from lidar2ha.voxels import Grid, air_from_columns, bodies, label_columns, room_floor_index, volumes
+from lidar2ha.voxels import (
+    Grid,
+    air_from_columns,
+    bodies,
+    label_columns,
+    room_floor_index,
+    volumes,
+)
 
 CELL = 0.1          # 10 cm, the default
 
@@ -166,3 +173,28 @@ def test_repeated_room_names_get_their_own_label():
 
     assert names == ["<unlabelled>", "hallway", "hallway#2"]
     assert set(np.unique(labels)) == {0, 1, 2}
+
+
+def test_a_worktop_does_not_open_the_column_through_its_own_ceiling():
+    """An up-facing surface with no underside must not leak air to the grid top.
+
+    A worktop, a shelf, a windowsill and a stair tread are all up-facing with a
+    side-facing front and nothing looking down, because a handheld walk never gets
+    under them. Counting floors against ceilings leaves each one adding a permanent
+    1 to the balance, so the room's own ceiling only brings it back to 1 and the air
+    runs up through every storey above.
+    """
+    bare = blank((10, 10, 60))
+    box(bare, 0, 10, 0, 10, floor_k=3, ceil_k=23)
+    worktop = blank((10, 10, 60))
+    box(worktop, 0, 10, 0, 10, floor_k=3, ceil_k=23)
+    worktop["up"][3:7, 3:7, 9] = True
+    worktop["side"][3:7, 3:7, 8] = True
+
+    before = air_from_columns(bare, CELL)
+    after = air_from_columns(worktop, CELL)
+
+    assert before[:, :, 24:].sum() == 0, "if this fails the test proves nothing"
+    assert after[:, :, 24:].sum() == 0, "air escaped above the ceiling"
+    assert after.sum() < before.sum(), (
+        "a worktop displaces air, so the room cannot hold more with one in it")
