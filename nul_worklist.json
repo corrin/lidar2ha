@@ -1,0 +1,75 @@
+[
+  {
+    "kind": "captures_disagree",
+    "winner": "ground_geometry_0823-2006",
+    "won": [
+      "den 29.8 m2"
+    ],
+    "lost": [
+      "ground_fixtures_0823-1317/den 29.9 m2",
+      "ground_geometry_0823-1038/den 29.0 m2",
+      "unknown_geometry_0825-1649 [Floor 1 (210cm)]/living_room 31.3 m2",
+      "unknown_geometry_0829-1412/Living Room 9.5 m2",
+      "unknown_geometry_0829-1412/Other 0.8 m2"
+    ],
+    "margin": 0.065,
+    "reasons": [
+      "the captures split this floor differently. The winning capture took it whole; nothing was averaged and nothing was picked room by room"
+    ]
+  },
+  {
+    "kind": "provisional_room",
+    "area": "den",
+    "room": "den",
+    "capture": "ground_geometry_0823-2006",
+    "role": "geometry",
+    "area_m2": 29.85,
+    "score": 0.604,
+    "weakest_signal": "ceiling",
+    "unmeasured": [],
+    "reasons": [
+      "best available score 0.60, below 0.70",
+      "the captures disagree about this layout and the winner is only 0.06 ahead -- a toss-up, not a decision"
+    ]
+  },
+  {
+    "kind": "area_with_no_source",
+    "area": "living_room",
+    "stood_on_by": [],
+    "reasons": [
+      "project.yaml maps this area on this level and no room carries it. It may never have been scanned, or its room may have been refused above -- or it may be inside another room, drawn as part of that room's polygon and so present in the model without a name of its own. Look at the plan before recording this one as unscanned"
+    ]
+  },
+  {
+    "kind": "area_with_no_source",
+    "area": "master_bedroom",
+    "stood_on_by": [],
+    "reasons": [
+      "project.yaml maps this area on this level and no room carries it. It may never have been scanned, or its room may have been refused above -- or it may be inside another room, drawn as part of that room's polygon and so present in the model without a name of its own. Look at the plan before recording this one as unscanned"
+    ]
+  },
+  {
+    "kind": "area_with_no_source",
+    "area": "office",
+    "stood_on_by": [],
+    "reasons": [
+      "project.yaml maps this area on this level and no room carries it. It may never have been scanned, or its room may have been refused above -- or it may be inside another room, drawn as part of that room's polygon and so present in the model without a name of its own. Look at the plan before recording this one as unscanned"
+    ]
+  },
+  {
+    "kind": "area_with_no_source",
+    "area": "upstairs_hallway",
+    "stood_on_by": [],
+    "reasons": [
+      "project.yaml maps this area on this level and no room carries it. It may never have been scanned, or its room may have been refused above -- or it may be inside another room, drawn as part of that room's polygon and so present in the model without a name of its own. Look at the plan before recording this one as unscanned"
+    ]
+  },
+  {
+    "kind": "area_with_no_source",
+    "area": "upstairs_toilet",
+    "stood_on_by": [],
+    "reasons": [
+      "project.yaml maps this area on this level and no room carries it. It may never have been scanned, or its room may have been refused above -- or it may be inside another room, drawn as part of that room's polygon and so present in the model without a name of its own. Look at the plan before recording this one as unscanned"
+    ]
+  }
+]

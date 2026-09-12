@@ -44,6 +44,7 @@ import json
 from typing import Literal, NamedTuple
 
 import numpy as np
+import shapely
 import trimesh
 from shapely.geometry import Polygon
 
@@ -172,13 +173,11 @@ def label_columns(level: Level, shape: tuple[int, ...], origin_m: np.ndarray,
     and two `stairwell`, some of them overlapping -- so a repeat gets a `#2` suffix
     instead of silently overwriting whichever came first.
     """
-    from matplotlib.path import Path as MplPath
-
     nx, ny = shape[0], shape[1]
     cx = origin_m[0] + (np.arange(nx) + 0.5) * cell_m
     cy = origin_m[1] + (np.arange(ny) + 0.5) * cell_m
     gx, gy = np.meshgrid(cx, cy, indexing="ij")
-    pts = np.column_stack([gx.ravel(), gy.ravel()])
+    px, py = gx.ravel(), gy.ravel()
     labels = np.zeros((nx, ny), dtype=np.int32)
     names: list[str] = ["<unlabelled>"]
     seen: dict[str, int] = {}
@@ -191,7 +190,11 @@ def label_columns(level: Level, shape: tuple[int, ...], origin_m: np.ndarray,
         raw = room.name or "<unnamed>"
         n = seen[raw] = seen.get(raw, 0) + 1
         names.append(raw if n == 1 else f"{raw}#{n}")
-        inside = MplPath(np.asarray(poly.exterior.coords)).contains_points(pts)
+        # shapely rather than `matplotlib.path`, which is not a dependency of this
+        # project: the module imported it at call time, so `pip install lidar2ha`
+        # produced a `voxels` that raised ModuleNotFoundError on every real model
+        # while the tests passed on a machine that happened to have it.
+        inside = shapely.contains_xy(poly, px, py)
         labels[inside.reshape(nx, ny)] = len(names) - 1
     return labels, names
 
