@@ -1850,6 +1850,23 @@ def decide_areas(groups: list[Group], cands: list[Candidate],
     """
     decisions: list[Decision] = []
     selections: list[AreaSelection] = []
+
+    def subgroup(group: Group, members: list[int], *, area: bool = False) -> Group:
+        per_capture: dict[str, list[int]] = {}
+        for index in members:
+            per_capture.setdefault(origin_of(cands[index].capture), []).append(index)
+        return Group(
+            members=members, per_capture=per_capture,
+            kind=("unopposed" if len(per_capture) == 1 else
+                  "one_to_one" if area else group.kind),
+            edges={k: v for k, v in group.edges.items()
+                   if k[0] in members and k[1] in members},
+            near_edges={k: v for k, v in group.near_edges.items()
+                        if k[0] in members and k[1] in members},
+            self_overlaps=[s for s in group.self_overlaps
+                           if s[0] in members and s[1] in members],
+        )
+
     for group in groups:
         areas = sorted({str(cands[i].room.ha_area) for i in group.members
                         if cands[i].room.ha_area})
@@ -1858,19 +1875,7 @@ def decide_areas(groups: list[Group], cands: list[Candidate],
             continue
         for area in areas:
             members = [i for i in group.members if cands[i].room.ha_area == area]
-            per_capture: dict[str, list[int]] = {}
-            for index in members:
-                per_capture.setdefault(origin_of(cands[index].capture), []).append(index)
-            sub = Group(
-                members=members, per_capture=per_capture,
-                kind=("unopposed" if len(per_capture) == 1 else "one_to_one"),
-                edges={k: v for k, v in group.edges.items()
-                       if k[0] in members and k[1] in members},
-                near_edges={k: v for k, v in group.near_edges.items()
-                            if k[0] in members and k[1] in members},
-                self_overlaps=[s for s in group.self_overlaps
-                               if s[0] in members and s[1] in members],
-            )
+            sub = subgroup(group, members, area=True)
             selection = select_area(
                 area, [cands[i] for i in members], scores,
                 completeness=completeness,
@@ -1892,6 +1897,14 @@ def decide_areas(groups: list[Group], cands: list[Candidate],
                 reasons=reasons,
                 hole_m2=0.0,
             ))
+        unnamed = [i for i in group.members if not cands[i].named]
+        if unnamed:
+            # Area-first selection only partitions the members carrying an
+            # identity. The rest still own floor: on the frontage capture this
+            # is the fused deck/path polygon which `split:` names afterwards.
+            # Leaving it outside every Decision dropped 39 m2 while reporting
+            # it only as uncovered floor.
+            decisions.append(decide(subgroup(group, unnamed), cands, scores))
     return decisions, selections
 
 

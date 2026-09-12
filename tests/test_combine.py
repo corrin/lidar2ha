@@ -1369,6 +1369,21 @@ def test_a_fused_capture_still_wins_where_nothing_else_resolved_it():
 # --------------------------------------------------------------------------- #
 
 
+def test_unnamed_ground_in_a_named_group_still_gets_a_geometric_decision():
+    """A fused room awaiting `split:` must not vanish beside a named room."""
+    garage = cand(0, "frontage", square(0, 0, 400, "garage", ha_area="garage"))
+    pending = cand(1, "frontage", square(300, 0, 400, "Room 1"))
+    group = combining.Group(
+        members=[0, 1], per_capture={"frontage": [0, 1]}, kind="tangled",
+        edges={(0, 1): 0.25})
+    scores = {0: Score(0.8, {}, []), 1: Score(0.7, {}, [])}
+
+    decisions, _ = combining.decide_areas([group], [garage, pending], scores)
+
+    chosen = {i for decision in decisions for i in decision.winner_rooms}
+    assert chosen == {0, 1}, "the unnamed polygon entered no decision and vanished"
+
+
 def _fit(theta=0.0, tx=0.0, ty=0.0, median=0.02, coverage=1.0):
     return {
         "theta_rad": theta, "tx": tx, "ty": ty,
