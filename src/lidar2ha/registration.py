@@ -40,6 +40,7 @@ Usage:
 
 import argparse
 import math
+from typing import Literal, NamedTuple
 
 import numpy as np
 import trimesh
@@ -51,6 +52,19 @@ CM_TO_M = 0.01
 
 # Below this, a fit is not trustworthy however good its median error looks.
 LOW_COVERAGE = 0.90
+
+# The vertical extent, in metres, a mesh's wall points may span and still have
+# come off a building. Bounds on the FILE, not on the architecture: what they
+# catch is a plan registered against the wrong .obj, and a mesh in a unit other
+# than metres is out by orders of magnitude in whichever direction the unit
+# runs. One capture registered against lidar2ha's own export-glb output, which
+# sits in `gltf/` beside it, spanned 1357 m where its true mesh spans 5.4.
+#
+# 100 m is about thirty storeys; 1 m is under a doorway. What would move them:
+# a scan of a genuine high-rise, or a scanner whose export lands inside them
+# while still not being the building.
+MAX_BUILDING_SPAN_M = 100.0
+MIN_BUILDING_SPAN_M = 1.0
 
 # How many starting points to refine. Refinement is the expensive half -- 375
 # scorings against one for ranking a seed -- and `plan_fit` is called on every
@@ -98,6 +112,56 @@ def load_wall_points(mesh_path, vertical_tol=0.20):
     if not pts:
         raise SystemExit("no vertical faces found -- was the mesh exported Z-up?")
     return np.vstack(pts)
+
+
+class MeshHeight(NamedTuple):
+    """What the mesh's vertical extent says about the file. Three answers."""
+
+    verdict: Literal["building", "too_tall", "too_flat"]
+    span_m: float
+
+
+def mesh_height(z, *, max_span_m: float = MAX_BUILDING_SPAN_M,
+                min_span_m: float = MIN_BUILDING_SPAN_M) -> MeshHeight:
+    """Whether these wall-point heights could have come off a building.
+
+    Reported, never refused. A tall building is a real thing, and the answer to
+    an implausible one is to say which file was read, not to discard it.
+    """
+    span = float(np.max(z) - np.min(z))
+    if span > max_span_m:
+        return MeshHeight("too_tall", span)
+    if span < min_span_m:
+        return MeshHeight("too_flat", span)
+    return MeshHeight("building", span)
+
+
+def coverage_notes(r: Registration, mesh: MeshHeight, *,
+                   low_coverage: float = LOW_COVERAGE) -> list[str]:
+    """What to print under a fit whose coverage is too low to believe.
+
+    THE CAUSE COMES FROM THE MESH. The wrong .obj and a double-height room both
+    read as a fit that abandoned the plan, and the vertical-tol advice sends a
+    reader with the wrong file to tune a flag that cannot reach it -- which is
+    what one capture registered against its own `gltf/` export got, over a
+    printed z range of 1357 m.
+    """
+    if r.coverage >= low_coverage:
+        return []
+    notes = [
+        f"** LOW COVERAGE: {r.coverage * 100:.0f}% of the plan found no wall "
+        f"within a metre. Treat the {r.median_error_m * 100:.1f} cm above as "
+        f"unreliable -- it describes only the part that fitted.",
+    ]
+    if mesh.verdict != "building":
+        notes.append(f"   The mesh's wall points span {mesh.span_m:.1f} m, which "
+                     f"is not a building.")
+        notes.append("   Read the mesh warning above: nothing here is evidence "
+                     "about the plan.")
+        return notes
+    notes.append("   A double-height or heavily sloped space may need a tighter "
+                 "--vertical-tol; see load_wall_points.")
+    return notes
 
 
 def sample_segments(segments, step_m=0.05, include_end=True):
@@ -326,6 +390,23 @@ def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None,
     bearing from and no rooms to pair -- which is why this is a parameter rather
     than something computed here.
     """
+    return register_candidates(
+        plan_pts, target_xy, tree, coarse_step_deg=coarse_step_deg,
+        force_mirror=force_mirror, rotations=rotations, anchors=anchors,
+        refine_top=refine_top)[0]
+
+
+def register_candidates(plan_pts, target_xy, tree, coarse_step_deg=2.0,
+                        force_mirror=None, rotations=None, anchors=None,
+                        refine_top=REFINE_TOP):
+    """Every distinct refined basin, best first.
+
+    `register` historically returned only the lowest-cost basin. That erases
+    the fact a small capture may fit several rooms, so callers with identity or
+    multi-capture evidence had no alternatives left to decide between. This
+    function exposes the already-computed refinements; `register` remains the
+    compatibility wrapper for callers that genuinely have no further evidence.
+    """
     target_c = target_xy.mean(axis=0)
     mirrors = (False, True) if force_mirror is None else (force_mirror,)
 
@@ -343,7 +424,22 @@ def register(plan_pts, target_xy, tree, coarse_step_deg=2.0, force_mirror=None,
             starts += seeded[: max(0, refine_top - 1)]
         fits += [_refine(plan_pts, tree, s, mirror) for s in starts]
 
-    return min(fits, key=lambda f: f["fit_cost_m"])
+    fits.sort(key=lambda f: f["fit_cost_m"])
+    distinct = []
+    for fit in fits:
+        same = any(
+            abs((fit["theta_rad"] - old["theta_rad"] + math.pi) %
+                (2 * math.pi) - math.pi) <= math.radians(1.0)
+            and math.hypot(fit["tx"] - old["tx"], fit["ty"] - old["ty"]) <= 0.10
+            for old in distinct)
+        if not same:
+            distinct.append(fit)
+    if not distinct:
+        # `_coarse` always supplies one start for a non-empty point cloud. Keep
+        # the boundary explicit anyway: indexing an empty list would name no
+        # input and no reason.
+        raise ValueError("registration produced no placement candidates")
+    return distinct
 
 
 
@@ -356,6 +452,12 @@ def main():
                     help="|n_z| below which a mesh face counts as a wall. Loosening "
                          "this admits sloped ceilings and stair soffits, which are "
                          "structured noise and can capture the fit")
+    ap.add_argument("--max-building-span", type=float, default=MAX_BUILDING_SPAN_M,
+                    help="metres of vertical extent above which the mesh is "
+                         "reported as not being a building")
+    ap.add_argument("--min-building-span", type=float, default=MIN_BUILDING_SPAN_M,
+                    help="metres of vertical extent below which the mesh is "
+                         "reported as not being a building")
     args = ap.parse_args()
 
     model = load_model(args.json_path)
@@ -365,6 +467,17 @@ def main():
 
     print(f"mesh wall points : {len(target_xy):,}")
     print(f"mesh z range     : {wall_pts_3d[:,2].min():.2f} .. {wall_pts_3d[:,2].max():.2f} m")
+    height = mesh_height(wall_pts_3d[:, 2], max_span_m=args.max_building_span,
+                         min_span_m=args.min_building_span)
+    if height.verdict != "building":
+        # Said here and not only under a bad fit: a mesh that is not the
+        # building can still register some level well enough to pass, and a
+        # capture whose plan and mesh are different files must say so once.
+        print(f"** THE MESH IS NOT A BUILDING: its wall points span "
+              f"{height.span_m:.1f} m.")
+        print("   Check this .obj is the capture's own scan, and not an "
+              "export-glb output")
+        print("   from `gltf/`, which is the same house in another unit.")
     print()
 
     # Register the best-constrained floor first -- the one with the most walls --
@@ -412,15 +525,11 @@ def main():
         print(f"  translation   : ({r.tx_m:.3f}, {r.ty_m:.3f}) m")
         print(f"  median error  : {r.median_error_m * 100:.1f} cm   "
               f"coverage={r.coverage * 100:.0f}%")
-        if r.coverage < LOW_COVERAGE:
-            # Read this before the error. The error is a median over matched
-            # points only, so a fit that abandoned half the plan reports the
-            # median of the half it kept and can look better than a good one.
-            print(f"  ** LOW COVERAGE: {r.coverage * 100:.0f}% of the plan found "
-                  f"no wall within a metre. Treat the {r.median_error_m * 100:.1f} cm "
-                  f"above as unreliable -- it describes only the part that fitted.")
-            print("     A double-height or heavily sloped space may need a tighter "
-                  "--vertical-tol; see load_wall_points.")
+        # Read these before the error. The error is a median over matched
+        # points only, so a fit that abandoned half the plan reports the median
+        # of the half it kept and can look better than a good one.
+        for note in coverage_notes(r, height):
+            print(f"  {note}")
         print(f"  floor z       : {r.floor_z_m} m")
         print()
 

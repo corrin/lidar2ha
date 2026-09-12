@@ -420,11 +420,22 @@ def test_a_cut_of_a_piece_offers_no_rooms_line_to_add(capsys):
     assert "'Living Room'" in out, "the room to map instead has to be named"
 
 
-def test_a_declaration_naming_no_room_is_refused():
-    """Silently doing nothing leaves an open plan looking correctly split."""
-    with pytest.raises(ValueError, match="no room"):
-        apply(fused(), [{"room": "conservatory", "sections": []}],
-              level_name="Mid Level")
+def test_a_declaration_naming_no_room_is_named_in_the_report(capsys):
+    """Silently doing nothing leaves an open plan looking correctly split.
+
+    It is reported rather than raised, because the entries are independent and
+    raising costs the level its other cuts -- see
+    `test_one_unresolvable_declaration_does_not_cancel_the_others`. What must
+    not happen is the reader believing the cut was made.
+    """
+    cuts = apply(fused(), [{"room": "conservatory", "sections": []}],
+                 level_name="Mid Level")
+    assert [c.room for c in cuts if c.tiling is None] == ["conservatory"]
+
+    report(cuts)
+    out = capsys.readouterr().out
+    assert "DECLARED, AND NOT CUT" in out and "conservatory" in out, (
+        "a declaration that did nothing has to say so:\n" + out)
 
 
 def test_a_declaration_cannot_be_both_forms():
@@ -713,3 +724,32 @@ def test_rounding_that_would_change_the_room_is_not_applied():
     ring = writable_ring(poly, where="Level/c-shape")
     assert abs(Polygon(ring).area - poly.area) < 1.0, "the shape changed"
     assert len(set(ring)) == len(ring), "a duplicate vertex was written"
+
+
+def test_one_unresolvable_declaration_does_not_cancel_the_others():
+    """A level's other cuts are not the stale declaration's to lose.
+
+    `split:` is a list, and resolving is per entry. Raising on the first room
+    that cannot be found abandons every later one, so a single name that went
+    stale -- because `merge:` changed which capture won, or a capture lost its
+    `rooms:` mapping -- costs the whole level. Measured on the real house: Mid
+    Level declares four cuts, `computer_pulpit` no longer resolved, and the level
+    came back with no cuts at all, including `living_room -> dining` which was
+    fine. Every failure must be named, and the ones that resolve must apply.
+    """
+    model = Model(source="t.dxf", units="cm", levels=[Level(
+        name="Floor 1", elevation_cm=0, ceiling_height_cm=240,
+        walls=[], rooms=[Room(name="lounge", ha_area="lounge",
+                              points=[(0, 0), (400, 0), (400, 300), (0, 300)])])])
+    cuts = apply(model, [
+        {"room": "does_not_exist", "seam": [[0, 0], [0, 100]], "names": ["a", "b"]},
+        {"room": "lounge", "seam": [[200, -50], [200, 350]],
+         "names": ["lounge", "dining"]},
+    ])
+    areas = {r.ha_area for lv in model.levels for r in lv.rooms}
+    assert "dining" in areas, (
+        "the second declaration resolved and was abandoned because the first "
+        f"did not; areas are {sorted(a for a in areas if a)}")
+    unresolved = [c for c in cuts if c.tiling is None]
+    assert any(c.room == "does_not_exist" for c in unresolved), (
+        "the failure must still be reported, not swallowed")

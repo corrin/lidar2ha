@@ -35,6 +35,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import projectschema
 from .compare import plan_fit
 from .projectlevels import checked_id
 from .schema import Model, load_model
@@ -239,10 +240,8 @@ def levels_from_project(project_path: Path) -> dict[str, Model]:
     question is which of the storeys you have this capture matches, and a
     storey you have not built cannot answer it.
     """
-    import yaml
-
     root = Path(project_path).parent
-    project = yaml.safe_load(Path(project_path).read_text(encoding="utf-8")) or {}
+    project = projectschema.settings(project_path)
     out: dict[str, Model] = {}
     for name in (project.get("levels") or {}):
         slug = str(name).lower().replace(" ", "_")

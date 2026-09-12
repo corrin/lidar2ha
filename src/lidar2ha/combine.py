@@ -48,6 +48,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import math
 from collections.abc import Mapping
@@ -58,9 +59,10 @@ from typing import Any, Literal, NamedTuple
 import numpy as np
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 
-from .compare import MATCH_LIMIT_M, Fit, plan_fit
+from .compare import MATCH_LIMIT_M, Fit, plan_fit, plan_fits
 from .projectlevels import origin_of
 from .registration import grid_bearing as _wall_grid_bearing
 from .registration import (
@@ -71,7 +73,7 @@ from .registration import (
     transform,
 )
 from .rooms import Placed, covered_rooms, polygon_of
-from .schema import Capture, Level, Model, Room, Wall, load_model, save_model
+from .schema import Capture, Door, Level, Model, Room, Wall, load_model, save_model
 
 CM_TO_M = 0.01
 M_TO_CM = 100.0
@@ -257,6 +259,13 @@ REFERENCE_TOLERANCE = 2.0
 # gap rather than near an edge. The tightest case was `boy_bedroom`, which
 # cleared the old figure by a hair at 2.26x and clears this one at 4.3x.
 OUTLIER_RATIO = 2.0
+# ...and how far out it has to be in absolute terms before that multiple means
+# anything. A fifth of the step the walls are sampled at: below that, two
+# captures are on the same walls and what separates them is rounding. The
+# smallest outlier there is anywhere to measure is 3.5 cm against a best of
+# 1.6, on the demo level, so this sits well under what it must not swallow --
+# and would only move for a capture shown to be out at under a centimetre.
+OUTLIER_FLOOR_CM = 1.0
 
 # What a fixture pass costs a room WHEN NOTHING CAN BE MEASURED INSTEAD.
 #
@@ -288,6 +297,75 @@ DISAGREE_MARGIN = 0.10
 # reported. It is never filled from the loser: that is blending under another
 # name, and it produces a T-junction sliver along every shared edge.
 FOOTPRINT_FRAC = 0.85
+
+# A declared room must overlap this much of its counterpart before the
+# declaration can locate a capture. Measured on the 2026-08-29 basement scan,
+# the correct bedroom correspondence is nearly complete while the lower-error
+# den basin has no overlap with the declared bedroom at all.
+IDENTITY_MIN_OVERLAP = 0.60
+# Placements this close on declared-area overlap are not distinguishable by the
+# identity evidence. The value is a guess and is deliberately a function
+# argument below; another capture with two real basins inside this margin is
+# the evidence that changes it.
+IDENTITY_AMBIGUITY = 0.05
+
+# A capture can see part of a known room merely to locate new ground. Below
+# this fraction of another candidate's polygon it is alignment context, not a
+# geometry candidate. The 2026-08-29 workflow is the motivating case; expose
+# this at both command-line entry points before changing the default.
+AREA_COMPLETENESS = 0.70
+# With two candidates there is a second opinion, not a mean. If their sampled
+# outlines differ by more than this there is no evidence for choosing either.
+AREA_TWO_SOURCE_AGREE_CM = 5.0
+# Door centres from repeat captures within this distance are one opening. The
+# stage does not emit doors to Sweet Home 3D yet, but dropping every non-anchor
+# door now would make that later feature start from incomplete data.
+DOOR_MATCH_CM = 20.0
+
+
+@dataclass(frozen=True)
+class CombineOptions:
+    """Every behaviour-changing bound used by the combine decision path.
+
+    These are guesses, collected so the library and both command-line entry
+    points cannot quietly run different algorithms. Sampling-only and report
+    display constants remain beside the functions they affect.
+    """
+
+    max_median_cm: float = MAX_MEDIAN_CM
+    max_p90_cm: float = MAX_P90_CM
+    edge_containment: float = EDGE_CONTAINMENT
+    max_off_grid_deg: float = MAX_OFF_GRID_DEG
+    min_grid_concentration: float = MIN_GRID_CONCENTRATION
+    identity_min_overlap: float = IDENTITY_MIN_OVERLAP
+    identity_ambiguity: float = IDENTITY_AMBIGUITY
+    area_completeness: float = AREA_COMPLETENESS
+    area_two_source_agree_cm: float = AREA_TWO_SOURCE_AGREE_CM
+    door_match_cm: float = DOOR_MATCH_CM
+
+    def validated(self) -> CombineOptions:
+        positive = {
+            "max_median_cm": self.max_median_cm,
+            "max_p90_cm": self.max_p90_cm,
+            "max_off_grid_deg": self.max_off_grid_deg,
+            "area_two_source_agree_cm": self.area_two_source_agree_cm,
+            "door_match_cm": self.door_match_cm,
+        }
+        bad = next((name for name, value in positive.items() if value <= 0), None)
+        if bad:
+            raise ValueError(f"{bad} must be greater than zero, got {positive[bad]}")
+        unit = {
+            "edge_containment": self.edge_containment,
+            "min_grid_concentration": self.min_grid_concentration,
+            "identity_min_overlap": self.identity_min_overlap,
+            "identity_ambiguity": self.identity_ambiguity,
+            "area_completeness": self.area_completeness,
+        }
+        bad = next((name for name, value in unit.items()
+                    if not 0.0 <= value <= 1.0), None)
+        if bad:
+            raise ValueError(f"{bad} must be between zero and one, got {unit[bad]}")
+        return self
 
 WEIGHTS: dict[str, float] = {
     # Agreement with the co-registered consensus does most of the work: it is
@@ -382,13 +460,90 @@ class Score:
 
     @property
     def weakest(self) -> str | None:
-        """The signal that cost this candidate most.
-
-        Named in the report because a 0.17 ceiling and a 0.0 wall support read
-        completely differently and need completely different fixes.
-        """
+        """The signal that cost this candidate most."""
         measured = {k: v for k, v in self.signals.items() if v is not None}
         return min(measured, key=lambda k: measured[k]) if measured else None
+
+
+PlacementVerdict = Literal["placed", "ambiguous", "unplaceable"]
+
+
+@dataclass
+class PlacementChoice:
+    """Which basin declared common ground supports.
+
+    The candidates survive every verdict. For an ambiguous placement they are
+    the finding; sorting them into one answer would discard the uncertainty.
+    """
+
+    verdict: PlacementVerdict
+    fit: Fit | None
+    candidates: list[Fit]
+    overlap: dict[int, float]
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class DeclaredPlacement:
+    """A project-supplied rigid join, separate from overlap evidence."""
+
+    capture: str
+    relative_to: str
+    fit: Fit
+    evidence: str
+    point_residual_m: float
+
+    @classmethod
+    def from_points(cls, *, capture: str, relative_to: str,
+                    capture_points_cm: tuple[tuple[float, float], tuple[float, float]],
+                    relative_points_cm: tuple[tuple[float, float], tuple[float, float]],
+                    evidence: str) -> DeclaredPlacement:
+        source = np.asarray(capture_points_cm, dtype=float) * CM_TO_M
+        target = np.asarray(relative_points_cm, dtype=float) * CM_TO_M
+        source_vector = source[1] - source[0]
+        target_vector = target[1] - target[0]
+        source_length = float(np.linalg.norm(source_vector))
+        target_length = float(np.linalg.norm(target_vector))
+        if source_length == 0 or target_length == 0:
+            raise ValueError(
+                f"placement {capture!r} relative to {relative_to!r} needs two "
+                "different points on each capture")
+        theta = (math.atan2(target_vector[1], target_vector[0])
+                 - math.atan2(source_vector[1], source_vector[0]))
+        c, s = math.cos(theta), math.sin(theta)
+        rotation = np.array([[c, -s], [s, c]])
+        translation = target.mean(axis=0) - source.mean(axis=0) @ rotation.T
+        moved = source @ rotation.T + translation
+        residual = float(np.max(np.linalg.norm(moved - target, axis=1)))
+        fit = Fit(theta_rad=float(theta), tx=float(translation[0]),
+                  ty=float(translation[1]), median_error_m=residual,
+                  coverage=0.0, p90_m=residual, matched=2, sampled=2)
+        return cls(capture, relative_to, fit, evidence, residual)
+
+
+ObservationState = Literal["candidate", "context", "unseen"]
+
+
+@dataclass
+class AreaObservation:
+    candidate: int
+    state: ObservationState
+    completeness: float | None
+
+
+AreaSelectionVerdict = Literal["measured", "agreed", "ambiguous", "single_source"]
+
+
+@dataclass
+class AreaSelection:
+    """One area's independently selected geometry and all evidence behind it."""
+
+    area: str
+    winner: int | None
+    verdict: AreaSelectionVerdict
+    observations: list[AreaObservation]
+    distance_cm: dict[int, float]
+    reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -594,6 +749,84 @@ def pairwise_fits(models: Mapping[str, Model]) -> dict[tuple[str, str], Fit]:
 def pairwise_medians(models: Mapping[str, Model]) -> dict[tuple[str, str], float]:
     """Just the error from every pairwise fit, which is what membership reads."""
     return {k: f["median_error_m"] for k, f in pairwise_fits(models).items()}
+
+
+def placement_paths(fits: Mapping[tuple[str, str], Fit], names: set[str],
+                    reference: str, *, limit_m: float) -> dict[str, list[str]]:
+    """Shortest measured-good route from each capture into the reference frame.
+
+    A capture of adjacent ground often overlaps a doorway capture rather than
+    the level-wide anchor. Pairwise fitting already measures that edge; keeping
+    only direct-to-anchor fits computed the useful edge and then threw it away.
+
+    Paths rank by hop count, accumulated median error, then capture names. The
+    last term makes equal evidence independent of mapping insertion order. A
+    missing result is the third answer: unplaced, for the caller to report.
+    """
+    if reference not in names:
+        raise ValueError(f"reference {reference!r} is not among {sorted(names)}")
+    incoming: dict[str, list[tuple[str, float]]] = {}
+    for (source, target), fit in fits.items():
+        if source in names and target in names and fit["median_error_m"] <= limit_m:
+            incoming.setdefault(target, []).append((source, fit["median_error_m"]))
+    for edges in incoming.values():
+        edges.sort()
+
+    paths: dict[str, list[str]] = {reference: [reference]}
+    queue: list[tuple[int, float, tuple[str, ...], str]] = [
+        (0, 0.0, (reference,), reference)]
+    best: dict[str, tuple[int, float, tuple[str, ...]]] = {
+        reference: (0, 0.0, (reference,))}
+    while queue:
+        hops, error, reversed_path, target = heapq.heappop(queue)
+        if best.get(target) != (hops, error, reversed_path):
+            continue
+        for source, edge_error in incoming.get(target, []):
+            candidate = (hops + 1, error + edge_error,
+                         reversed_path + (source,))
+            if source not in best or candidate < best[source]:
+                best[source] = candidate
+                heapq.heappush(queue, (*candidate, source))
+                paths[source] = list(reversed(candidate[2]))
+    return paths
+
+
+def compose_fits(edges: list[Fit]) -> Fit:
+    """Compose source-to-target rigid edges without laundering their evidence."""
+    if not edges:
+        raise ValueError("at least one placement edge is required")
+    theta = 0.0
+    tx = 0.0
+    ty = 0.0
+    for edge in edges:
+        c, s = math.cos(edge["theta_rad"]), math.sin(edge["theta_rad"])
+        tx, ty = (c * tx - s * ty + edge["tx"],
+                  s * tx + c * ty + edge["ty"])
+        theta += edge["theta_rad"]
+    p90 = [edge["p90_m"] for edge in edges if edge["p90_m"] is not None]
+    return Fit(
+        theta_rad=float(math.atan2(math.sin(theta), math.cos(theta))),
+        tx=float(tx), ty=float(ty),
+        median_error_m=max(edge["median_error_m"] for edge in edges),
+        coverage=min(edge["coverage"] for edge in edges),
+        p90_m=max(p90) if p90 else None,
+        matched=min(edge["matched"] for edge in edges),
+        sampled=max(edge["sampled"] for edge in edges),
+    )
+
+
+def fit_along_path(path: list[str], fits: Mapping[tuple[str, str], Fit]) -> Fit:
+    """Compose directed pairwise fits along one route into the reference.
+
+    Error figures are evidence about edges rather than quantities transforms
+    can add. Keeping the weakest coverage/support and worst error prevents a
+    long route from presenting itself as better measured than any of its hops.
+    """
+    if len(path) < 2:
+        raise ValueError("a placement path needs a source and a target")
+    edges = [fits[(source, target)]
+             for source, target in zip(path, path[1:], strict=False)]
+    return compose_fits(edges)
 
 
 def global_poses(fits: Mapping[tuple[str, str], Fit],
@@ -946,6 +1179,84 @@ def place_cm(points_cm: Any, fit: Fit | None) -> np.ndarray:
     return transform(pts * CM_TO_M, fit["theta_rad"], fit["tx"], fit["ty"], False) * M_TO_CM
 
 
+def _declared_overlap(source: Level, target: Level, fit: Fit) -> float | None:
+    """Best overlap of rooms declared to be the same area under one basin.
+
+    None is different from zero: None means the captures share no declaration,
+    while zero means they do and this basin puts the declared rooms apart.
+    """
+    source_by_area: dict[str, list[Polygon]] = {}
+    target_by_area: dict[str, list[Polygon]] = {}
+    for room in source.rooms:
+        if room.ha_area and len(room.points) >= 3:
+            moved = place_cm(room.points, fit)
+            source_by_area.setdefault(room.ha_area, []).append(Polygon(moved))
+    for room in target.rooms:
+        if room.ha_area and len(room.points) >= 3:
+            target_by_area.setdefault(room.ha_area, []).append(polygon_of(room))
+
+    shared = set(source_by_area) & set(target_by_area)
+    if not shared:
+        return None
+    scores = []
+    for area in shared:
+        best = 0.0
+        for left in source_by_area[area]:
+            for right in target_by_area[area]:
+                smaller = min(left.area, right.area)
+                if smaller > 0:
+                    best = max(best, left.intersection(right).area / smaller)
+        scores.append(best)
+    return float(sum(scores) / len(scores))
+
+
+def _same_basin(left: Fit, right: Fit, *, translation_cm: float = 10.0,
+                rotation_deg: float = 1.0) -> bool:
+    turn = abs((math.degrees(left["theta_rad"] - right["theta_rad"]) + 180) % 360 - 180)
+    shift = math.hypot(left["tx"] - right["tx"], left["ty"] - right["ty"])
+    return turn <= rotation_deg and shift * M_TO_CM <= translation_cm
+
+
+def choose_placement(source: Level, target: Level, candidates: list[Fit], *,
+                     min_overlap: float = IDENTITY_MIN_OVERLAP,
+                     ambiguity: float = IDENTITY_AMBIGUITY) -> PlacementChoice:
+    """Choose a basin from declared common ground, never from total coverage.
+
+    A scan that starts in a known bedroom and then reaches a new basement has
+    lower capture-wide coverage at the correct placement. Minimising over every
+    wall rewards the wrong basin for explaining the basement away. The declared
+    bedroom is the evidence that can choose; absent a shared declaration this
+    function abstains and preserves the fitter's existing best answer.
+    """
+    if not candidates:
+        return PlacementChoice("unplaceable", None, [], {}, "no placement candidates")
+
+    measured = {i: overlap for i, fit in enumerate(candidates)
+                if (overlap := _declared_overlap(source, target, fit)) is not None}
+    if not measured:
+        best = min(candidates, key=lambda f: f["median_error_m"])
+        return PlacementChoice("placed", best, candidates, {},
+                               "no declared common area; retained geometric fit")
+
+    best_overlap = max(measured.values())
+    if best_overlap < min_overlap:
+        return PlacementChoice(
+            "unplaceable", None, candidates, measured,
+            f"declared common areas overlap only {best_overlap:.0%}, below {min_overlap:.0%}")
+
+    plausible = [i for i, value in measured.items()
+                 if value >= best_overlap - ambiguity]
+    distinct: list[int] = []
+    for index in sorted(plausible, key=lambda i: candidates[i]["median_error_m"]):
+        if not any(_same_basin(candidates[index], candidates[other]) for other in distinct):
+            distinct.append(index)
+    if len(distinct) != 1:
+        return PlacementChoice(
+            "ambiguous", None, candidates, measured,
+            f"{len(distinct)} distinct placements preserve the declared common area")
+    return PlacementChoice("placed", candidates[distinct[0]], candidates, measured)
+
+
 def place_wall(wall: Wall, fit: Fit | None, source: str) -> Wall:
     """One wall, in the reference frame, carrying where it came from."""
     (xs, ys), (xe, ye) = place_cm(
@@ -953,6 +1264,25 @@ def place_wall(wall: Wall, fit: Fit | None, source: str) -> Wall:
     return wall.model_copy(update={"x_start": float(xs), "y_start": float(ys),
                                    "x_end": float(xe), "y_end": float(ye),
                                    "source": source})
+
+
+def place_door(door: Door, fit: Fit | None, source: str) -> Door:
+    """One opening in the reference frame, carrying its capture provenance."""
+    point = place_cm([(door.x, door.y)], fit)[0]
+    return door.model_copy(update={"x": float(point[0]), "y": float(point[1]),
+                                   "source": source})
+
+
+def union_doors(placed: list[Door], *, match_cm: float = DOOR_MATCH_CM) -> list[Door]:
+    """Union openings from placed captures, deduplicating repeat observations."""
+    out: list[Door] = []
+    for door in placed:
+        duplicate = any(math.hypot(door.x - old.x, door.y - old.y) <= match_cm
+                        and abs(door.width - old.width) <= match_cm
+                        for old in out)
+        if not duplicate:
+            out.append(door)
+    return out
 
 
 def outline_m(poly: Polygon, step_m: float = 0.05) -> np.ndarray:
@@ -967,6 +1297,78 @@ def outline_m(poly: Polygon, step_m: float = 0.05) -> np.ndarray:
         return np.empty((0, 2))
     return sample_segments(list(zip(ring, np.roll(ring, -1, axis=0), strict=True)),
                            step_m, include_end=False)
+
+
+def _normalised_outline(poly: Polygon, samples: int = 128) -> np.ndarray:
+    """A stable arclength parameterisation for arithmetic boundary means."""
+    ring = orient(poly, sign=1.0).exterior
+    points = np.asarray([
+        ring.interpolate(i / samples, normalized=True).coords[0]
+        for i in range(samples)
+    ], dtype=float)
+    # Shapely preserves the input ring's arbitrary first vertex. Rotate every
+    # sampled outline to the same geometric corner before averaging, otherwise
+    # identical polygons with different vertex order manufacture a difference.
+    first = min(range(len(points)), key=lambda i: (points[i, 0], points[i, 1]))
+    return np.roll(points, -first, axis=0)
+
+
+def _outline_distance_cm(poly: Polygon, mean: np.ndarray) -> float:
+    points = _normalised_outline(poly, len(mean))
+    return float(np.percentile(np.linalg.norm(points - mean, axis=1), 90))
+
+
+def select_area(area: str, candidates: list[Candidate], scores: dict[int, Score], *,
+                completeness: float = AREA_COMPLETENESS,
+                two_source_agree_cm: float = AREA_TWO_SOURCE_AGREE_CM) -> AreaSelection:
+    """Select one area's geometry against a leave-one-out boundary mean.
+
+    The old weighted score is accepted only as a deterministic tiebreak between
+    geometries already known to agree. It cannot overrule distance from the
+    area's other captures.
+    """
+    mine = [c for c in candidates if c.room.ha_area == area]
+    observations: list[AreaObservation] = []
+    eligible: list[Candidate] = []
+    for cand in mine:
+        others = [o for o in mine if origin_of(o.capture) != origin_of(cand.capture)]
+        if not others:
+            fraction = None
+            state: ObservationState = "candidate"
+        else:
+            fraction = max((cand.poly.intersection(o.poly).area / o.poly.area
+                            for o in others if o.poly.area > 0), default=0.0)
+            state = "candidate" if fraction >= completeness else "context"
+        observations.append(AreaObservation(cand.index, state, fraction))
+        if state == "candidate":
+            eligible.append(cand)
+
+    if not eligible:
+        return AreaSelection(area, None, "ambiguous", observations, {},
+                             ["no observation is complete enough to supply the area"])
+    if len(eligible) == 1:
+        return AreaSelection(area, eligible[0].index, "single_source", observations, {},
+                             ["only one capture supplies complete geometry for this area"])
+
+    distances: dict[int, float] = {}
+    for cand in eligible:
+        others = [o for o in eligible if o.index != cand.index]
+        mean = np.mean(np.stack([_normalised_outline(o.poly) for o in others]), axis=0)
+        distances[cand.index] = _outline_distance_cm(cand.poly, mean)
+
+    ranked = sorted(eligible, key=lambda c: (
+        distances[c.index], -scores.get(c.index, Score(0.0, {}, [])).total,
+        c.capture))
+    if len(eligible) == 2:
+        gap = max(distances.values())
+        if gap > two_source_agree_cm:
+            return AreaSelection(
+                area, ranked[0].index, "ambiguous", observations, distances,
+                [f"two captures differ by {gap:.1f} cm and cannot say which is right; "
+                 f"{ranked[0].capture} is retained provisionally so the area is not "
+                 f"removed from the model"])
+        return AreaSelection(area, ranked[0].index, "agreed", observations, distances)
+    return AreaSelection(area, ranked[0].index, "measured", observations, distances)
 
 
 def nn_stats(pts: np.ndarray, tree: cKDTree, cap_m: float
@@ -1344,6 +1746,31 @@ def partition_score(indices: list[int], cands: list[Candidate],
     return float(weighted), float(footprint)
 
 
+def fuses_named_rooms(capture: str, group: Group,
+                      cands: list[Candidate], *,
+                      edge: float = EDGE_CONTAINMENT) -> bool:
+    """Does this capture lay one polygon over two rooms another capture NAMES?
+
+    Two conditions, and both matter. The rooms must be named, because an
+    `ha_area` is the owner saying these are different rooms and nothing measured
+    can contradict that. And they must belong to another capture, because a
+    capture cannot be outvoted by itself -- where nobody else resolved the
+    space there is no wall to be missing, and refusing the only capture that saw
+    the floor is how the bathroom vanished the first time.
+    """
+    for mine in group.per_capture.get(capture, []):
+        for other, theirs in group.per_capture.items():
+            if other == capture:
+                continue
+            named = {cands[i].room.ha_area for i in theirs
+                     if cands[i].room.ha_area
+                     and containment(cands[i].poly, cands[mine].poly)[0] >= edge
+                     and cands[i].poly.area <= cands[mine].poly.area}
+            if len(named) > 1:
+                return True
+    return False
+
+
 def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
            margin_needed: float = DISAGREE_MARGIN,
            provisional_score: float = PROVISIONAL_SCORE,
@@ -1360,6 +1787,25 @@ def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
          for cap, rooms in group.per_capture.items()),
         key=lambda t: (-t[1], -t[2], t[0]),
     )
+
+    # A capture laying one polygon over two rooms ANOTHER capture names as
+    # different areas is missing a wall, and the captures that found it are in
+    # this group. `partitioning` measures exactly this and scores it 0.5 against
+    # everyone else's 1.0, which at weight 0.10 is a 0.05 nudge -- and the
+    # margins it lost to on the real house were 0.14 and 0.015. So the signal
+    # was right and could not act.
+    #
+    # The areas are the evidence, and they are the owner's rather than the
+    # scan's: two rooms carrying different `ha_area`s is a person saying they
+    # are different rooms. A genuinely open plan looks nothing like this -- NO
+    # capture resolves it, so there is nobody to be outvoted by, and `split:` is
+    # the only answer there will ever be.
+    fusing = {cap for cap, _s, _f in ranked if fuses_named_rooms(cap, group, cands)}
+    survivors = [row for row in ranked if row[0] not in fusing]
+    passed_over = [row[0] for row in ranked[:1] if row[0] in fusing]
+    if survivors:
+        ranked = survivors
+
     best_cap, best_score, best_footprint = ranked[0]
     runner_up = ranked[1][0] if len(ranked) > 1 else None
     margin = best_score - ranked[1][1] if len(ranked) > 1 else None
@@ -1369,6 +1815,11 @@ def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
 
     reasons = list(provisional_for(group, best_cap, best_score, margin, cands,
                                    margin_needed, provisional_score))
+    for cap in passed_over:
+        reasons.append(
+            f"{cap} scored highest and was passed over: it lays one polygon "
+            f"over rooms another capture names as different areas, which is a "
+            f"missing wall rather than a close call")
     if hole > 0 and whole > 0 and best_footprint / whole < footprint_frac:
         # Reported, never filled from the loser. Filling is blending under
         # another name, and it leaves a T-junction sliver along every edge the
@@ -1382,6 +1833,79 @@ def decide(group: Group, cands: list[Candidate], scores: dict[int, Score], *,
         runner_up=runner_up, margin=margin, provisional=bool(reasons),
         reasons=reasons, hole_m2=hole,
     )
+
+
+def decide_areas(groups: list[Group], cands: list[Candidate],
+                 scores: dict[int, Score], *,
+                 completeness: float = AREA_COMPLETENESS,
+                 two_source_agree_cm: float = AREA_TWO_SOURCE_AGREE_CM,
+                 ) -> tuple[list[Decision], list[AreaSelection]]:
+    """Decide named areas independently; retain geometric grouping for unknowns.
+
+    A capture commonly surveys one known room poorly for context and a missing
+    room carefully. Choosing its whole overlap partition makes the two rise and
+    fall together. Named areas are independent facts, so each gets its own mean
+    and winner. A group with no declared identities keeps the old geometric
+    decision because there is no area boundary to separate it by.
+    """
+    decisions: list[Decision] = []
+    selections: list[AreaSelection] = []
+
+    def subgroup(group: Group, members: list[int], *, area: bool = False) -> Group:
+        per_capture: dict[str, list[int]] = {}
+        for index in members:
+            per_capture.setdefault(origin_of(cands[index].capture), []).append(index)
+        return Group(
+            members=members, per_capture=per_capture,
+            kind=("unopposed" if len(per_capture) == 1 else
+                  "one_to_one" if area else group.kind),
+            edges={k: v for k, v in group.edges.items()
+                   if k[0] in members and k[1] in members},
+            near_edges={k: v for k, v in group.near_edges.items()
+                        if k[0] in members and k[1] in members},
+            self_overlaps=[s for s in group.self_overlaps
+                           if s[0] in members and s[1] in members],
+        )
+
+    for group in groups:
+        areas = sorted({str(cands[i].room.ha_area) for i in group.members
+                        if cands[i].room.ha_area})
+        if not areas:
+            decisions.append(decide(group, cands, scores))
+            continue
+        for area in areas:
+            members = [i for i in group.members if cands[i].room.ha_area == area]
+            sub = subgroup(group, members, area=True)
+            selection = select_area(
+                area, [cands[i] for i in members], scores,
+                completeness=completeness,
+                two_source_agree_cm=two_source_agree_cm)
+            selections.append(selection)
+            winner = None if selection.winner is None else cands[selection.winner].capture
+            ordered = sorted(
+                (i for i in selection.distance_cm if i != selection.winner),
+                key=lambda i: (selection.distance_cm[i], cands[i].capture))
+            runner = cands[ordered[0]].capture if ordered else None
+            reasons = list(selection.reasons)
+            if selection.verdict == "single_source":
+                reasons.append("no other capture supplies a complete survey of this area")
+            decisions.append(Decision(
+                group=sub, winner=winner,
+                winner_rooms=[] if selection.winner is None else [selection.winner],
+                runner_up=runner, margin=None,
+                provisional=selection.verdict in ("single_source", "ambiguous"),
+                reasons=reasons,
+                hole_m2=0.0,
+            ))
+        unnamed = [i for i in group.members if not cands[i].named]
+        if unnamed:
+            # Area-first selection only partitions the members carrying an
+            # identity. The rest still own floor: on the frontage capture this
+            # is the fused deck/path polygon which `split:` names afterwards.
+            # Leaving it outside every Decision dropped 39 m2 while reporting
+            # it only as uncovered floor.
+            decisions.append(decide(subgroup(group, unnamed), cands, scores))
+    return decisions, selections
 
 
 def provisional_for(group: Group, winner: str, score: float, margin: float | None,
@@ -1440,14 +1964,14 @@ def capture_order(decisions: list[Decision], cands: list[Candidate],
         if decision.winner is not None:
             won.setdefault(decision.winner, []).extend(decision.winner_rooms)
 
-    def key(name: str) -> tuple[int, float]:
+    def key(name: str) -> tuple[int, float, str]:
         # `won` is keyed by origin because a group is won by a capture, while
         # walls are offered per ENTRY -- every storey of a winning capture
         # inherits its place in the order.
         rooms = won.get(origin_of(name))
         if not rooms:
-            return (1, -0.0)
-        return (0, -partition_score(rooms, cands, scores)[0])
+            return (1, -0.0, name)
+        return (0, -partition_score(rooms, cands, scores)[0], name)
 
     return sorted(every, key=key)
 
@@ -1641,6 +2165,10 @@ class Alignment:
 
     capture: str
     verdict: Verdict
+    placement: Literal["direct", "chained", "declared", "unplaced"] = "unplaced"
+    path: list[str] = field(default_factory=list)
+    placement_evidence: str | None = None
+    placement_point_residual_m: float | None = None
     # The chosen placement. None for a discarded capture, and None for an
     # ambiguous one -- refusing to pick is the point of that verdict.
     fit: Fit | None = None
@@ -1746,6 +2274,7 @@ class Combined:
     groups: list[Group]
     scores: dict[int, Score]
     decisions: list[Decision]
+    area_selections: list[AreaSelection]
     fits: dict[str, Fit | None]
     rejected: dict[str, str]
     malformed: list[dict[str, Any]]
@@ -1809,12 +2338,18 @@ def candidates_of(capture: str, level: Level, role: str, fit: Fit | None,
 
 
 def capture_record(name: str, role: str, fit: Fit | None,
-                   is_reference: bool) -> Capture:
+                   is_reference: bool, *,
+                   placement: Literal["direct", "chained", "declared", "unplaced"] = "direct",
+                   path: list[str] | None = None,
+                   evidence: str | None = None,
+                   point_residual_m: float | None = None) -> Capture:
     """One Capture row, including the transform that put it in the frame.
 
     Without that transform nothing downstream can re-derive where a room came
     from, and the selection becomes an assertion rather than a record.
     """
+    if placement == "unplaced":
+        raise ValueError(f"accepted capture {name!r} has no placement")
     if fit is None:
         # The reference fits itself exactly, and that is a measurement rather
         # than a convenience: the combined frame IS its plan frame. Leaving
@@ -1823,14 +2358,20 @@ def capture_record(name: str, role: str, fit: Fit | None,
         # lost that signal's weight to the others.
         return Capture(id=name, role=role, verdict="reference",  # type: ignore[arg-type]
                        median_error_m=0.0, coverage=1.0, p90_error_m=0.0,
-                       theta_deg=0.0, tx_m=0.0, ty_m=0.0, is_reference=is_reference)
+                       theta_deg=0.0, tx_m=0.0, ty_m=0.0, is_reference=is_reference,
+                       placement="direct", placement_path=path or [name])
+    declared = placement == "declared"
     return Capture(
         id=name, role=role, verdict="accepted",  # type: ignore[arg-type]
-        median_error_m=fit["median_error_m"], coverage=fit["coverage"],
-        p90_error_m=fit["p90_m"],
+        median_error_m=None if declared else fit["median_error_m"],
+        coverage=None if declared else fit["coverage"],
+        p90_error_m=None if declared else fit["p90_m"],
         theta_deg=round(math.degrees(fit["theta_rad"]) % 360, 2),
         tx_m=round(fit["tx"], 4), ty_m=round(fit["ty"], 4),
         is_reference=is_reference,
+        placement=placement, placement_path=path or [],
+        placement_evidence=evidence,
+        placement_point_residual_m=point_residual_m,
     )
 
 
@@ -1868,13 +2409,25 @@ def alignment_record(result: Combined) -> list[dict[str, Any]]:
             "capture": name,
             "role": capture.role if capture else None,
             "verdict": record.verdict,
+            "placement": record.placement,
+            "path": record.path,
             "against": result.reference,
             "fits_onto_others_cm": (None if record.agreement_m is None
                                     else round(record.agreement_m * M_TO_CM, 1)),
             "fits_onto_others_basis": result.agreement_basis.get(name),
             "caution": result.cautions.get(name),
         }
-        if record.fit is not None:
+        if record.placement == "declared" and record.fit is not None:
+            entry.update({
+                "theta_deg": round(math.degrees(record.fit["theta_rad"]) % 360, 2),
+                "tx_m": round(record.fit["tx"], 4),
+                "ty_m": round(record.fit["ty"], 4),
+                "point_pair_residual_cm": round(
+                    (record.placement_point_residual_m or 0.0) * M_TO_CM, 2),
+                "evidence": record.placement_evidence,
+                "measured_overlap": None,
+            })
+        elif record.fit is not None:
             entry.update(basin(record.fit))
         if record.reason:
             entry["reason"] = record.reason
@@ -1889,7 +2442,8 @@ def alignment_record(result: Combined) -> list[dict[str, Any]]:
 def worklist(decisions: list[Decision], cands: list[Candidate],
              scores: dict[int, Score], fragments: list[Fragment],
              naming: list[Naming],
-             expected_areas: set[str] | None) -> list[dict[str, Any]]:
+             expected_areas: set[str] | None,
+             area_selections: list[AreaSelection] | None = None) -> list[dict[str, Any]]:
     """What to go and do about the house, which is the point of the exercise.
 
     Per area: who won it, how well, and every reason to distrust that. Plus the
@@ -1899,6 +2453,24 @@ def worklist(decisions: list[Decision], cands: list[Candidate],
     """
     items: list[dict[str, Any]] = []
     won_areas: set[str] = set()
+
+    for selection in area_selections or []:
+        items.append({
+            "kind": "area_selection",
+            "area": selection.area,
+            "verdict": selection.verdict,
+            "winner": (None if selection.winner is None
+                       else cands[selection.winner].capture),
+            "distances_cm": {cands[i].capture: round(distance, 1)
+                             for i, distance in selection.distance_cm.items()},
+            "observations": [
+                {"capture": cands[o.candidate].capture, "state": o.state,
+                 "completeness": (None if o.completeness is None
+                                  else round(o.completeness, 3))}
+                for o in selection.observations
+            ],
+            "reasons": selection.reasons,
+        })
 
     for decision in decisions:
         group = decision.group
@@ -2056,10 +2628,39 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
             max_p90_cm: float = MAX_P90_CM, edge: float = EDGE_CONTAINMENT,
             max_off_grid_deg: float = MAX_OFF_GRID_DEG,
             min_grid_concentration: float = MIN_GRID_CONCENTRATION,
-            expected_areas: set[str] | None = None) -> Combined:
+            expected_areas: set[str] | None = None,
+            declared_placements: list[DeclaredPlacement] | None = None,
+            options: CombineOptions | None = None) -> Combined:
     """The five stages, with no printing. `main` reports what this returns."""
+    config = (options or CombineOptions(
+        max_median_cm=max_median_cm, max_p90_cm=max_p90_cm,
+        edge_containment=edge, max_off_grid_deg=max_off_grid_deg,
+        min_grid_concentration=min_grid_concentration)).validated()
+    max_median_cm = config.max_median_cm
+    max_p90_cm = config.max_p90_cm
+    edge = config.edge_containment
+    max_off_grid_deg = config.max_off_grid_deg
+    min_grid_concentration = config.min_grid_concentration
     if len(models) < 2:
         raise ValueError("give at least two captures; one capture needs no combining")
+
+    declarations: dict[str, DeclaredPlacement] = {}
+    for declaration in declared_placements or []:
+        if declaration.capture in declarations:
+            raise ValueError(
+                f"capture {declaration.capture!r} has more than one declared placement")
+        if declaration.capture not in models:
+            raise ValueError(
+                f"declared placement names capture {declaration.capture!r}, which is "
+                f"not in this level: {sorted(models)}")
+        if declaration.relative_to not in models:
+            raise ValueError(
+                f"declared placement for {declaration.capture!r} is relative to "
+                f"{declaration.relative_to!r}, which is not in this level")
+        if declaration.capture == declaration.relative_to:
+            raise ValueError(
+                f"declared placement for {declaration.capture!r} refers to itself")
+        declarations[declaration.capture] = declaration
 
     levels: dict[str, Level] = {}
     rejected: dict[str, str] = {}
@@ -2095,18 +2696,31 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         n: scored[n].basis if n in scored else "its best single pairing, because "
                                               "there was nothing to average"
         for n in agreement}
-    ref = reference or pick_reference(
-        {n: lv for n, lv in levels.items() if n in in_union} or levels, agreement)
+    if reference in declarations:
+        raise ValueError(
+            f"declared capture {reference!r} cannot be the reference: its position "
+            "is defined relative to another capture")
+    reference_candidates = {
+        n: lv for n, lv in levels.items()
+        if n in in_union and n not in declarations}
+    if not reference_candidates:
+        reference_candidates = {
+            n: lv for n, lv in levels.items() if n not in declarations}
+    ref = reference or pick_reference(reference_candidates, agreement)
     if ref not in levels:
         raise ValueError(f"reference {ref!r} is not among {sorted(levels)}")
     if not levels[ref].walls:
         raise ValueError(f"reference {ref!r} has no walls to fit against")
+    path_names = in_union if ref in in_union else {ref}
+    paths = placement_paths(all_fits, path_names, ref,
+                            limit_m=max_median_cm * CM_TO_M)
 
     # --- stage 1: align, or discard ----------------------------------------
     # Two steps and no third branch. Every capture leaves this loop with a
     # verdict on the record, including the ones that did not make it.
     aligned: dict[str, Alignment] = {
         ref: Alignment(capture=ref, verdict="reference",
+                       placement="direct", path=[ref],
                        agreement_m=agreement.get(ref))}
     # A capture can earn several of these -- off the grid with an unreadable
     # bearing, AND too small for its coverage to mean anything. Assigning kept
@@ -2119,8 +2733,43 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     for name, why_level in rejected.items():
         aligned[name] = Alignment(capture=name, verdict="discarded", reason=why_level)
 
-    for name, level in levels.items():
-        if name == ref:
+    ordinary = [name for name in levels if name != ref and name not in declarations]
+    pending = set(declarations) - {ref}
+    declared_order: list[str] = []
+    available = set(ordinary) | {ref}
+    while pending:
+        ready = sorted(name for name in pending
+                       if declarations[name].relative_to in available)
+        if not ready:
+            chain = ", ".join(
+                f"{name}->{declarations[name].relative_to}" for name in sorted(pending))
+            raise ValueError(f"declared placements contain a cycle or unresolved chain: {chain}")
+        declared_order.extend(ready)
+        pending.difference_update(ready)
+        available.update(ready)
+
+    for name in ordinary + declared_order:
+        level = levels[name]
+        declared_for_name = declarations.get(name)
+        if declared_for_name is not None:
+            target = aligned.get(declared_for_name.relative_to)
+            if target is None or not target.usable:
+                why = (f"declared relative capture {declared_for_name.relative_to!r} was not "
+                       "placed, so this declaration has no route into the reference frame")
+                rejected[name] = why
+                aligned[name] = Alignment(capture=name, verdict="discarded", reason=why)
+                continue
+            fit = (declared_for_name.fit if target.fit is None
+                   else compose_fits([declared_for_name.fit, target.fit]))
+            path = [name] + target.path
+            reason = ("position comes from project.yaml, not shared scan ground: "
+                      + declared_for_name.evidence)
+            aligned[name] = Alignment(
+                capture=name, verdict="accepted", fit=fit, placement="declared",
+                path=path, placement_evidence=declared_for_name.evidence,
+                placement_point_residual_m=declared_for_name.point_residual_m,
+                reason=reason)
+            caution(name, reason)
             continue
         if not level.walls:
             rooms = [str(r.name) for r in level.rooms]
@@ -2132,9 +2781,41 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
             aligned[name] = Alignment(capture=name, verdict="discarded", reason=why)
             continue
 
-        fit = plan_fit(single[name], single[ref])
-        record = Alignment(capture=name, candidates=[fit],
+        ordinary_path = paths.get(name)
+        chained = ordinary_path is not None and len(ordinary_path) > 2
+        if chained:
+            assert ordinary_path is not None
+            fit = fit_along_path(ordinary_path, all_fits)
+            finite_candidates = [fit]
+        else:
+            basin_candidates = plan_fits(single[name], single[ref])
+            finite_candidates = [f for f in basin_candidates
+                                 if math.isfinite(f["median_error_m"])]
+            if not finite_candidates:
+                fit = basin_candidates[0]
+            else:
+                placement = choose_placement(
+                    level, levels[ref], finite_candidates,
+                    min_overlap=config.identity_min_overlap,
+                    ambiguity=config.identity_ambiguity)
+                if placement.verdict != "placed":
+                    verdict: Verdict = ("ambiguous" if placement.verdict == "ambiguous"
+                                        else "discarded")
+                    record = Alignment(
+                        capture=name, verdict=verdict,
+                        candidates=placement.candidates,
+                        reason=placement.reason,
+                        agreement_m=agreement.get(name))
+                    aligned[name] = record
+                    rejected[name] = record.reason
+                    continue
+                assert placement.fit is not None
+                fit = placement.fit
+
+        record = Alignment(capture=name, candidates=finite_candidates or [fit],
                            verdict="accepted", fit=fit,
+                           placement="chained" if chained else "direct",
+                           path=ordinary_path or [name, ref],
                            common_points=fit["matched"], sampled_points=fit["sampled"],
                            agreement_m=agreement.get(name))
 
@@ -2207,6 +2888,8 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
             # perfectly on the rooms it did see. See MAX_MEDIAN_CM.
             record.verdict = "discarded"
             record.fit = None
+            record.placement = "unplaced"
+            record.path = []
             record.reason = "; ".join(failures)
             rejected[name] = record.reason
         elif (fit["median_error_m"] * M_TO_CM > max_median_cm
@@ -2235,7 +2918,9 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
 
     cautions: dict[str, str] = joined_cautions(caution_reasons)
     fits: dict[str, Fit | None] = {n: a.fit for n, a in aligned.items() if a.usable}
-    accepted = [n for n in levels if n in fits]
+    # A project mapping is not evidence. Stable capture order keeps declared
+    # additions and every downstream wall/record independent of YAML ordering.
+    accepted = sorted(n for n in levels if n in fits)
 
     if len(accepted) < 2:
         # Nothing overlaid onto the anchor, so there is nothing to combine and
@@ -2281,8 +2966,13 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         stack = [points[o] for o in accepted if o != name and len(points[o])]
         others[name] = cKDTree(np.vstack(stack)) if stack else None
 
-    captures = {name: capture_record(name, roles[name], fits[name], name == ref)
-                for name in accepted}
+    captures = {
+        name: capture_record(
+            name, roles[name], fits[name], name == ref,
+            placement=aligned[name].placement, path=aligned[name].path,
+            evidence=aligned[name].placement_evidence,
+            point_residual_m=aligned[name].placement_point_residual_m)
+        for name in accepted}
 
     scores = {
         c.index: score_room(c, group, cands, own_tree=trees[c.capture],
@@ -2291,7 +2981,9 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     }
 
     # --- stage 4: select ----------------------------------------------------
-    decisions = [decide(g, cands, scores) for g in groups]
+    decisions, area_selections = decide_areas(
+        groups, cands, scores, completeness=config.area_completeness,
+        two_source_agree_cm=config.area_two_source_agree_cm)
     chosen: list[int] = []
     rooms_out: list[Room] = []
     for decision in decisions:
@@ -2311,10 +3003,17 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
     walls_out, dropped = select_walls(offered)
 
     fragments, sliver_m2, slivers = uncovered_floor(cands, chosen, scores)
-    naming = name_suggestions(cands, chosen)
+    # Losing unnamed rooms still need an identity disposition. Restricting this
+    # to winners made a context scan disappear from the only durable report.
+    naming = name_suggestions(cands, [c.index for c in cands if not c.named])
 
     # --- the model ----------------------------------------------------------
     base = levels[ref]
+    doors_out = union_doors(
+        [place_door(door, fits[name], name)
+         for name in order for door in levels[name].doors],
+        match_cm=config.door_match_cm)
+
     model = Model(
         source=models[ref].source,
         # The combined model is a survey of the building even where a fixture
@@ -2323,7 +3022,7 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
         role="geometry",
         levels=[Level(name=base.name, ceiling_height_cm=base.ceiling_height_cm,
                       elevation_cm=base.elevation_cm, walls=walls_out,
-                      rooms=rooms_out, doors=list(base.doors),
+                      rooms=rooms_out, doors=doors_out,
                       # The reference's own plan-to-mesh fit, because the
                       # combined frame IS the reference's plan frame -- so
                       # `textures_project` still indexes into its mesh.
@@ -2345,20 +3044,80 @@ def combine(models: dict[str, Model], *, level_name: str | None = None,
                     coverage=None if not a.candidates else a.candidates[0]["coverage"])
             for n, a in aligned.items() if not a.usable],
     )
+    items = worklist(decisions, cands, scores, fragments, naming, expected_areas,
+                     area_selections)
+    for entry in malformed:
+        items.append({
+            "kind": "malformed_room",
+            "capture": entry["capture"], "room": entry["room"],
+            "kept": bool(entry.get("kept")),
+            "reasons": [entry["reason"]],
+        })
+    for name, record in aligned.items():
+        caution_text = cautions.get(name)
+        if record.usable and not caution_text:
+            continue
+        items.append({
+            "kind": ("capture_caution" if record.usable else
+                     f"capture_{record.verdict}"),
+            "capture": name, "verdict": record.verdict,
+            "placement": record.placement, "path": record.path,
+            "candidates": len(record.candidates),
+                "rooms": [
+                    {"room": str(room.name), "area": room.ha_area,
+                     "area_m2": round(polygon_of(room).area * CM2_TO_M2, 2)}
+                    for level in models[name].levels for room in level.rooms
+                    if len(room.points) >= 3
+                ],
+            "reasons": [reason for reason in (record.reason, caution_text) if reason],
+        })
+
     return Combined(
         model=model, reference=ref, candidates=cands, groups=groups, scores=scores,
-        decisions=decisions, fits=fits, rejected=rejected, malformed=malformed,
+        decisions=decisions, area_selections=area_selections,
+        fits=fits, rejected=rejected, malformed=malformed,
         dropped_walls=dropped, fragments=fragments, sliver_m2=sliver_m2,
         slivers=slivers, cautions=cautions, agreement=agreement,
         agreement_basis=agreement_basis, aligned=aligned,
         naming=naming,
-        worklist=worklist(decisions, cands, scores, fragments, naming, expected_areas),
+        worklist=items,
     )
 
 
 # --------------------------------------------------------------------------- #
 # the report, which is the deliverable as much as the model is
 # --------------------------------------------------------------------------- #
+
+
+class OutlierCheck(NamedTuple):
+    """Which captures the averaged walls single out. Three answers."""
+
+    verdict: Literal["odd_one_out", "agree", "no_outlier"]
+    names: tuple[str, ...]
+
+
+def outlier_check(agreement: Mapping[str, float], *,
+                  ratio: float = OUTLIER_RATIO,
+                  floor_cm: float = OUTLIER_FLOOR_CM) -> OutlierCheck:
+    """The captures several times worse than the best at landing on the others.
+
+    A MULTIPLE OF THE BEST IS NOT ENOUGH ON ITS OWN. Where every capture agrees
+    the best is nearly zero, and dividing by it made all three of one level's
+    captures several times worse than it -- two of them reading 0.0 cm and one
+    1968915389492.1x the best. A table whose whole job is to name one capture
+    named them all, and that is a table saying nothing.
+
+    So `agree` is a verdict and not a gap in the reporting: captures that land
+    within `floor_cm` of walls they did not vote on cannot be told apart, and
+    there is no odd one out to name.
+    """
+    floor_m = floor_cm * CM_TO_M
+    if max(agreement.values()) < floor_m:
+        return OutlierCheck("agree", ())
+    best = min(agreement.values())
+    named = tuple(n for n, e in sorted(agreement.items(), key=lambda kv: kv[1])
+                  if e >= floor_m and e > best * ratio)
+    return OutlierCheck("odd_one_out" if named else "no_outlier", named)
 
 
 def report(result: Combined) -> None:
@@ -2408,22 +3167,33 @@ def report(result: Combined) -> None:
         # vote on, so a capture cannot flatter itself in it.
         print("\n  distance from the AVERAGED walls of the other captures (not from")
         print("  the reference, so a bad reference cannot charge its error to all):")
+        check = outlier_check(result.agreement)
         best = min(result.agreement.values())
+        ratios = best >= OUTLIER_FLOOR_CM * CM_TO_M
         for name, err in sorted(result.agreement.items(), key=lambda kv: kv[1]):
-            ratio = err / best if best > 0 else 1.0
-            mark = "   <- the odd one out" if ratio > OUTLIER_RATIO else ""
+            against = f"{err / best:4.1f}x best" if ratios else f"{'--':>10s}"
+            mark = "   <- the odd one out" if name in check.names else ""
             gone = "" if result.aligned[name].usable else "  (discarded above)"
-            print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {ratio:4.1f}x best"
-                  f"{mark}{gone}")
+            print(f"    {name:22s} {err * M_TO_CM:6.1f} cm   {against}{mark}{gone}")
             # Never just the number. Two captures that agree cannot average
             # anything once one of them is the capture being judged, and a
             # figure measured against one other capture is a second opinion.
             print(f"    {'':22s} against {result.agreement_basis[name]}")
-        worst = max(result.agreement.values())
-        if best > 0 and worst / best > OUTLIER_RATIO:
+        if not ratios:
+            print(f"  No ratios: the best figure here is under "
+                  f"{OUTLIER_FLOOR_CM:.0f} cm, and a multiple of a")
+            print("  distance that small describes rounding, not disagreement.")
+        if check.verdict == "odd_one_out":
             print("  This is what identifies the odd one out, and it is the reason to")
             print("  scan a level more than twice: two captures that disagree cannot")
             print("  say which of them is wrong, and a third says it immediately.")
+        elif check.verdict == "agree":
+            print(f"  Nothing to single out: every capture lands within "
+                  f"{OUTLIER_FLOOR_CM:.0f} cm of walls it did")
+            print("  not vote on, which is closer than they can be told apart.")
+        else:
+            print("  Nothing to single out: no capture is several times worse than the")
+            print("  best. That they differ is above; which of them is right is not.")
 
     if result.malformed:
         print("\nMALFORMED ROOMS")
@@ -2567,6 +3337,27 @@ def main() -> None:
                          "four rotations between two captures are ever valid -- this "
                          "is what catches a capture placed on the wrong walls, which "
                          "no error figure can see")
+    ap.add_argument("--min-grid-concentration", type=float,
+                    default=MIN_GRID_CONCENTRATION,
+                    help="below this the wall grid abstains instead of approving or "
+                         "refusing a rotation")
+    ap.add_argument("--identity-min-overlap", type=float,
+                    default=IDENTITY_MIN_OVERLAP,
+                    help="minimum containment of a declared common area needed to "
+                         "support a placement")
+    ap.add_argument("--identity-ambiguity", type=float,
+                    default=IDENTITY_AMBIGUITY,
+                    help="declared-area overlap margin within which distinct "
+                         "placements remain ambiguous")
+    ap.add_argument("--area-completeness", type=float, default=AREA_COMPLETENESS,
+                    help="fraction of another survey required to compete as an "
+                         "area candidate rather than alignment context")
+    ap.add_argument("--area-two-source-agree-cm", type=float,
+                    default=AREA_TWO_SOURCE_AGREE_CM,
+                    help="largest boundary difference at which two captures are "
+                         "equivalent; above it neither can identify the winner")
+    ap.add_argument("--door-match-cm", type=float, default=DOOR_MATCH_CM,
+                    help="centre and width tolerance for duplicate door observations")
     args = ap.parse_args()
 
     models: dict[str, Model] = {}
@@ -2588,10 +3379,18 @@ def main() -> None:
         models[name] = load_model(path)
 
     try:
+        options = CombineOptions(
+            max_median_cm=args.max_median_cm, max_p90_cm=args.max_p90_cm,
+            edge_containment=args.edge_containment,
+            max_off_grid_deg=args.max_off_grid_deg,
+            min_grid_concentration=args.min_grid_concentration,
+            identity_min_overlap=args.identity_min_overlap,
+            identity_ambiguity=args.identity_ambiguity,
+            area_completeness=args.area_completeness,
+            area_two_source_agree_cm=args.area_two_source_agree_cm,
+            door_match_cm=args.door_match_cm)
         result = combine(models, level_name=args.storey, reference=args.reference,
-                         max_median_cm=args.max_median_cm, max_p90_cm=args.max_p90_cm,
-                         edge=args.edge_containment,
-                         max_off_grid_deg=args.max_off_grid_deg)
+                         options=options)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 

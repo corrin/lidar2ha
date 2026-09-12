@@ -588,3 +588,141 @@ def test_whichlevel_with_nothing_to_compare_against_says_so(tmp_path, model_path
 
     assert done.returncode != 0
     assert "Nothing to compare against" in (done.stdout + done.stderr)
+
+
+def test_validate_cmd_gates_a_project_that_will_lose_a_room(tmp_path):
+    """The gate has to exit non-zero, or it cannot gate a build.
+
+    Every unit test of the checks lives in test_validate.py; this is the
+    entrypoint, which is the thing that passed while a stage's `main()` crashed
+    on every input.
+    """
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+
+    (tmp_path / "project.yaml").write_text(
+        "levels:\n  Ground: [a, b]\nrooms:\n  a:\n    Room: den\n",
+        encoding="utf-8")
+    (tmp_path / "registry.json").write_text(
+        json.dumps({"areas": [{"area_id": "den", "name": "Den"}]}),
+        encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "validate", "--project", str(tmp_path / "project.yaml"),
+        "--registry", str(tmp_path / "registry.json")])
+    assert result.exit_code == 1, result.output
+    assert "CAPTURE NOT NAMED" in result.output and "b" in result.output
+
+
+def test_validate_cmd_passes_a_clean_project(tmp_path):
+    """A gate that cries wolf gets ignored, which is worse than no gate."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+
+    (tmp_path / "project.yaml").write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    Room: den\n  b:\n    Room: den\n",
+        encoding="utf-8")
+    (tmp_path / "registry.json").write_text(
+        json.dumps({"areas": [{"area_id": "den", "name": "Den"}]}),
+        encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "validate", "--project", str(tmp_path / "project.yaml"),
+        "--registry", str(tmp_path / "registry.json")])
+    assert result.exit_code == 0, result.output
+    assert "nothing to report" in result.output
+
+
+def test_combine_cmd_consumes_the_levels_declared_placement(tmp_path):
+    """A valid `placements:` block must change the model, not merely validate."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Room, Wall, save_model
+
+    def capture(capture_id, x0, width, area):
+        points = [(x0, 0), (x0 + width, 0), (x0 + width, 200), (x0, 200)]
+        walls = [Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
+                      thickness=10, height=240)
+                 for a, b in zip(points, points[1:] + points[:1], strict=True)]
+        model = Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+            name="Floor 1", ceiling_height_cm=240, walls=walls,
+            rooms=[Room(name=capture_id, ha_area=area, points=points)])])
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(model, directory / f"{capture_id}_named.json")
+
+    capture("inside", 0, 400, "den")
+    capture("deck", 1000, 200, "lower_deck")
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [inside, deck]\n"
+        "rooms:\n  inside:\n    inside: den\n  deck:\n    deck: lower_deck\n"
+        "placements:\n  Ground:\n    - capture: deck\n"
+        "      relative_to: inside\n"
+        "      capture_points_cm: [[1000, 0], [1100, 0]]\n"
+        "      relative_points_cm: [[400, 0], [500, 0]]\n"
+        "      evidence: owner aligned the door edge\n",
+        encoding="utf-8")
+    out = tmp_path / "ground_combined.json"
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "--reference", "inside", "-o", str(out)])
+
+    assert result.exit_code == 0, result.output
+    alignment = json.loads((tmp_path / "ground_combined_alignment.json").read_text())
+    deck = next(row for row in alignment if row["capture"] == "deck")
+    assert deck["placement"] == "declared"
+    assert deck["measured_overlap"] is None
+    assert deck["evidence"] == "owner aligned the door edge"
+
+
+def test_coverage_cmd_runs_over_the_levels_it_finds(tmp_path):
+    """The entrypoint, whose model-file resolution is its own code.
+
+    It prefers `<level>_split.json` over `<level>_combined.json`, because the
+    pieces of a cut room are the areas a person uses and the fused parent is not
+    one of them.
+    """
+    import json
+
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Room
+
+    (tmp_path / "project.yaml").write_text(
+        "levels:\n  Ground: [a, b]\n", encoding="utf-8")
+    (tmp_path / "registry.json").write_text(json.dumps({
+        "floors": [{"floor_id": "g", "name": "Ground"}],
+        "areas": [{"area_id": "den", "name": "Den", "floor_id": "g"},
+                  {"area_id": "garage", "name": "Garage", "floor_id": "g"}],
+    }), encoding="utf-8")
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    model = Model(source="t.dxf", units="cm", levels=[Level(
+        name="Floor 1", elevation_cm=0, ceiling_height_cm=240, walls=[],
+        rooms=[Room(name="den", ha_area="den",
+                    points=[(0, 0), (400, 0), (400, 300), (0, 300)])])])
+    (exports / "ground_split.json").write_text(
+        model.model_dump_json(by_alias=True), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "coverage", "--project", str(tmp_path / "project.yaml"),
+        "--registry", str(tmp_path / "registry.json"),
+        "--exports", str(exports)])
+    assert result.exit_code == 0, result.output
+    assert "1 of 2 area(s)" in result.output
+    assert "garage" in result.output
+    assert "ground_split.json" in result.output

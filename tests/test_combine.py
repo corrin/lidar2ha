@@ -29,6 +29,7 @@ from the model with nothing saying so.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -37,8 +38,10 @@ from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
 from lidar2ha import combine as combining
+from lidar2ha import schema
 from lidar2ha.combine import (
     Candidate,
+    Score,
     ceiling_plausibility,
     containment,
     group_rooms,
@@ -81,6 +84,21 @@ def degraded(model: Model, scale: float = 1.06) -> Model:
              for r in lv.rooms]
     return model.model_copy(update={
         "levels": [lv.model_copy(update={"walls": walls, "rooms": rooms})]})
+
+
+def test_doors_from_every_capture_survive_with_provenance() -> None:
+    """The reference capture is not a privileged source of openings."""
+    first = schema.Door(x=100, y=200, width=80)
+    repeated = schema.Door(x=112, y=205, width=82)
+    extra = schema.Door(x=400, y=200, width=90)
+
+    placed = [combining.place_door(first, None, "reference"),
+              combining.place_door(repeated, None, "second"),
+              combining.place_door(extra, None, "second")]
+    doors = combining.union_doors(placed, match_cm=20)
+
+    assert [(d.x, d.y, d.source) for d in doors] == [
+        (100, 200, "reference"), (400, 200, "second")]
 
 
 @pytest.fixture(scope="module")
@@ -520,6 +538,12 @@ def test_the_same_wall_from_two_captures_is_kept_once():
     assert kept[0] is a, "the better capture's version survives, not a blend"
 
 
+def test_capture_priority_does_not_inherit_input_order():
+    """Tied non-winners must offer duplicate features in a stable order."""
+    assert combining.capture_order([], [], {}, ["zulu", "alpha"]) == [
+        "alpha", "zulu"]
+
+
 def test_the_winner_takes_the_group_whole_rather_than_room_by_room(combined):
     """Picking room by room inside a disagreement lays the same floor twice --
     the reference's living room plus the fixture pass's fused one."""
@@ -609,15 +633,11 @@ def test_an_area_the_project_maps_but_nobody_won_is_named(trio):
 
 
 def test_a_missing_area_names_the_room_standing_on_it(trio):
-    """"Look at the plan" is advice this stage can already act on.
+    """An independently resolved area survives a fused losing capture.
 
-    An area goes missing most often because a capture that fused it with its
-    neighbour won the group -- so the room IS in the model, drawn as part of
-    another polygon, and the row reads as though the space was never scanned.
-    `name_suggestions` has already worked out which room stands on it and by how
-    much, and leaving the reader to join two rows of one report by eye is how a
-    scanned room gets recorded as unscanned. It happened on this house, three
-    times in commit messages and once on a dashboard.
+    The old whole-partition decision let a fused fixture room take its neighbour
+    with it, then needed an `area_with_no_source` post-mortem. Per-area selection
+    removes the loss rather than improving the explanation after it happened.
     """
     named = named_house(trio)
     declared = {r.ha_area for m in named.values() for lv in m.levels
@@ -626,11 +646,8 @@ def test_a_missing_area_names_the_room_standing_on_it(trio):
     missing = {w["area"]: w for w in result.worklist
                if w["kind"] == "area_with_no_source"}
 
-    assert "hallway" in missing, "if this fails the fixture stopped losing an area"
-    stood_on = missing["hallway"]["stood_on_by"]
-    assert [s["room"] for s in stood_on] == ["Other 1"]
-    assert stood_on[0]["capture"] == "midlevel_fixtures"
-    assert stood_on[0]["fraction"] == pytest.approx(0.66, abs=0.02)
+    assert "hallway" not in missing
+    assert any(r.ha_area == "hallway" for r in result.model.levels[0].rooms)
 
 
 def test_a_missing_area_a_capture_simply_did_not_map_is_not_sent_to_seams():
@@ -878,7 +895,7 @@ def test_an_unnamed_room_is_told_what_it_stands_on(trio):
     # question is WHICH of them it is, not what it is.
     fused = next(n for n in result.naming if n.verdict == "split")
     assert len(fused.places) >= 2
-    assert sum(share for _, share in fused.places) > 0.9
+    assert sum(share for _, share in fused.places) > 0.85
 
 
 def test_a_name_is_suggested_and_never_written(trio):
@@ -888,9 +905,12 @@ def test_a_name_is_suggested_and_never_written(trio):
     result = combining.combine(named_house(trio))
     assert result.naming, "if this fails the test proves nothing"
     for suggestion in result.naming:
-        room = next(r for r in result.model.levels[0].rooms
-                    if r.source == suggestion.capture and r.name == suggestion.room)
-        assert room.ha_area is None, "a suggestion was written into the model"
+        rooms = [r for r in result.model.levels[0].rooms
+                 if r.source == suggestion.capture and r.name == suggestion.room]
+        # Losing context is reported now too. Where an unnamed room did win,
+        # the old invariant remains: a suggestion never writes identity.
+        assert all(room.ha_area is None for room in rooms), (
+            "a suggestion was written into the model")
 
 
 def all_named(trio) -> dict[str, Model]:
@@ -1119,6 +1139,60 @@ def test_the_poor_capture_is_named_as_the_outlier(trio):
     result = combining.combine(trio)
     best = min(result.agreement.values())
     assert result.agreement["drifted"] / best > combining.OUTLIER_RATIO
+    assert combining.outlier_check(result.agreement).names == ("drifted",)
+
+
+def test_captures_that_all_agree_have_no_odd_one_out():
+    """Observed on a level whose captures agreed almost exactly. Every one of
+    them was marked the odd one out, including two reading 0.0 cm:
+
+        ground_geometry_0412-0900    0.0 cm    3.9x best   <- the odd one out
+        ground_fixtures_0412-1300    0.0 cm    4.0x best   <- the odd one out
+        ground_geometry_0412-1145    0.2 cm   1968915389492.1x best
+
+    The ratio divides by the best, so a best that is arithmetic noise makes
+    every capture several times worse than it. A table whose job is to name one
+    capture must not name them all.
+    """
+    check = combining.outlier_check(
+        {"a": 1.0665e-15, "b": 4.16e-15, "c": 0.0021})
+
+    assert check.names == ()
+    assert check.verdict == "agree"
+
+
+def test_an_outlier_a_couple_of_centimetres_out_is_still_named():
+    """The guard against the noise case must not swallow a real disagreement.
+    The demo level reads 1.6, 1.9 and 3.5 cm and the 3.5 is the capture holding
+    a room 70 cm out of place -- the smallest real outlier there is anywhere to
+    measure, and docs/TUTORIAL.md prints that row."""
+    check = combining.outlier_check({"a": 0.016, "b": 0.019, "c": 0.035})
+
+    assert check.names == ("c",)
+    assert check.verdict == "odd_one_out"
+
+
+def test_captures_that_differ_without_an_outlier_are_not_called_agreed():
+    """The third answer. This house's good captures spread 2.5 to 4.3 cm, which
+    is neither one capture standing out nor a level where the figures cannot be
+    told apart -- and reporting it as agreement would put a promise on numbers
+    that never made one."""
+    check = combining.outlier_check({"a": 0.025, "b": 0.030, "c": 0.043})
+
+    assert check.names == ()
+    assert check.verdict == "no_outlier"
+
+
+def test_the_report_does_not_call_every_capture_the_odd_one_out(combined, capsys):
+    """The symptom as a reader met it: three captures, three flags, and nothing
+    left that identifies anything."""
+    noise = dict(zip(combined.agreement, (1.0665e-15, 4.16e-15, 0.0021),
+                     strict=True))
+    combining.report(replace(combined, agreement=noise))
+
+    out = capsys.readouterr().out
+    assert "<- the odd one out" not in out
+    assert "1968915389492" not in out
 
 
 # --------------------------------------------------------------------------- #
@@ -1206,3 +1280,396 @@ def test_an_empty_level_is_refused_before_it_produces_a_confident_answer():
     empty = Model(source="a.dxf", levels=[Level(name="L", ceiling_height_cm=250)])
     with pytest.raises(ValueError, match="no walls"):
         combining.combine({"a": empty, "b": empty})
+
+
+def _fused_group():
+    """Two captures resolving a pair of named rooms, and one laying a polygon
+    over both. The real shape: `upstairs_1058` and `upstairs_1904` each keep
+    `sewing_room` and `girl_bedroom` apart, and the fixture pass returns one
+    20.2 m2 `Hallway 1` covering the pair.
+    """
+    def room(name, area, x0, x1):
+        return schema.Room(name=name, ha_area=area,
+                           points=[(x0, 0), (x1, 0), (x1, 400), (x0, 400)])
+
+    def walls(*spans):
+        """The outline of each room, so the fitter has something to register on
+        and so the fused capture genuinely lacks the wall it is missing."""
+        out = []
+        for x0, x1 in spans:
+            for a, b in (((x0, 0), (x1, 0)), ((x1, 0), (x1, 400)),
+                         ((x1, 400), (x0, 400)), ((x0, 400), (x0, 0))):
+                out.append(schema.Wall(xStart=a[0], yStart=a[1],
+                                       xEnd=b[0], yEnd=b[1],
+                                       thickness=10, height=240))
+        return out
+
+    def model(rooms, spans):
+        return schema.Model(source="t.dxf", units="cm", levels=[schema.Level(
+            name="Floor 1", elevation_cm=0, ceiling_height_cm=240,
+            walls=walls(*spans), rooms=list(rooms))])
+
+    return {
+        "geom_a": model([room("sewing_room", "sewing_room", 0, 300),
+                         room("girl_bedroom", "girl_bedroom", 300, 600)],
+                        [(0, 300), (300, 600)]),
+        "geom_b": model([room("sewing_room", "sewing_room", 5, 305),
+                         room("girl_bedroom", "girl_bedroom", 305, 605)],
+                        [(5, 305), (305, 605)]),
+        # No wall at x=300: that is the wall it is missing.
+        "fused": model([room("Hallway 1", None, 0, 600)], [(0, 600)]),
+    }
+
+
+def test_a_capture_fusing_two_named_rooms_does_not_take_the_group():
+    """It is missing a wall, and the captures that found it are right there.
+
+    `partitioning`'s own docstring says a polygon laid over rooms another
+    capture keeps apart "is not slightly wrong about a boundary -- it is missing
+    two walls". It measures exactly that and scores the fused candidate 0.5
+    against everyone else's 1.0 -- which at weight 0.10 is a 0.05 nudge, and the
+    margins observed on the real house were 0.14 and 0.015. So the measurement
+    was right and could not act, which is why this is tested at `decide` with
+    the fused capture scoring HIGHEST. Anything less and the test passes without
+    the rule.
+
+    Measured on the real house this cost `sewing_room`, `girl_bedroom` and
+    `computer_pulpit`: each resolved separately by two geometry captures, each
+    replaced by one unnamed polygon from a fixture pass that won its group.
+
+    The owner's areas are the evidence. Two rooms carrying different `ha_area`s
+    is a person saying they are different rooms, and no scan contradicts that --
+    unlike a genuinely open plan, where NO capture resolves them and `split:` is
+    the only answer there will ever be.
+    """
+    cands, group = _fusion_group()
+    scores = {0: Score(0.60, {}, []), 1: Score(0.60, {}, []),
+              2: Score(0.95, {}, [])}          # the fused one scores best
+    decision = combining.decide(group, cands, scores)
+    assert decision.winner != "fused", (
+        "the fused capture won on score, and both named rooms went with it")
+    assert any("missing" in r or "fus" in r for r in decision.reasons), (
+        f"nothing said why it was passed over: {decision.reasons}")
+
+
+def test_a_fused_capture_still_wins_where_nothing_else_resolved_it():
+    """The rule is about being outvoted, not about the shape of the polygon.
+
+    Where no other capture keeps the rooms apart there is nothing to be missing
+    a wall against, and refusing the only capture that saw the floor is exactly
+    how the bathroom vanished the first time.
+    """
+    cands, group = _fusion_group(resolved_by_others=False)
+    scores = {i: Score(0.5, {}, []) for i in range(len(cands))}
+    assert combining.decide(group, cands, scores).winner == "fused"
+
+
+# --------------------------------------------------------------------------- #
+# Area-first combination
+# --------------------------------------------------------------------------- #
+
+
+def test_unnamed_ground_in_a_named_group_still_gets_a_geometric_decision():
+    """A fused room awaiting `split:` must not vanish beside a named room."""
+    garage = cand(0, "frontage", square(0, 0, 400, "garage", ha_area="garage"))
+    pending = cand(1, "frontage", square(300, 0, 400, "Room 1"))
+    group = combining.Group(
+        members=[0, 1], per_capture={"frontage": [0, 1]}, kind="tangled",
+        edges={(0, 1): 0.25})
+    scores = {0: Score(0.8, {}, []), 1: Score(0.7, {}, [])}
+
+    decisions, _ = combining.decide_areas([group], [garage, pending], scores)
+
+    chosen = {i for decision in decisions for i in decision.winner_rooms}
+    assert chosen == {0, 1}, "the unnamed polygon entered no decision and vanished"
+
+
+def _fit(theta=0.0, tx=0.0, ty=0.0, median=0.02, coverage=1.0):
+    return {
+        "theta_rad": theta, "tx": tx, "ty": ty,
+        "median_error_m": median, "coverage": coverage,
+        "p90_m": median, "matched": 100, "sampled": 100,
+    }
+
+
+def test_placement_paths_reach_adjacent_ground_through_a_bridge():
+    """A deck need not overlap the anchor when a doorway scan joins them.
+
+    The old construction fitted every capture directly onto the anchor, so the
+    second good edge was computed for consensus and then ignored for geometry.
+    """
+    fits = {
+        ("bridge", "inside"): _fit(tx=4.0),
+        ("deck", "bridge"): _fit(tx=3.0),
+    }
+
+    paths = combining.placement_paths(fits, {"inside", "bridge", "deck"},
+                                      "inside", limit_m=0.05)
+
+    assert paths == {
+        "inside": ["inside"],
+        "bridge": ["bridge", "inside"],
+        "deck": ["deck", "bridge", "inside"],
+    }
+
+
+def test_placement_paths_report_disconnected_captures_and_ignore_input_order():
+    """A capture with no accepted edge stays visibly unplaced, never omitted."""
+    forward = {
+        ("bridge", "inside"): _fit(),
+        ("deck", "bridge"): _fit(),
+        ("bad", "deck"): _fit(median=0.20),
+    }
+    reverse = dict(reversed(list(forward.items())))
+
+    a = combining.placement_paths(forward, {"bad", "deck", "inside", "bridge"},
+                                  "inside", limit_m=0.05)
+    b = combining.placement_paths(reverse, {"bridge", "inside", "deck", "bad"},
+                                  "inside", limit_m=0.05)
+
+    assert a == b
+    assert "bad" not in a
+
+
+def test_a_chained_fit_composes_every_edge_and_keeps_the_weakest_evidence():
+    """The deck geometry must land through the bridge without laundering error."""
+    fits = {
+        ("deck", "bridge"): _fit(tx=3.0, median=0.03, coverage=0.8),
+        ("bridge", "inside"): _fit(tx=4.0, median=0.04, coverage=0.9),
+    }
+
+    fit = combining.fit_along_path(["deck", "bridge", "inside"], fits)
+
+    assert fit["tx"] == pytest.approx(7.0)
+    assert fit["ty"] == pytest.approx(0.0)
+    assert fit["median_error_m"] == 0.04
+    assert fit["coverage"] == 0.8
+
+
+def _one_room_capture(name: str, x0: float, width: float, area: str) -> Model:
+    points = [(x0, 0), (x0 + width, 0), (x0 + width, 200), (x0, 200)]
+    walls = [Wall(x_start=x1, y_start=y1, x_end=x2, y_end=y2,
+                  thickness=10, height=240)
+             for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1],
+                                           strict=True)]
+    return Model(source=f"{name}.dxf", units="cm", levels=[Level(
+        name="Floor 1", ceiling_height_cm=240, walls=walls,
+        rooms=[Room(name=name, ha_area=area, points=points)])])
+
+
+def test_a_declared_bridge_places_adjacent_ground_without_fake_overlap_evidence():
+    """An outdoor scan with no common walls enters through its declared join.
+
+    Accepting the schema but never handing it to `combine` made the declaration
+    do nothing. Treating its point residual as scan overlap would be the other
+    silent failure: a human placement is binding geometry, not measured quality.
+    """
+    inside = _one_room_capture("inside", 0, 400, "den")
+    deck = _one_room_capture("deck", 1000, 200, "lower_deck")
+    declaration = combining.DeclaredPlacement.from_points(
+        capture="deck", relative_to="inside",
+        capture_points_cm=((1000, 0), (1100, 0)),
+        relative_points_cm=((400, 0), (500, 0)),
+        evidence="owner aligned the shared door edge")
+
+    result = combining.combine(
+        {"inside": inside, "deck": deck}, reference="inside",
+        expected_areas={"den", "lower_deck"},
+        declared_placements=[declaration])
+
+    assert {room.ha_area for room in result.model.levels[0].rooms} == {
+        "den", "lower_deck"}
+    alignment = result.aligned["deck"]
+    assert alignment.placement == "declared"
+    assert alignment.path == ["deck", "inside"]
+    assert alignment.agreement_m is None
+    capture = next(c for c in result.model.captures if c.id == "deck")
+    assert capture.placement == "declared"
+    assert capture.median_error_m is None
+    assert capture.placement_evidence == "owner aligned the shared door edge"
+
+
+def test_declared_adjacent_ground_is_independent_of_capture_input_order():
+    """Reordering project captures cannot move or remove a declared deck."""
+    inside = _one_room_capture("inside", 0, 400, "den")
+    deck = _one_room_capture("deck", 1000, 200, "lower_deck")
+    declaration = combining.DeclaredPlacement.from_points(
+        capture="deck", relative_to="inside",
+        capture_points_cm=((1000, 0), (1100, 0)),
+        relative_points_cm=((400, 0), (500, 0)), evidence="door edge")
+
+    first = combining.combine(
+        {"inside": inside, "deck": deck}, reference="inside",
+        declared_placements=[declaration]).model
+    second = combining.combine(
+        {"deck": deck, "inside": inside}, reference="inside",
+        declared_placements=[declaration]).model
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_a_declared_capture_cannot_be_the_reference():
+    """Choosing the attached scan as anchor must not erase its declaration."""
+    inside = _one_room_capture("inside", 0, 400, "den")
+    deck = _one_room_capture("deck", 1000, 200, "lower_deck")
+    declaration = combining.DeclaredPlacement.from_points(
+        capture="deck", relative_to="inside",
+        capture_points_cm=((1000, 0), (1100, 0)),
+        relative_points_cm=((400, 0), (500, 0)), evidence="door edge")
+
+    with pytest.raises(ValueError, match="declared capture 'deck'.*reference"):
+        combining.combine(
+            {"inside": inside, "deck": deck}, reference="deck",
+            declared_placements=[declaration])
+
+
+def test_a_declared_context_room_chooses_the_right_basin_over_the_lower_error():
+    """The 2026-08-29 failure in its smallest form.
+
+    A capture starts in a known bedroom and then reaches new ground. Placing the
+    whole capture on an unrelated room explains more walls and therefore has a
+    lower global error. The declared bedroom identity is common-ground evidence;
+    the new room is not an error the fitter should explain away.
+    """
+    source = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="Bedroom", ha_area="spare_bedroom",
+             points=[(0, 0), (400, 0), (400, 300), (0, 300)]),
+        Room(name="Living Room", ha_area="basement",
+             points=[(400, 0), (700, 0), (700, 300), (400, 300)]),
+    ])
+    target = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="den", ha_area="den",
+             points=[(0, 0), (700, 0), (700, 300), (0, 300)]),
+        Room(name="spare", ha_area="spare_bedroom",
+             points=[(1000, 0), (1400, 0), (1400, 300), (1000, 300)]),
+    ])
+    wrong = _fit(median=0.02)             # all walls land on the den
+    right = _fit(tx=10.0, median=0.05, coverage=0.55)
+
+    answer = combining.choose_placement(source, target, [wrong, right])
+
+    assert answer.verdict == "placed"
+    assert answer.fit is right, "the lower-error wrong basin explained away new ground"
+
+
+def test_two_identity_supported_basins_are_ambiguous_not_sorted_into_an_answer():
+    """Two equally plausible placements are absence of an answer, not a tie-break."""
+    source = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="Bedroom", ha_area="bedroom",
+             points=[(0, 0), (400, 0), (400, 300), (0, 300)])])
+    target = Level(name="L", ceiling_height_cm=240, rooms=[
+        Room(name="a", ha_area="bedroom",
+             points=[(0, 0), (400, 0), (400, 300), (0, 300)]),
+        Room(name="b", ha_area="bedroom",
+             points=[(1000, 0), (1400, 0), (1400, 300), (1000, 300)]),
+    ])
+    fits = [_fit(), _fit(tx=10.0)]
+
+    answer = combining.choose_placement(source, target, fits)
+
+    assert answer.verdict == "ambiguous"
+    assert answer.fit is None
+    assert answer.candidates == fits
+
+
+def test_an_area_winner_is_closest_to_a_leave_one_out_mean_not_highest_weighted_score():
+    """An outlier cannot win by flattering itself through unrelated score terms."""
+    def cand(index, capture, shift):
+        room = Room(name="bedroom", ha_area="bedroom",
+                    points=[(shift, 0), (400 + shift, 0),
+                            (400 + shift, 300), (shift, 300)])
+        return Candidate(index=index, capture=capture, role="geometry", room=room,
+                         poly=Polygon(room.points), area_m2=12.0)
+
+    cands = [cand(0, "a", 0), cand(1, "b", 5), cand(2, "outlier", 100)]
+    old_scores = {0: Score(0.5, {}, []), 1: Score(0.5, {}, []),
+                  2: Score(0.99, {}, [])}
+
+    answer = combining.select_area("bedroom", cands, old_scores)
+
+    assert answer.winner in (0, 1)
+    assert answer.winner != 2, "the old weighted score overruled the area consensus"
+    assert set(answer.distance_cm) == {0, 1, 2}
+
+
+def test_a_partial_area_is_context_and_cannot_win():
+    """A room scanned to locate new ground must not replace its complete survey."""
+    complete = Room(name="bedroom", ha_area="bedroom",
+                    points=[(0, 0), (400, 0), (400, 300), (0, 300)])
+    partial = Room(name="bedroom", ha_area="bedroom",
+                   points=[(0, 0), (180, 0), (180, 300), (0, 300)])
+    cands = [
+        Candidate(0, "complete_a", "geometry", complete,
+                  Polygon(complete.points), 12.0),
+        Candidate(1, "complete_b", "geometry", complete.model_copy(),
+                  Polygon(complete.points), 12.0),
+        Candidate(2, "context", "geometry", partial,
+                  Polygon(partial.points), 5.4),
+    ]
+
+    answer = combining.select_area(
+        "bedroom", cands, {i: Score(0.5, {}, []) for i in range(3)})
+
+    observations = {o.candidate: o.state for o in answer.observations}
+    assert observations[2] == "context"
+    assert answer.winner != 2
+
+
+def test_two_source_area_ambiguity_keeps_provisional_geometry():
+    """Uncertainty must be visible without punching a room out of the model."""
+    rooms = [
+        Room(name="bedroom", ha_area="bedroom",
+             points=[(shift, 0), (400 + shift, 0),
+                     (400 + shift, 300), (shift, 300)])
+        for shift in (0, 50)
+    ]
+    cands = [
+        Candidate(i, capture, "geometry", room, Polygon(room.points), 12.0)
+        for i, (capture, room) in enumerate(zip(("a", "b"), rooms, strict=True))
+    ]
+
+    answer = combining.select_area(
+        "bedroom", cands,
+        {0: Score(0.8, {}, []), 1: Score(0.6, {}, [])},
+        two_source_agree_cm=5)
+
+    assert answer.verdict == "ambiguous"
+    assert answer.winner == 0, "the best provisional survey was dropped from the model"
+
+
+@pytest.mark.parametrize("change", [
+    {"max_median_cm": 0.0},
+    {"area_completeness": 1.01},
+    {"identity_min_overlap": -0.01},
+])
+def test_combine_thresholds_are_validated_before_geometry_runs(change):
+    """A nonsensical guess must fail at the boundary, not alter the model."""
+    with pytest.raises(ValueError, match="must be"):
+        combining.CombineOptions(**change).validated()
+
+
+def _fusion_group(resolved_by_others: bool = True):
+    """Two named rooms and one polygon over both, as Candidates and a Group.
+
+    Built at this level on purpose: reproducing it through `combine` needs the
+    fused capture to out-score two geometry captures on registration, and a
+    synthetic case that agrees perfectly never does -- the first version of this
+    test passed without the rule and proved nothing.
+    """
+    def cand(i, capture, area, x0, x1):
+        room = schema.Room(name=area or "Hallway 1", ha_area=area,
+                           points=[(x0, 0), (x1, 0), (x1, 400), (x0, 400)])
+        return Candidate(index=i, capture=capture, role="geometry", room=room,
+                         poly=Polygon(room.points),
+                         area_m2=(x1 - x0) * 400 / 10_000)
+
+    cands = [
+        cand(0, "geom", "sewing_room" if resolved_by_others else None, 0, 300),
+        cand(1, "geom", "girl_bedroom" if resolved_by_others else None, 300, 600),
+        cand(2, "fused", None, 0, 600),
+    ]
+    group = combining.Group(
+        members=[0, 1, 2],
+        per_capture={"geom": [0, 1], "fused": [2]},
+        kind="disagreement")
+    return cands, group

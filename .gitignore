@@ -35,3 +35,8 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# `-o /dev/null` on Windows writes a file called `nul`, and any stage that
+# writes a sidecar next to its output then leaves `nul_*.json` in the repo.
+nul
+nul_*

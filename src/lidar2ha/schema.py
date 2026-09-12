@@ -126,6 +126,10 @@ class Door(_Base):
     x: float
     y: float
     width: float
+    # Optional for every already-written model. `combine` unions openings from
+    # placed captures, so the selected opening must say where it came from just
+    # as a selected room or wall does.
+    source: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Registration(_Base):
@@ -226,6 +230,13 @@ class Capture(_Base):
     # look identical to everything downstream.
     verdict: str | None = None
     refused_because: str | None = None
+    # A declared placement is binding geometry supplied by the project, not a
+    # measurement of shared scan ground. Keep its provenance without filling
+    # median_error_m / coverage with invented confidence.
+    placement: Literal["direct", "chained", "declared"] | None = None
+    placement_path: list[str] = Field(default_factory=list)
+    placement_evidence: str | None = None
+    placement_point_residual_m: float | None = None
 
 
 class Level(_Base):

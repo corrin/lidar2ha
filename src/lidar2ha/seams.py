@@ -37,14 +37,13 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
-import yaml
 from shapely.geometry import LineString, Polygon
 from shapely.ops import split as shapely_split
 from shapely.ops import unary_union
 
+from . import projectschema
 from .placefixtures import plan_cm_to_mesh_m
 from .projectlevels import origin_of
 from .rooms import Placed, covered_rooms, polygon_of
@@ -75,6 +74,18 @@ MIN_REMAINDER_M2 = 1.0
 # A shared edge has zero area, so an absorbed sliver is attributed to the
 # section it overlaps once both are grown by this much.
 ABSORB_REACH_CM = 1.0
+
+
+class CannotTile(ValueError):
+    """This room cannot be cut the way the declaration describes.
+
+    Distinct from a malformed declaration, which is a boundary error and is
+    raised: a `box` with three corners is a typo and stops the run. This is the
+    geometry answering -- a section outside its parent, two sections claiming
+    one floor, a piece left too small to be a room -- and it belongs to ONE
+    entry of a list. Raising it would cost the level its other cuts, which on
+    the real house cost `living_room -> dining` for a stale `computer_pulpit`.
+    """
 
 
 def pair(text: str) -> tuple[float, float]:
@@ -186,7 +197,7 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
     declaration disagrees with itself about where a room is.
     """
     if len(sections) < 2:
-        raise ValueError(
+        raise CannotTile(
             f"{parent_name!r}: a split needs at least two sections, got "
             f"{len(sections)}")
 
@@ -202,7 +213,7 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
             tiling.spill_m2[name] = (traced.area - inside.area) / CM2_PER_M2
         part, offcut = _largest(inside)
         if part.is_empty:
-            raise ValueError(
+            raise CannotTile(
                 f"section {name!r} lies entirely outside {parent_name!r} -- "
                 "read off the wrong preview, or the wrong room named?")
         if offcut:
@@ -215,7 +226,7 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
         for earlier_name, earlier in clipped[:i]:
             overlap = part.intersection(earlier).area / CM2_PER_M2
             if overlap > overlap_slop_m2:
-                raise ValueError(
+                raise CannotTile(
                     f"{name!r} and {earlier_name!r} overlap by {overlap:.2f} m2, "
                     f"which is more than {overlap_slop_m2} m2 of tracing slop. "
                     "Two sections claim the same floor and nothing here can say "
@@ -223,7 +234,7 @@ def sections_of(poly: Polygon, sections: list[tuple[str, Polygon]], *,
             part = part.difference(earlier)
         part, _ = _largest(_repair(part))
         if part.area < MIN_PIECE_CM2:
-            raise ValueError(
+            raise CannotTile(
                 f"section {name!r} is left with {part.area / CM2_PER_M2:.2f} m2 "
                 "once its neighbours have taken theirs, which is not a room.")
         kept.append((name, part))
@@ -291,8 +302,16 @@ class Cut:
 
     level: str
     room: str
-    tiling: Tiling
+    # None where the declaration named a room this model does not have. The
+    # entry is still a Cut so the report walks one list and cannot forget the
+    # failures -- a declaration that resolved and one that did not are both
+    # things the reader has to see.
+    tiling: Tiling | None
     edges: list[Edge] = field(default_factory=list)
+    # Why, when `tiling` is None. A declaration fails in two ways -- naming a
+    # room this model does not have, and naming one it does but describing a
+    # tiling of it that will not stand -- and the reader needs to be told which.
+    refused: str | None = None
     # Whether the room being cut carried an `ha_area`. The pieces inherit one
     # only if it did, so a cut of an unmapped parent produces rooms named like
     # areas that no light can ever bind to -- and the geometry, the model and
@@ -465,16 +484,28 @@ def apply(model: Model, declarations: list[dict], *,
             if here is not None:
                 hits.append((lv, here))
         if not hits:
-            raise ValueError(
-                f"no room {wanted!r} on "
-                f"{level_name or 'any level'} -- check the name against "
-                "`python -m lidar2ha.preview`")
+            # Reported, not raised. `split:` is a list and the entries are
+            # independent, so one stale name is not the rest of the level's to
+            # lose: on the real house `computer_pulpit` stopped resolving and took
+            # `living_room -> dining` down with it, which was fine.
+            cuts.append(Cut(
+                level=level_name or "any level", room=str(wanted), tiling=None,
+                refused=f"no room {wanted!r} on {level_name or 'any level'}"))
+            continue
 
         for lv, target in hits:
             where = f"{lv.name}/{wanted}"
-            tiling = tile(target, declaration, where,
-                          overlap_slop_m2=overlap_slop_m2,
-                          min_remainder_m2=min_remainder_m2)
+            try:
+                tiling = tile(target, declaration, where,
+                              overlap_slop_m2=overlap_slop_m2,
+                              min_remainder_m2=min_remainder_m2)
+            except CannotTile as exc:
+                # A tiling that will not stand is this declaration's failure and
+                # not the level's. Measured: `kitchen` left a 0.01 m2 stairwell
+                # and took `living_room -> dining` with it, three cuts later.
+                cuts.append(Cut(level=lv.name, room=str(wanted), tiling=None,
+                                refused=str(exc)))
+                continue
             ceilings = declaration.get("ceilings")
 
             new_rooms = []
@@ -620,6 +651,9 @@ def unbindable(cut: Cut) -> str:
     with no mapping rather than mappings with no room, and the reader would
     follow a remedy that silently does nothing.
     """
+    # Only ever called for a cut that was made; an unresolved declaration has
+    # no pieces to be unbindable.
+    assert cut.tiling is not None
     names = ", ".join(p.name for p in cut.tiling.pieces)
     head = (f"  {cut.room!r} carries no ha_area, so neither does any piece of "
             f"it. Named and\n  outlined, {names} can never take a light.\n")
@@ -656,7 +690,19 @@ def _slug(name: str) -> str:
 
 
 def report(cuts: list[Cut]) -> None:
+    unresolved = [c for c in cuts if c.tiling is None]
+    if unresolved:
+        print("\nDECLARED, AND NOT CUT -- no room of that name is on this level")
+        for cut in unresolved:
+            print(f"  {cut.room:<22} {cut.refused or ''}")
+        print("  The other declarations were applied. A name goes stale when")
+        print("  `merge:` changes which capture wins, when a capture loses its")
+        print("  `rooms:` mapping, or when the room is itself a piece of an")
+        print("  earlier cut. Check it against `python -m lidar2ha.preview`.")
+
     for cut in cuts:
+        if cut.tiling is None:
+            continue
         whole = sum(p.poly.area for p in cut.tiling.pieces) / CM2_PER_M2
         print(f"\n{cut.room}  {whole:.1f} m2  ->  {len(cut.tiling.pieces)} pieces"
               f"   [{cut.level}]")
@@ -736,8 +782,7 @@ def main():
     if args.project:
         if not args.level:
             raise SystemExit("--project needs --level to say which entry to apply")
-        project = yaml.safe_load(
-            Path(args.project).read_text(encoding="utf-8")) or {}
+        project = projectschema.settings(args.project)
         declarations = (project.get("split") or {}).get(args.level) or []
         if not declarations:
             raise SystemExit(

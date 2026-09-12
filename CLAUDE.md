@@ -234,9 +234,10 @@ and after the ceiling-band split two of its levels both belong to that floor
 while holding different rooms. A scalar with a plural special case would have
 made the second one the exception rather than the shape.
 
-Each (capture, storey) becomes its own entry keyed `"<id> [<storey>]"`, and a
-capture contributing one storey keeps its plain id -- so a project that never
-needed any of this combines to byte-identical output, `Room.source` included.
+Each explicitly selected (capture, storey) becomes its own entry keyed
+`"<id> [<storey>]"`, even when the list contains one storey. A capture with no
+`storeys:` selection keeps its plain id, so a project that never needed any of
+this combines to byte-identical output, `Room.source` included.
 `origin_of` reads that key back, which is what stops two storeys of one walk
 corroborating each other in the consensus: they are one observation.
 
@@ -246,10 +247,18 @@ nothing and says nothing -- which is the failure the entry was written to end.
 
 ### Combining captures: align or discard
 
-`combine` is the only stage that reads more than one capture, and its rule has
-two steps with **no third branch**: align the scan; if that fails, report and
-discard it. There is no "align poorly and carry on" — that branch existed, and
-it built this house's mid-level model out of the worst of its three captures.
+The complete combine algorithm, including context-only observations and the
+per-area leave-one-out mean used to select geometry, is in
+[`docs/COMBINE.md`](docs/COMBINE.md). That document is authoritative for stage
+ordering; this section records the failures that constrain it.
+
+`combine` is the only stage that reads more than one capture. Overlapping scans
+have two outcomes: align from measured common ground, or report and discard.
+Adjacent scans with no common ground have a third, explicitly different answer:
+a two-point `placements:` declaration may attach them, retaining its evidence
+and never presenting the join as measured overlap. There is no "align poorly and
+carry on" — that branch existed, and it built this house's mid-level model out
+of the worst of its three captures.
 
 **Redundancy is the method.** Fifteen scans exist because nobody knows which are
 good, and the bad one identifies itself by being the odd man out. Two captures

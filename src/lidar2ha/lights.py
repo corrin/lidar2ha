@@ -60,6 +60,7 @@ from pathlib import Path
 from shapely.geometry import Point, Polygon
 from shapely.ops import polylabel
 
+from . import projectschema
 from .ha import (
     LightEntity,
     classify,
@@ -160,6 +161,12 @@ class Report:
     # is the scanner's own, and Polycam repeats a label across storeys as a
     # matter of course, so a bare list reads `['Bedroom', 'Bedroom']`.
     rooms_without_areas: list[tuple[str, str, str]] = field(default_factory=list)
+    # area -> how many rooms carry it, where that is more than one. Only the
+    # last reaches `room_index`, so the others can never take a light and are
+    # in none of the lists above -- they have an area, so they are not in
+    # `rooms_without_areas`, and they are not in the index `rooms_without_lights`
+    # walks.
+    areas_with_several_rooms: dict[str, int] = field(default_factory=dict)
     duplicate_names: dict[str, list[str]] = field(default_factory=dict)
     # (area, fittings, entities) where measured positions were used.
     measured: list[tuple[str, int, int]] = field(default_factory=list)
@@ -181,10 +188,20 @@ class Report:
 
 
 def room_index(model: Model) -> dict[str, tuple[int, Level, Room]]:
-    """ha_area -> (level index, level, room).
+    """ha_area -> (level index, level, room). THE LAST ROOM WITH AN AREA WINS.
 
     Rooms with no `ha_area` are not an error here; they mean `rooms` has not
     been run, which the caller reports once rather than per room.
+
+    Several rooms CAN share one area and the dict cannot hold them: a split
+    model names each piece for the area it belongs to, and one area is often
+    several pieces -- `ceilings.measure` records a real level carrying three
+    rooms called `hallway` and two called `stairwell`. The losers leave the
+    index entirely, so they are in no report: `rooms_without_areas` lists rooms
+    with NO area and these have one, and `rooms_without_lights` walks this
+    index. They render and can never be lit. `rooms_sharing_an_area` is what
+    makes that visible; the collapse itself stays, because which of several
+    pieces should take a room's light is the owner's call and not a default.
     """
     index = {}
     for li, level in enumerate(model.levels):
@@ -192,6 +209,22 @@ def room_index(model: Model) -> dict[str, tuple[int, Level, Room]]:
             if room.ha_area:
                 index[room.ha_area] = (li, level, room)
     return index
+
+
+def rooms_sharing_an_area(model: Model) -> dict[str, int]:
+    """area -> how many rooms carry it, where that is more than one.
+
+    Only the last survives `room_index`, so every other one is geometry that
+    can never take a light. Reported rather than resolved: merging them would
+    invent a polygon nothing scanned, and picking the largest would put a
+    hallway's light in whichever end happened to be bigger.
+    """
+    counts: dict[str, int] = {}
+    for level in model.levels:
+        for room in level.rooms:
+            if room.ha_area:
+                counts[room.ha_area] = counts.get(room.ha_area, 0) + 1
+    return {area: n for area, n in sorted(counts.items()) if n > 1}
 
 
 def pole_of(poly: Polygon) -> Point:
@@ -377,6 +410,7 @@ def build_lights(
     fittings = fittings or {}
     rooms = room_index(model)
     report = Report()
+    report.areas_with_several_rooms = rooms_sharing_an_area(model)
     groups = redundant_groups(entities)
     coordinated = coordinator_groups(entities)
 
@@ -663,9 +697,7 @@ def main():
 
     config = LightsConfig()
     if args.project:
-        import yaml
-        config = LightsConfig.from_project(
-            yaml.safe_load(Path(args.project).read_text(encoding="utf-8")) or {})
+        config = LightsConfig.from_project(projectschema.settings(args.project))
 
     rooms = room_index(model)
     if not rooms:

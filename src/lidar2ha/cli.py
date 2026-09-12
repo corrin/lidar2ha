@@ -17,7 +17,7 @@ from pathlib import Path
 
 import click
 
-from . import __version__, javabridge, projectlevels, render
+from . import __version__, javabridge, projectlevels, projectschema, render
 from .javabridge import ToolchainError
 
 OK = "ok"
@@ -165,23 +165,26 @@ def doctor(sh3d_jar: str | None) -> None:
 
 PROJECT_YAML = """\
 # lidar2ha project. Paths are relative to this file.
-name: {name}
+#
+# Settings that are not in this file, so you do not go looking for them here:
+#   Sweet Home 3D's jar   `--sh3d-jar`, or $LIDAR2HA_SH3D_JAR
+#   texture patch size    `build --tile-cm`
+#   a level's elevation   `build --elevation NAME=CM`
 
-# Uncomment if Sweet Home 3D is not in the usual place for your platform.
-# sweethome3d_jar: C:\\Program Files (x86)\\Sweet Home 3D\\lib\\SweetHome3D.jar
-
-# Physical size of one tiled texture patch, in centimetres.
-tile_cm: 100
-
-# Levels whose elevation the mesh could not recover, in centimetres above the
-# lowest floor. `lidar2ha build` reports which levels defaulted to 0.
-elevations: {{}}
+# One entry per Polycam export, keyed by the id the sections below use for it.
+# `multi_floor` says the walk covered more than one storey; combining is per
+# storey, so `combine` uses it to tell you to pass --storey rather than
+# refusing those captures later with nothing saying why.
+#   captures:
+#     midlevel: {}
+#     wholehouse: {multi_floor: true}
+captures: {}
 
 # Which captures make up each level, for `lidar2ha combine <level>`. Geometry
 # never merges across levels -- captures of different storeys share no frame --
 # so combining is per level, and this is what says which captures share one.
 # Key by the names in `homeassistant.floors`; the values are ids from `captures`.
-levels: {{}}
+levels: {}
 
 # Scanner room name -> Home Assistant area id, per capture. A scanner names
 # rooms by guessing, so this is the mapping you confirm once. `rooms` fails
@@ -190,14 +193,14 @@ levels: {{}}
 #     midlevel:
 #       "Living Room": lounge
 #       "Office 1": kitchen        # many scanner rooms may share one area
-rooms: {{}}
+rooms: {}
 
 # Scanner rooms to union, per capture -- the scanner split one open volume in
 # two and its boundary is an artefact of that capture alone.
 #   merge:
 #     midlevel:
 #       - ["Kitchen", "Office 1"]
-merge: {{}}
+merge: {}
 
 # Rooms to CUT, per LEVEL rather than per capture, because an open plan's
 # fusion is the architecture: there is no wall to segment on, so every capture
@@ -217,7 +220,34 @@ merge: {{}}
 #             outline: [[310, -420], [560, -420], [560, -140], [310, -140]]
 #           - name: lounge
 #             box: [[310, -140], [700, 260]]
-split: {{}}
+split: {}
+
+# The corrections `lidar2ha lights` cannot work out for itself.
+lights:
+  # Entities to leave out. A ZHA group's entity hangs off the coordinator
+  # device rather than off any lamp, so placing the group AND its members is
+  # the same bulbs twice -- and the plugin sums sources sharing a name, so the
+  # room renders quietly too bright rather than erroring. Indicator LEDs and
+  # controller channels turn up in the light domain too.
+  #   exclude: [light.kitchen_group, light.landing_status]
+  exclude: []
+  # Force one back in past the group filters.
+  include: []
+  # entity_id -> further area ids to place it in as well, for an entity that
+  # lights more than one room.
+  extra: {}
+  # Brightness 0-1, per entity and for everything not named.
+  power: {}
+  default_power: 0.5
+  # Which fitting each entity drives, in plan centimetres. Four downlights on
+  # two switches look exactly like four on one, so no measurement separates
+  # them and this is the only place the answer exists. A declaration nothing
+  # sits near is reported rather than guessed at.
+  #   pairing:
+  #     kitchen:
+  #       light.kitchen_west: [[485, 127]]
+  #       light.kitchen_east: [[620, 127]]
+  pairing: {}
 
 # Where to look from. The tool solves HOW FAR back to stand so the whole house
 # fits; these are the choices it cannot make for you.
@@ -240,6 +270,21 @@ render:
   #   FULL     every combination in the house              2^n
   # On one 21-light house: 22 frames, 65541 frames, and 2097152 frames.
   mixing: CSS
+
+# Home Assistant, for fetching the registry. $HA_URL and $HA_TOKEN win over
+# these, and a .env beside this file is already gitignored -- a long-lived
+# access token is a house key.
+# ha_url: http://homeassistant.local:8123
+# ha_token: ...
+
+# Where `deploy` copies the render. $HA_SSH_HOST, $HA_SSH_USER, $HA_SSH_PORT
+# and $HA_SSH_KEY win over these. On Home Assistant OS the host is the
+# Terminal & SSH add-on, which is where /config is mounted.
+# deploy:
+#   host: homeassistant.local
+#   user: root
+#   port: 22
+#   key: ~/.ssh/id_ed25519
 """
 
 
@@ -251,13 +296,118 @@ def init(directory: Path) -> None:
     config = directory / "project.yaml"
     if config.exists():
         raise SystemExit(f"{config} already exists; not overwriting it")
-    config.write_text(PROJECT_YAML.format(name=directory.name), encoding="utf-8")
+    config.write_text(PROJECT_YAML, encoding="utf-8")
     for sub in ("captures", "build"):
         (directory / sub).mkdir(exist_ok=True)
     click.echo(f"created {directory}/")
     click.echo(f"  {config.name}")
     click.echo("  captures/   put the Polycam exports here")
     click.echo("  build/      generated files land here")
+
+
+@cli.command()
+@click.argument("directory", type=click.Path(path_type=Path))
+def demo(directory: Path) -> None:
+    """Write a demo project: eight captures of a house that is nobody's.
+
+    The archives land in `downloads/` named exactly as Polycam names them --
+    by capture date, so every inner file collides -- because staging them is
+    the first thing the tutorial asks you to do and the first thing that can
+    quietly destroy a capture.
+    """
+    from .demo import build_demo
+
+    if directory.exists() and any(directory.iterdir()):
+        raise SystemExit(f"{directory} is not empty; pick a new directory")
+    result = build_demo(directory)
+    click.echo(f"created {result['directory']}/")
+    click.echo(f"  downloads/     {result['archives']} archives, "
+               f"{result['captures']} captures, all named alike")
+    click.echo("  project.yaml   already filled in")
+    click.echo("  registry.json  a cached Home Assistant registry, so "
+               "`lights` needs no Home Assistant")
+    click.echo("  exports/       stage the captures here")
+    click.echo("  ANSWER_KEY.json  which archive is which -- try without it first")
+
+
+# --------------------------------------------------------------------------- #
+# validate
+# --------------------------------------------------------------------------- #
+
+
+@cli.command(name="validate")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("project.yaml"), show_default=True)
+@click.option("--registry", type=click.Path(path_type=Path),
+              default=Path("registry.json"), show_default=True,
+              help="the cached Home Assistant registry, to check area ids against")
+def validate_cmd(project: Path, registry: Path) -> None:
+    """Check project.yaml before a stage acts on it.
+
+    Exits non-zero when something will silently cost you a room, so it can gate
+    a build. Everything it reports is a failure that produced a plausible model
+    rather than an error.
+    """
+    import json
+
+    from .validate import check, report
+
+    settings = _project_settings(project)
+    cached = None
+    if registry.exists():
+        cached = json.loads(registry.read_text(encoding="utf-8"))
+    else:
+        click.echo(f"no {registry} -- area ids are not checked. "
+                   "`python -m lidar2ha.ha --refresh` writes one.\n")
+
+    found = check(settings, cached)
+    report(found)
+    if found:
+        raise SystemExit(1)
+
+
+# --------------------------------------------------------------------------- #
+# coverage
+# --------------------------------------------------------------------------- #
+
+
+@cli.command(name="coverage")
+@click.option("--project", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("project.yaml"), show_default=True)
+@click.option("--registry", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=Path("registry.json"), show_default=True)
+@click.option("--exports", type=click.Path(file_okay=False, path_type=Path),
+              default=Path("exports"), show_default=True,
+              help="where the per-level models were written")
+def coverage_cmd(project: Path, registry: Path, exports: Path) -> None:
+    """Which of your Home Assistant areas have geometry, across every level.
+
+    The question `combine` answers only per level and only for areas
+    project.yaml maps, and `lights` answers only for areas some entity names.
+    An area Home Assistant knows and nothing mentions is invisible to both.
+    """
+    import json
+
+    from .coverage import measure, report, uncovered_floors
+    from .schema import load_model
+
+    settings = _project_settings(project)
+    cached = json.loads(registry.read_text(encoding="utf-8"))
+
+    models, sources = {}, {}
+    for level in settings.get("levels") or {}:
+        slug = level.lower().replace(" ", "_")
+        # `_split.json` in preference: the pieces of a cut room are the areas a
+        # person actually uses, and the fused parent is not one of them.
+        for suffix in ("_split.json", "_combined.json"):
+            path = exports / f"{slug}{suffix}"
+            if path.exists():
+                models[level] = load_model(path)
+                sources[level] = path.name
+                break
+
+    report(measure(settings, cached, models, sources),
+           uncovered_floors(settings, cached))
 
 
 # --------------------------------------------------------------------------- #
@@ -375,6 +525,22 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
               help="the tail matters more than the median: two captures can agree "
                    "at 6 cm median and still differ by 44 cm at p90, which on a "
                    "2.6 m2 room is a large part of the room")
+@click.option("--edge-containment", type=float, default=None,
+              help="intersection / smaller area at which rooms correspond")
+@click.option("--max-off-grid-deg", type=float, default=None,
+              help="largest rotation residual from the shared wall grid")
+@click.option("--min-grid-concentration", type=float, default=None,
+              help="below this the wall grid abstains")
+@click.option("--identity-min-overlap", type=float, default=None,
+              help="declared-area containment required to support a basin")
+@click.option("--identity-ambiguity", type=float, default=None,
+              help="declared-area overlap margin that keeps basins ambiguous")
+@click.option("--area-completeness", type=float, default=None,
+              help="fraction required to compete rather than serve as context")
+@click.option("--area-two-source-agree-cm", type=float, default=None,
+              help="boundary difference below which two sources are equivalent")
+@click.option("--door-match-cm", type=float, default=None,
+              help="centre and width tolerance for duplicate door observations")
 @click.option("--storey", default=None,
               help="which level to take from INSIDE each capture, when a capture "
                    "holds more than one. This is a Level.name in the model json, "
@@ -382,6 +548,11 @@ def whichlevel(capture: Path, against: tuple[Path, ...], project: Path | None,
                    "in project.yaml")
 def combine(level: str, project: Path, out: Path | None, reference: str | None,
             max_median_cm: float | None, max_p90_cm: float | None,
+            edge_containment: float | None, max_off_grid_deg: float | None,
+            min_grid_concentration: float | None,
+            identity_min_overlap: float | None, identity_ambiguity: float | None,
+            area_completeness: float | None,
+            area_two_source_agree_cm: float | None, door_match_cm: float | None,
             storey: str | None) -> None:
     """Merge every capture of one LEVEL into one model, and say what to re-scan.
 
@@ -398,7 +569,8 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     from . import combine as combining
     from .schema import load_model, save_model
 
-    settings = _project_settings(project)
+    project_config = projectschema.load(project)
+    settings = project_config.model_dump(exclude_unset=True, exclude_none=False)
     levels = settings.get("levels") or {}
     if not levels:
         raise SystemExit(
@@ -418,6 +590,16 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
 
     ids = [w.capture_id for w in entries]
     captures = settings.get("captures") or {}
+    room_mappings = settings.get("rooms") or {}
+    unnamed = sorted({capture_id for capture_id in ids
+                      if capture_id not in room_mappings})
+    if unnamed:
+        raise SystemExit(
+            f"{project}, level {level!r}: capture(s) have no `rooms:` entry: "
+            f"{', '.join(unnamed)}. Scanner labels are not identity, and an "
+            f"unnamed winner silently removes an area another capture named. "
+            f"Add a mapping block (values may be null while unresolved) and run "
+            f"`lidar2ha rooms` before combining.")
     models = {}
     # key -> (capture id as project.yaml spells it, storey inside it). Stamped
     # onto the record after combining, because `combine` is handed a dict of
@@ -473,10 +655,12 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
                          f"One capture needs no combining -- build from it "
                          f"directly.")
 
-    areas: set[str] = set()
-    for capture_id in ids:
-        mapping = (settings.get("rooms") or {}).get(capture_id) or {}
-        areas.update(a for a in mapping.values() if a)
+    # FROM THE EXPANDED STOREYS, never every mapping on the source capture. A
+    # whole-house walk's room mapping spans several floors; treating them all as
+    # expected here made Ground report upstairs_hallway and upstairs_toilet as
+    # missing even though their storeys were deliberately assigned upstairs.
+    areas = {room.ha_area for model in models.values() for lv in model.levels
+             for room in lv.rooms if room.ha_area}
     if not areas:
         click.echo("  note: project.yaml maps no areas for these captures, so the "
                    "work list cannot say which areas ended up with no source.")
@@ -503,10 +687,41 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
 
     click.echo("")
     try:
+        defaults = combining.CombineOptions()
+        options = combining.CombineOptions(
+            max_median_cm=(defaults.max_median_cm if max_median_cm is None
+                           else max_median_cm),
+            max_p90_cm=(defaults.max_p90_cm if max_p90_cm is None else max_p90_cm),
+            edge_containment=(defaults.edge_containment if edge_containment is None
+                              else edge_containment),
+            max_off_grid_deg=(defaults.max_off_grid_deg if max_off_grid_deg is None
+                              else max_off_grid_deg),
+            min_grid_concentration=(defaults.min_grid_concentration
+                                    if min_grid_concentration is None
+                                    else min_grid_concentration),
+            identity_min_overlap=(defaults.identity_min_overlap
+                                  if identity_min_overlap is None
+                                  else identity_min_overlap),
+            identity_ambiguity=(defaults.identity_ambiguity
+                                if identity_ambiguity is None
+                                else identity_ambiguity),
+            area_completeness=(defaults.area_completeness
+                               if area_completeness is None else area_completeness),
+            area_two_source_agree_cm=(defaults.area_two_source_agree_cm
+                                      if area_two_source_agree_cm is None
+                                      else area_two_source_agree_cm),
+            door_match_cm=(defaults.door_match_cm if door_match_cm is None
+                           else door_match_cm))
+        declared = [combining.DeclaredPlacement.from_points(
+            capture=item.capture,
+            relative_to=item.relative_to,
+            capture_points_cm=item.capture_points_cm,
+            relative_points_cm=item.relative_points_cm,
+            evidence=item.evidence,
+        ) for item in project_config.placements.get(level, [])]
         result = combining.combine(
-            models, reference=reference, expected_areas=areas,
-            max_median_cm=max_median_cm or combining.MAX_MEDIAN_CM,
-            max_p90_cm=max_p90_cm or combining.MAX_P90_CM)
+            models, reference=reference, expected_areas=areas, options=options,
+            declared_placements=declared)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -525,8 +740,12 @@ def combine(level: str, project: Path, out: Path | None, reference: str | None,
     save_model(result.model, out)
     work = out.with_name(out.stem + "_worklist.json")
     work.write_text(json.dumps(result.worklist, indent=2), encoding="utf-8")
+    alignment = out.with_name(out.stem + "_alignment.json")
+    alignment.write_text(
+        json.dumps(combining.alignment_record(result), indent=2), encoding="utf-8")
     click.echo(f"\nwrote  {out}")
     click.echo(f"wrote  {work}  ({len(result.worklist)} thing(s) to do about the house)")
+    click.echo(f"wrote  {alignment}  (every placement basin and capture verdict)")
     click.echo(f"\nNext:  lidar2ha lights {out} --project {project} -o lights.json")
 
 
@@ -759,10 +978,7 @@ def build(model_json: Path, out: Path, scene: Path | None, textures: Path | None
 
 
 def _project_settings(project: Path | None) -> dict:
-    if not project:
-        return {}
-    import yaml
-    return yaml.safe_load(project.read_text(encoding="utf-8")) or {}
+    return projectschema.settings(project)
 
 
 @cli.command()
