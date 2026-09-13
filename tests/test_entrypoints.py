@@ -295,7 +295,7 @@ def test_every_stage_exposes_a_main():
               "floormap", "ha", "inspect_dxf", "inspect_mesh", "lights", "mesh",
               "placefixtures", "render", "polycam", "preview", "registration", "rooms",
               "seams", "textures_project", "textures_tile", "thresholds",
-              "whichlevel"]
+              "voxels", "whichlevel"]
     missing = [s for s in stages
                if not callable(getattr(importlib.import_module(f"lidar2ha.{s}"), "main", None))]
     assert missing == []
@@ -726,3 +726,48 @@ def test_coverage_cmd_runs_over_the_levels_it_finds(tmp_path):
     assert "1 of 2 area(s)" in result.output
     assert "garage" in result.output
     assert "ground_split.json" in result.output
+def test_voxels_cmd_runs_without_matplotlib(tmp_path, monkeypatch):
+    """`voxels` must not need a package this project does not depend on.
+
+    It reached for `matplotlib.path` at call time, so every unit test passed on a
+    machine that happened to have matplotlib installed while `pip install lidar2ha`
+    produced a stage that raised ModuleNotFoundError on the first real model. CI
+    found it only after the merge. Blocking the import is the point of this test:
+    without that, it passes here for the same wrong reason.
+    """
+    import importlib
+    import sys
+
+    import numpy as np
+    import trimesh
+
+    from lidar2ha.schema import Level, Model, Room, save_model
+
+    class Blocker:
+        def find_spec(self, name, path=None, target=None):
+            if name == "matplotlib" or name.startswith("matplotlib."):
+                raise ImportError(f"No module named {name!r}")
+            return None
+
+    for module in [m for m in sys.modules if m.startswith("matplotlib")]:
+        monkeypatch.delitem(sys.modules, module)
+    monkeypatch.setattr(sys, "meta_path", [Blocker(), *sys.meta_path])
+
+    # A box room: a floor slab, a ceiling slab above it, four walls.
+    box = trimesh.creation.box(extents=(4.0, 3.0, 2.4))
+    box.apply_translation([2.0, 1.5, 1.2])
+    mesh_path = tmp_path / "room.obj"
+    box.export(mesh_path)
+
+    model = Model(source="t.dxf", units="cm", levels=[Level(
+        name="Floor 1", ceiling_height_cm=240, walls=[],
+        rooms=[Room(name="den", ha_area="den",
+                    points=[(0, 0), (400, 0), (400, 300), (0, 300)])])])
+    model_path = tmp_path / "model.json"
+    save_model(model, model_path)
+
+    voxels = importlib.import_module("lidar2ha.voxels")
+    grid = voxels.build(model, str(mesh_path), 0.1)
+
+    assert "den" in grid.names, "the room never got a label"
+    assert np.any(grid.labels > 0), "no column was attributed to a room"
