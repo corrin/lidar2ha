@@ -771,3 +771,262 @@ def test_voxels_cmd_runs_without_matplotlib(tmp_path, monkeypatch):
 
     assert "den" in grid.names, "the room never got a label"
     assert np.any(grid.labels > 0), "no column was attributed to a room"
+
+
+def test_combine_cmd_says_when_it_leaves_a_registration_behind(tmp_path):
+    """A registration dropped here disables `split --mesh` and `ceilings` in silence.
+
+    `rooms` writes `<id>_named.json` from an unregistered `<id>.json`, and this
+    command prefers the named file. On a real project every capture had a
+    `_registered.json` sitting beside the named file that beat it, so the
+    combined model came out unregistered, `split` recorded every boundary as
+    "level is unregistered", and no ceiling was ever measured on any level.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Registration, Room, Wall, load_model, save_model
+
+    def capture(capture_id, x0, area):
+        # An L, not a rectangle: two overlaid rectangles have two placements
+        # that fit equally well and the combine refuses rather than choosing.
+        points = [(x0, 0), (x0 + 400, 0), (x0 + 400, 200), (x0 + 200, 200),
+                  (x0 + 200, 400), (x0, 400)]
+        walls = [Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
+                      thickness=10, height=240)
+                 for a, b in zip(points, points[1:] + points[:1], strict=True)]
+
+        def model(registration):
+            return Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+                name="Floor 1", ceiling_height_cm=240, walls=walls,
+                registration=registration,
+                rooms=[Room(name=capture_id, ha_area=area, points=points)])])
+
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(model(None), directory / f"{capture_id}_named.json")
+        save_model(model(Registration(
+            theta_deg=0.3, tx_m=0.1, ty_m=-0.2, mirror=False,
+            median_error_m=0.027, coverage=1.0, floor_z_m=-2.86)),
+            directory / f"{capture_id}_registered.json")
+
+    capture("a", 0, "den")
+    capture("b", 100, "den")
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    a: den\n  b:\n    b: den\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "-o", str(tmp_path / "ground_combined.json")])
+
+    assert result.exit_code == 0, result.output
+    assert "_registered.json" in result.output, (
+        "the registration was dropped with nothing saying so")
+    combined = load_model(tmp_path / "ground_combined.json")
+    assert combined.levels[0].registration is not None, (
+        "the combined model carries no fit, so nothing downstream can measure")
+
+
+def test_combine_cmd_refuses_a_registration_fitted_to_other_walls(tmp_path):
+    """A stale sibling fit adopted silently places the level in the wrong mesh.
+
+    Re-exporting the DXF and re-running `rooms` without re-running
+    `registration` leaves a transform next door that was measured against walls
+    that no longer exist. Taking it looks exactly like a good registration, and
+    every stage downstream then reports its output as a measurement.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Registration, Room, Wall, load_model, save_model
+
+    def capture(capture_id, x0, area, *, stale_shift=0.0):
+        points = [(x0, 0), (x0 + 400, 0), (x0 + 400, 200), (x0 + 200, 200),
+                  (x0 + 200, 400), (x0, 400)]
+
+        def model(registration, shift):
+            walls = [Wall(x_start=a[0] + shift, y_start=a[1],
+                          x_end=b[0] + shift, y_end=b[1],
+                          thickness=10, height=240)
+                     for a, b in zip(points, points[1:] + points[:1], strict=True)]
+            return Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+                name="Floor 1", ceiling_height_cm=240, walls=walls,
+                registration=registration,
+                rooms=[Room(name=capture_id, ha_area=area, points=points)])])
+
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(model(None, 0.0), directory / f"{capture_id}_named.json")
+        save_model(model(Registration(
+            theta_deg=0.3, tx_m=0.1, ty_m=-0.2, mirror=False,
+            median_error_m=0.027, coverage=1.0, floor_z_m=-2.86), stale_shift),
+            directory / f"{capture_id}_registered.json")
+
+    capture("a", 0, "den", stale_shift=75.0)
+    capture("b", 100, "den", stale_shift=75.0)
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    a: den\n  b:\n    b: den\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "-o", str(tmp_path / "ground_combined.json")])
+
+    assert result.exit_code == 0, result.output
+    combined = load_model(tmp_path / "ground_combined.json")
+    assert combined.levels[0].registration is None, (
+        "a fit measured against walls this model does not have was adopted")
+    assert "NOT used" in result.output and "a_registered.json" in result.output, (
+        "refused in silence, which is the bug")
+
+
+def _reg_project(tmp_path, build):
+    """A two-capture Ground level, each capture written by `build(id, x0)`."""
+    build("a", 0)
+    build("b", 100)
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    a: den\n  b:\n    b: den\n", encoding="utf-8")
+    return project
+
+
+def _l_shape(x0):
+    return [(x0, 0), (x0 + 400, 0), (x0 + 400, 200), (x0 + 200, 200),
+            (x0 + 200, 400), (x0, 400)]
+
+
+def test_combine_cmd_says_when_no_export_carries_a_registration(tmp_path):
+    """The commonest unregistered case must not be the one nothing reports.
+
+    A capture nobody ever ran `registration` on has no sibling to be refused,
+    so a report that only knows "carried" and "refused" says nothing at all --
+    and an unregistered level is exactly what stops `ceilings` measuring.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Room, Wall, save_model
+
+    def build(capture_id, x0):
+        points = _l_shape(x0)
+        walls = [Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
+                      thickness=10, height=240)
+                 for a, b in zip(points, points[1:] + points[:1], strict=True)]
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+            name="Floor 1", ceiling_height_cm=240, walls=walls,
+            rooms=[Room(name=capture_id, ha_area="den", points=points)])]),
+            directory / f"{capture_id}_named.json")
+
+    project = _reg_project(tmp_path, build)
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "-o", str(tmp_path / "ground_combined.json")])
+
+    assert result.exit_code == 0, result.output
+    assert "no export of these captures carries a registration" in result.output, (
+        "an unregistered level went unmentioned, which is the whole failure")
+
+
+def test_combine_cmd_survives_a_sibling_export_that_will_not_load(tmp_path):
+    """A file consulted only for a registration must not take the combine down.
+
+    Siblings were `exists()`-checked and never opened, so a half-written or
+    older-schema export sat there harmlessly. Reading them for a registration
+    puts a raw pydantic error in the path of a run that does not need the file.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Room, Wall, save_model
+
+    def build(capture_id, x0):
+        points = _l_shape(x0)
+        walls = [Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
+                      thickness=10, height=240)
+                 for a, b in zip(points, points[1:] + points[:1], strict=True)]
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+        save_model(Model(source=f"{capture_id}.dxf", units="cm", levels=[Level(
+            name="Floor 1", ceiling_height_cm=240, walls=walls,
+            rooms=[Room(name=capture_id, ha_area="den", points=points)])]),
+            directory / f"{capture_id}_named.json")
+        (directory / f"{capture_id}_registered.json").write_text(
+            '{"source": "truncated.dxf", "units": "cm", "lev',
+            encoding="utf-8")
+
+    project = _reg_project(tmp_path, build)
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "-o", str(tmp_path / "ground_combined.json")])
+
+    assert result.exit_code == 0, result.output
+    assert "would not load" in result.output, "the unreadable sibling went unsaid"
+
+
+def test_combine_cmd_matches_a_duplicated_storey_name_on_its_walls(tmp_path):
+    """Two storeys called `Floor 1` must not swap registrations.
+
+    `polycam` takes floor labels as the sheet spells them, so one capture can
+    hold two levels of the same name. Resolved by name alone the wrong one's
+    transform is adopted, which places the level in a part of the mesh it was
+    never fitted to -- the failure the wall check exists to prevent, arriving
+    through the door the check does not watch.
+    """
+    from click.testing import CliRunner
+
+    from lidar2ha.cli import cli
+    from lidar2ha.schema import Level, Model, Registration, Room, Wall, load_model, save_model
+
+    def build(capture_id, x0):
+        directory = tmp_path / "exports" / capture_id
+        directory.mkdir(parents=True)
+
+        def level(shift, registration):
+            points = _l_shape(x0 + shift)
+            return Level(
+                name="Floor 1", ceiling_height_cm=240, registration=registration,
+                walls=[Wall(x_start=a[0], y_start=a[1], x_end=b[0], y_end=b[1],
+                            thickness=10, height=240)
+                       for a, b in zip(points, points[1:] + points[:1],
+                                       strict=True)],
+                rooms=[Room(name=capture_id, ha_area="den", points=points)])
+
+        # `--storey` resolves a duplicated name to the FIRST match, so the
+        # wanted storey is written first and the decoy second: a sibling keyed
+        # by name keeps the last and hands over the decoy's transform.
+        save_model(Model(source=f"{capture_id}.dxf", units="cm",
+                         levels=[level(0, None), level(600, None)]),
+                   directory / f"{capture_id}_named.json")
+        save_model(Model(source=f"{capture_id}.dxf", units="cm", levels=[
+            level(0, Registration(theta_deg=0.3, tx_m=0.1, ty_m=-0.2,
+                                  mirror=False, median_error_m=0.027,
+                                  coverage=1.0, floor_z_m=-2.86)),
+            level(600, Registration(theta_deg=90.0, tx_m=9.9, ty_m=9.9,
+                                    mirror=True, median_error_m=0.3,
+                                    coverage=0.4, floor_z_m=11.0))]),
+            directory / f"{capture_id}_registered.json")
+
+    build("a", 0)
+    build("b", 100)
+    project = tmp_path / "project.yaml"
+    project.write_text(
+        "levels:\n  Ground: [a, b]\n"
+        "rooms:\n  a:\n    a: den\n  b:\n    b: den\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "combine", "Ground", "--project", str(project),
+        "--storey", "Floor 1", "-o", str(tmp_path / "ground_combined.json")])
+
+    assert result.exit_code == 0, result.output
+    fit = load_model(tmp_path / "ground_combined.json").levels[0].registration
+    assert fit is not None, "the storey was left unregistered"
+    assert fit.theta_deg == 0.3, (
+        "the other storey of the same name supplied the transform")
